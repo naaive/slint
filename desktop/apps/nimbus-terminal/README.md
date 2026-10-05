@@ -21,8 +21,11 @@ The Nimbus terminal emulator, `org.nimbus.Terminal`.
 ## Usage
 
 ```text
-nimbus-terminal [--working-directory DIR] [--title TITLE] [-e COMMAND [ARGS...]]
+nimbus-terminal [--working-directory DIR] [--title TITLE] [-e COMMAND [ARGS...] | -- PROGRAM [ARGS...]]
 ```
+
+`-e` with a single word splits it like a shell command line.
+`--` runs the program and its arguments exactly as given, so a path with spaces stays whole.
 
 Preferences live in `$XDG_CONFIG_HOME/nimbus/terminal.toml`, and the window follows the Nimbus appearance settings live.
 

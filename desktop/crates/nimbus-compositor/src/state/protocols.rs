@@ -145,6 +145,7 @@ impl SessionLockHandler for State {
         self.nimbus.lock_surfaces.clear();
         self.nimbus.lock_owner = Some(confirmation.ext_session_lock().clone());
         self.nimbus.session_lock = SessionLock::Pending(confirmation);
+        self.nimbus.sync_lock_marker();
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
     }

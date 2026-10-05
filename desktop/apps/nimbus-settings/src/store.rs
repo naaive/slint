@@ -66,7 +66,7 @@ impl ConfigStore {
     /// Loads `path` and starts the saver.
     ///
     /// An unreadable or invalid file yields the defaults and the error message.
-    /// The invalid file is then copied to `<path>.bak` before the first save replaces it.
+    /// Whenever a save finds the file invalid, it copies the file to `<path>.bak` before replacing it.
     pub fn open(
         path: &Path,
         debounce: Duration,
@@ -76,7 +76,6 @@ impl ConfigStore {
             Ok(config) => (config, None),
             Err(error) => (Config::default(), Some(error.to_string())),
         };
-        let backup = error.as_ref().map(|_| path.with_extension("toml.bak"));
         let written = Arc::new(Mutex::new(Written { config: config.clone(), seq: 0 }));
         let (sender, receiver) = mpsc::channel();
         let saver = Saver {
@@ -84,7 +83,6 @@ impl ConfigStore {
             debounce,
             max_delay: MAX_DELAY.max(debounce),
             written: written.clone(),
-            backup,
             on_status: Box::new(on_status),
         };
         let thread = std::thread::Builder::new()
@@ -255,7 +253,6 @@ struct Saver {
     debounce: Duration,
     max_delay: Duration,
     written: Arc<Mutex<Written>>,
-    backup: Option<PathBuf>,
     on_status: Box<dyn Fn(SaveStatus) + Send>,
 }
 
@@ -295,44 +292,48 @@ impl Saver {
     }
 
     /// Replays `queue` onto the current file and saves the result, emptying `queue` on success.
+    ///
+    /// Goes through `nimbus_config::update_with`, so writes from the shell in the meantime survive.
     fn write(&mut self, queue: &mut Vec<(u64, Patch)>) {
         let Some(&(seq, _)) = queue.last() else { return };
-        if let Some(backup) = self.backup.take()
-            && let Err(error) = std::fs::copy(&self.path, &backup)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(
-                "cannot back up {} to {}: {error}",
-                self.path.display(),
-                backup.display()
-            );
-        }
         let patches = || queue.iter().map(|(_, patch)| patch);
-        let config = Config::load_from(&self.path)
-            .ok()
-            .and_then(|current| apply(&current, patches()))
-            .or_else(|| {
-                let written = self.written.lock().unwrap_or_else(PoisonError::into_inner);
+        let (path, written) = (&self.path, &self.written);
+        let saved = nimbus_config::update_with(path, |current| {
+            let current = current.inspect_err(|error| back_up(path, error)).ok();
+            current.and_then(|current| apply(&current, patches())).or_else(|| {
+                let written = written.lock().unwrap_or_else(PoisonError::into_inner);
                 apply(&written.config, patches())
-            });
-        let Some(config) = config else {
-            queue.clear();
-            (self.on_status)(SaveStatus::Failed(
-                "the edits don't form a valid configuration".into(),
-            ));
-            return;
-        };
-        match config.save_to(&self.path) {
-            Ok(()) => {
+            })
+        });
+        match saved {
+            Ok(Some(config)) => {
                 *self.written.lock().unwrap_or_else(PoisonError::into_inner) =
                     Written { config, seq };
                 queue.clear();
                 (self.on_status)(SaveStatus::Saved);
             }
+            Ok(None) => {
+                queue.clear();
+                (self.on_status)(SaveStatus::Failed(
+                    "the edits don't form a valid configuration".into(),
+                ));
+            }
             Err(error) => {
                 tracing::error!("{error}");
                 (self.on_status)(SaveStatus::Failed(error.to_string()));
             }
+        }
+    }
+}
+
+/// Copies the file at `path`, which failed to load with `error`, to `<path>.bak`.
+fn back_up(path: &Path, error: &nimbus_config::Error) {
+    let backup = path.with_extension("toml.bak");
+    match std::fs::copy(path, &backup) {
+        Ok(_) => tracing::warn!("{error}; saved a copy to {}", backup.display()),
+        Err(copy_error) if copy_error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(copy_error) => {
+            tracing::warn!("{error}; cannot back it up to {}: {copy_error}", backup.display())
         }
     }
 }
@@ -494,6 +495,30 @@ mod tests {
     }
 
     #[test]
+    fn writes_keep_concurrent_updates_from_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let (mut store, _) = counting(&path, Duration::from_millis(1));
+        let shell = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..30 {
+                    nimbus_config::update(&path, |c| c.favorites.push(format!("pin-{i}"))).unwrap();
+                }
+            })
+        };
+        for gaps in 1..=30 {
+            store.update(|c| c.workspaces.gaps = gaps);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        shell.join().unwrap();
+        store.flush(Duration::from_secs(5));
+        let saved = Config::load_from(&path).unwrap();
+        assert_eq!(saved.workspaces.gaps, 30);
+        assert_eq!(saved.favorites.iter().filter(|f| f.starts_with("pin-")).count(), 30);
+    }
+
+    #[test]
     fn invalid_files_are_backed_up_before_the_first_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -508,6 +533,22 @@ mod tests {
             "[panel\nheight ="
         );
         assert_eq!(Config::load_from(&path).unwrap().panel.height, 30);
+    }
+
+    #[test]
+    fn files_broken_while_open_are_backed_up_before_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let (mut store, error) = ConfigStore::open(&path, SHORT, |_| {});
+        assert!(error.is_none());
+        std::fs::write(&path, "[panel]\nheight = 30\ntypo").unwrap();
+        store.update(|c| c.workspaces.gaps = 9);
+        store.flush(Duration::from_secs(5));
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("toml.bak")).unwrap(),
+            "[panel]\nheight = 30\ntypo"
+        );
+        assert_eq!(Config::load_from(&path).unwrap().workspaces.gaps, 9);
     }
 
     #[test]

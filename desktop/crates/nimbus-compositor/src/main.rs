@@ -10,6 +10,7 @@ mod cursor;
 mod input;
 mod ipc;
 mod keybindings;
+mod lock_marker;
 mod process;
 mod render;
 mod shell_host;
@@ -60,6 +61,10 @@ struct Args {
     /// Run without the desktop shell (panel, dock, launcher) and its system services.
     #[arg(long)]
     no_shell: bool,
+    /// Start with the lock screen up; nimbus-session passes this after a crash while locked.
+    /// The compositor also starts locked when the lock marker in $XDG_RUNTIME_DIR/nimbus exists.
+    #[arg(long, conflicts_with = "no_shell")]
+    locked: bool,
     /// Headless backend only: write a PNG of every output to this directory after a few frames.
     #[arg(long)]
     screenshot_dir: Option<PathBuf>,
@@ -105,6 +110,14 @@ fn run(args: Args) -> anyhow::Result<()> {
         .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .context("XDG_RUNTIME_DIR must name an existing directory")?;
+    let lock_marker = lock_marker::LockMarker::new(&runtime_dir);
+    let start_locked = args.locked || lock_marker.is_present();
+    if start_locked && args.no_shell {
+        anyhow::bail!(
+            "cannot start locked without the shell; remove {} to start unlocked",
+            nimbus_ipc::lock_marker_path(&runtime_dir).display()
+        );
+    }
     let mut config = ConfigManager::load(args.config.clone());
 
     let mut event_loop: EventLoop<'static, State> =
@@ -149,7 +162,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow!("cannot watch the Wayland display: {e}"))?;
 
-    let ipc_path = runtime_dir.join(format!("nimbus-{socket_name}.sock"));
+    let ipc_path = nimbus_ipc::socket_path_for(&runtime_dir, &socket_name);
     let ipc = IpcServer::bind(ipc_path.clone(), &handle)?;
 
     // SAFETY: no other threads exist yet; services, scanners, and watchers start below.
@@ -164,7 +177,14 @@ fn run(args: Args) -> anyhow::Result<()> {
     let shell = if args.no_shell {
         None
     } else {
-        Some(ShellHost::new(&handle, config.current(), config.path().map(Path::to_path_buf))?)
+        let mut shell =
+            ShellHost::new(&handle, config.current(), config.path().map(Path::to_path_buf))?;
+        // Before any output exists, so every shell starts with the lock screen and no frame shows the desktop.
+        if start_locked {
+            tracing::info!("starting locked");
+            shell.set_locked(true);
+        }
+        Some(shell)
     };
     config.watch(&handle);
     let mut nimbus = Nimbus::new(NimbusInit {
@@ -174,6 +194,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         seat_name,
         config,
         ipc,
+        lock_marker,
     });
     nimbus.shell = shell;
 
@@ -200,7 +221,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let mut state = State { backend, nimbus };
     start_housekeeping(&mut state)?;
 
-    // nimbus-session runs `autostart`, after readiness and again after every restart.
+    state.nimbus.sync_lock_marker();
     state.nimbus.arrange();
 
     tracing::info!(backend = ?kind, socket = %socket_name, control = %ipc_path.display(), "Nimbus is ready");

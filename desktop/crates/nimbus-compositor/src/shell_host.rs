@@ -28,7 +28,7 @@ use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::calloop::channel::{self, Event as ChannelEvent};
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
@@ -128,6 +128,11 @@ pub struct ShellHost {
     config_path: Option<PathBuf>,
     /// Whether the session is locked, independent of which outputs currently have a shell.
     locked: bool,
+    /// After [`ServiceEvent::LockRequested`], the outputs that haven't presented a locked frame yet;
+    /// see [`ServiceCommand::LockPresented`].
+    lock_unpresented: Option<HashSet<String>>,
+    /// Toasts the user closed on one output, to close on every output; see [`Shell::on_toast_closed`].
+    closed_toasts: Rc<RefCell<Vec<u32>>>,
     /// The output whose shell the user last interacted with; only that shell takes keys.
     keyboard_output: Option<String>,
     apps_tx: Option<channel::Sender<(AppIndex, IconResolver)>>,
@@ -205,6 +210,8 @@ impl ShellHost {
             auth,
             config_path,
             locked: false,
+            lock_unpresented: None,
+            closed_toasts: Rc::default(),
             keyboard_output: None,
             apps_tx: Some(apps_tx),
             next_local_notification: Cell::new(u32::MAX),
@@ -265,6 +272,8 @@ impl ShellHost {
         if let Some(auth) = &self.auth {
             shell.on_unlock_attempt(auth.submitter());
         }
+        let closed_toasts = self.closed_toasts.clone();
+        shell.on_toast_closed(move |id| closed_toasts.borrow_mut().push(id));
         shell.set_compositor_state(state);
         if let Some((apps, icons)) = &self.apps {
             shell.set_apps(apps, icons);
@@ -434,6 +443,44 @@ impl ShellHost {
 
     pub fn is_locked(&self) -> bool {
         self.locked
+    }
+
+    /// Sends [`ServiceCommand::LockPresented`] once each of `outputs` presented a locked frame.
+    pub fn await_lock_presented(&mut self, outputs: HashSet<String>) {
+        self.lock_unpresented = Some(outputs);
+    }
+
+    pub fn awaits_lock_presented(&self) -> bool {
+        self.lock_unpresented.is_some()
+    }
+
+    /// Records that the `rendered` outputs presented a frame, out of the `live` ones;
+    /// returns whether this sent [`ServiceCommand::LockPresented`].
+    pub fn frames_presented(&mut self, rendered: &[&str], live: &HashSet<String>) -> bool {
+        if !self.locked {
+            self.lock_unpresented = None;
+            return false;
+        }
+        let Some(unpresented) = self.lock_unpresented.as_mut() else {
+            return false;
+        };
+        unpresented.retain(|name| live.contains(name) && !rendered.contains(&name.as_str()));
+        if !unpresented.is_empty() {
+            return false;
+        }
+        self.lock_unpresented = None;
+        self.send_service(ServiceCommand::LockPresented);
+        true
+    }
+
+    /// Closes the toasts closed on one output on every output.
+    fn close_toasts_everywhere(&self) {
+        let closed: Vec<u32> = self.closed_toasts.borrow_mut().drain(..).collect();
+        for id in closed {
+            for instance in &self.instances {
+                instance.shell.close_toast(id);
+            }
+        }
     }
 
     /// The shell that takes keys: while locked, the one the user last used or the first one;
@@ -669,6 +716,7 @@ impl State {
         let Some(shell) = self.nimbus.shell.as_mut() else {
             return;
         };
+        shell.close_toasts_everywhere();
         let (damaged, exclusive_changed) = shell.update();
         for name in damaged {
             if let Some(output) = self.nimbus.output_by_name(&name) {
@@ -692,6 +740,10 @@ impl State {
                 }
             }
             ShellAction::Service(command) => {
+                let command = with_activation_token(command, || {
+                    let (token, _) = self.nimbus.xdg_activation_state.create_external_token(None);
+                    token.as_str().to_owned()
+                });
                 if let Some(shell) = self.nimbus.shell.as_ref() {
                     shell.send_service(command);
                 }
@@ -763,7 +815,12 @@ impl State {
             return;
         }
         if event == ServiceEvent::LockRequested {
-            self.lock_session();
+            if self.lock_session() {
+                let outputs = self.nimbus.outputs().map(|o| o.name()).collect();
+                if let Some(shell) = self.nimbus.shell.as_mut() {
+                    shell.await_lock_presented(outputs);
+                }
+            }
             return;
         }
         let Some(shell) = self.nimbus.shell.as_mut() else {
@@ -798,6 +855,20 @@ fn allowed_while_locked(action: &ShellAction) -> bool {
     )
 }
 
+/// Gives a notification action an xdg-activation token from `mint`, so the client can raise its window.
+fn with_activation_token(command: ServiceCommand, mint: impl FnOnce() -> String) -> ServiceCommand {
+    match command {
+        ServiceCommand::InvokeNotificationAction { id, action } => {
+            ServiceCommand::InvokeNotificationActionWithToken {
+                id,
+                action,
+                activation_token: mint(),
+            }
+        }
+        command => command,
+    }
+}
+
 /// Settings page names are plain identifiers such as `appearance`.
 fn is_page_name(page: &str) -> bool {
     !page.is_empty()
@@ -809,6 +880,7 @@ fn is_page_name(page: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nimbus_services::CloseReason;
     use smithay::backend::renderer::element::Element;
     use smithay::backend::renderer::pixman::PixmanRenderer;
     use smithay::output::{Mode, PhysicalProperties, Scale, Subpixel};
@@ -834,6 +906,8 @@ mod tests {
                 auth: None,
                 config_path: None,
                 locked: false,
+                lock_unpresented: None,
+                closed_toasts: Rc::default(),
                 keyboard_output: None,
                 apps_tx: None,
                 next_local_notification: Cell::new(u32::MAX),
@@ -972,6 +1046,72 @@ mod tests {
             command: "sh".into()
         })));
         assert!(allowed_while_locked(&ShellAction::Compositor(nimbus_ipc::Request::Lock)));
+    }
+
+    #[test]
+    fn lock_presented_waits_for_every_output() {
+        let mut host = ShellHost::for_tests();
+        host.set_locked(true);
+        let live: HashSet<String> = ["A".to_owned(), "B".to_owned(), "C".to_owned()].into();
+        host.await_lock_presented(live.clone());
+        assert!(!host.frames_presented(&["A"], &live));
+        assert!(host.awaits_lock_presented());
+        let live: HashSet<String> = ["A".to_owned(), "B".to_owned()].into();
+        assert!(host.frames_presented(&["B"], &live), "C was unplugged");
+        assert!(!host.awaits_lock_presented());
+        assert!(!host.frames_presented(&["A", "B"], &live), "sent only once");
+    }
+
+    #[test]
+    fn unlocking_cancels_lock_presented() {
+        let mut host = ShellHost::for_tests();
+        host.set_locked(true);
+        let live: HashSet<String> = ["A".to_owned()].into();
+        host.await_lock_presented(live.clone());
+        host.set_locked(false);
+        assert!(!host.frames_presented(&["A"], &live));
+        assert!(!host.awaits_lock_presented());
+    }
+
+    #[test]
+    fn notification_actions_carry_an_activation_token() {
+        let invoke = ServiceCommand::InvokeNotificationAction { id: 4, action: "default".into() };
+        assert_eq!(
+            with_activation_token(invoke, || "token".into()),
+            ServiceCommand::InvokeNotificationActionWithToken {
+                id: 4,
+                action: "default".into(),
+                activation_token: "token".into()
+            }
+        );
+        let other = ServiceCommand::CloseNotification { id: 4, reason: CloseReason::Dismissed };
+        assert_eq!(
+            with_activation_token(other.clone(), || panic!("no token for other commands")),
+            other
+        );
+    }
+
+    #[test]
+    fn closing_a_toast_closes_it_on_every_output() {
+        let mut host = ShellHost::for_tests();
+        host.add_test_output(&output("A", (800, 600), 1.0));
+        host.add_test_output(&output("B", (800, 600), 1.0));
+        let id = host.next_local_notification.get();
+        host.show_error("Summary".into(), "Body".into());
+        let closing = |host: &ShellHost| -> Vec<Vec<bool>> {
+            host.instances
+                .iter()
+                .map(|i| {
+                    slint::Model::iter(&i.shell.component().get_toasts())
+                        .map(|t| t.closing)
+                        .collect()
+                })
+                .collect()
+        };
+        assert_eq!(closing(&host), [[false], [false]]);
+        host.closed_toasts.borrow_mut().push(id);
+        host.close_toasts_everywhere();
+        assert_eq!(closing(&host), [[true], [true]]);
     }
 
     #[test]

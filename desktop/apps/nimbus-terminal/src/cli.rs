@@ -6,10 +6,12 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-Usage: nimbus-terminal [OPTIONS] [-e COMMAND [ARGS...]]
+Usage: nimbus-terminal [OPTIONS] [-e COMMAND [ARGS...] | -- PROGRAM [ARGS...]]
 
 Options:
-  -e, --command COMMAND [ARGS...]  Run COMMAND instead of the shell; takes the rest of the line
+  -e, --command COMMAND [ARGS...]  Run COMMAND instead of the shell; takes the rest of the line.
+                                   A single COMMAND word is split like a shell command line
+      --                           Run PROGRAM with ARGS exactly as given, without splitting
       --working-directory DIR      Start in DIR
       --title TITLE                Set the window title, ignoring titles set by programs
       --screenshot PATH            Render sample content to a PNG file and exit
@@ -108,7 +110,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             "-e" | "-x" | "--command" | "--" => {
                 let mut words: Vec<String> =
                     inline.clone().into_iter().chain(args.by_ref()).collect();
-                if words.len() == 1 {
+                if words.len() == 1 && name != "--" {
                     words = split_command_line(&words[0]);
                 }
                 let mut words = words.into_iter();
@@ -164,7 +166,27 @@ mod tests {
         let options = run(&["--", "ls", "-l"]).expect("parses");
         assert_eq!(options.command, Some(("ls".into(), vec!["-l".into()])));
         assert_eq!(run(&["--"]), Ok(Options::default()));
+        let options = run(&["-e", "printf", "%s\\n", "arg with spaces"]).expect("parses");
+        assert_eq!(
+            options.command,
+            Some(("printf".into(), vec!["%s\\n".into(), "arg with spaces".into()]))
+        );
+        let options = run(&["--", "ls", "--title", "-e"]).expect("parses");
+        assert_eq!(
+            options.command,
+            Some(("ls".into(), vec!["--title".into(), "-e".into()])),
+            "options after the program belong to it"
+        );
         assert_eq!(run(&["-e"]), Err(CliError::MissingValue("-e".into())));
+    }
+
+    /// `nimbus_xdg::launch` runs `nimbus-terminal -- <argv>` for `Terminal=true` entries.
+    #[test]
+    fn double_dash_keeps_a_single_program_whole() {
+        let options = run(&["--", "/opt/My Tools/monitor"]).expect("parses");
+        assert_eq!(options.command, Some(("/opt/My Tools/monitor".into(), vec![])));
+        let options = run(&["--", "it's"]).expect("parses");
+        assert_eq!(options.command, Some(("it's".into(), vec![])));
     }
 
     #[test]

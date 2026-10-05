@@ -2,7 +2,7 @@
 
 //! Key chords from `nimbus_config::Keybindings`, matched against raw (unshifted) keysyms.
 
-use nimbus_config::{Action, Keybindings};
+use nimbus_config::{Action, Keybindings, chord};
 use smithay::input::keyboard::{Keysym, ModifiersState, xkb};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -27,41 +27,19 @@ pub struct Chord {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ChordError {
-    #[error("the chord is empty")]
-    Empty,
-    #[error("'{0}' is not a modifier; use Super, Ctrl, Alt, or Shift")]
-    UnknownModifier(String),
+    #[error(transparent)]
+    Grammar(#[from] chord::ChordError),
     #[error("'{0}' is not an XKB keysym name")]
     UnknownKey(String),
 }
 
-/// Parses `Super+Shift+Q`: modifiers in any order and case, then one keysym name.
+/// Parses a chord in the [`nimbus_config::chord`] grammar and resolves its keysym.
 pub fn parse_chord(text: &str) -> Result<Chord, ChordError> {
-    let parts: Vec<&str> = text.split('+').map(str::trim).collect();
-    let Some((key, modifiers)) = parts.split_last() else {
-        return Err(ChordError::Empty);
-    };
-    // `Super++` binds the plus key.
-    let (key, modifiers) = match (key.is_empty(), modifiers.split_last()) {
-        (true, Some((&"", rest))) => ("plus", rest),
-        _ => (*key, modifiers),
-    };
-    if key.is_empty() {
-        return Err(ChordError::Empty);
-    }
-    let mut mods = Mods::default();
-    for modifier in modifiers {
-        match modifier.to_ascii_lowercase().as_str() {
-            "super" | "logo" | "mod4" | "win" | "meta" => mods.logo = true,
-            "ctrl" | "control" => mods.ctrl = true,
-            "alt" | "mod1" => mods.alt = true,
-            "shift" => mods.shift = true,
-            _ => return Err(ChordError::UnknownModifier((*modifier).to_owned())),
-        }
-    }
+    let chord = chord::Chord::parse(text)?;
+    let chord::Modifiers { logo, ctrl, alt, shift } = chord.modifiers;
     Ok(Chord {
-        mods,
-        keysym: keysym_from_name(key).ok_or_else(|| ChordError::UnknownKey(key.to_owned()))?,
+        mods: Mods { ctrl, alt, shift, logo },
+        keysym: keysym_from_name(&chord.key).ok_or(ChordError::UnknownKey(chord.key))?,
     })
 }
 
@@ -163,9 +141,16 @@ mod tests {
 
     #[test]
     fn rejects_invalid_chords() {
-        assert_eq!(parse_chord(""), Err(ChordError::Empty));
-        assert_eq!(parse_chord("Super+"), Err(ChordError::Empty));
-        assert_eq!(parse_chord("Hyper+Q"), Err(ChordError::UnknownModifier("Hyper".into())));
+        assert_eq!(parse_chord(""), Err(chord::ChordError::Empty.into()));
+        assert_eq!(parse_chord("Super+"), Err(chord::ChordError::Empty.into()));
+        assert_eq!(
+            parse_chord("Hyper+Q"),
+            Err(chord::ChordError::UnknownModifier("Hyper".into()).into())
+        );
+        assert_eq!(
+            parse_chord("Super+Shift"),
+            Err(chord::ChordError::ModifierAsKey("Shift".into()).into())
+        );
         assert_eq!(parse_chord("Super+NoSuchKey"), Err(ChordError::UnknownKey("NoSuchKey".into())));
         assert!(matches!(parse_chord("Super+a\0b"), Err(ChordError::UnknownKey(_))));
     }

@@ -3,21 +3,16 @@
 //! Renders the window with sample tabs on the software renderer and checks that it draws.
 //! Set `NIMBUS_UPDATE_SCREENSHOTS=1` to write `docs/screenshots/terminal-{main,light,preferences}.png`.
 //!
-//! Slint's platform can be set once per process, so this binary has a single test.
+//! Slint's platform can be set once per thread, so a single test renders every state.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 
-use nimbus_terminal::screenshot::{self, Frame, HEIGHT, WIDTH};
+use nimbus_terminal::screenshot::{self, HEIGHT, WIDTH};
 use slint::ComponentHandle;
-
-fn distinct_colors(frame: &Frame) -> usize {
-    frame.pixels.iter().map(|p| (p.r, p.g, p.b)).collect::<HashSet<_>>().len()
-}
 
 #[test]
 fn window_renders() {
-    let platform = screenshot::install_platform().expect("the platform is set once");
+    let headless = screenshot::install_platform().expect("the platform is set once");
     let output = std::env::var_os("NIMBUS_UPDATE_SCREENSHOTS")
         .map(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/screenshots"));
 
@@ -29,14 +24,14 @@ fn window_renders() {
             return;
         };
         assert_eq!(controller.tab_count(), 3);
-        screenshot::render(&platform);
+        headless.render();
         controller.update_geometry();
         controller.render_now();
-        let frame = screenshot::render(&platform);
+        let frame = headless.render();
         assert_eq!((frame.width, frame.height), (WIDTH, HEIGHT));
         // The terminal's background fills the bottom-left corner, below the header bar.
         assert_eq!(frame.pixel(2, HEIGHT - 2), Some(background), "{name} terminal background");
-        assert!(distinct_colors(&frame) > 300, "{name} looks blank");
+        assert!(frame.distinct_colors() > 300, "{name} looks blank");
         assert_eq!(window.get_window_title(), "ada@nimbus: ~/projects/nimbus");
         if let Some(dir) = &output {
             frame
@@ -46,8 +41,8 @@ fn window_renders() {
 
         if !light {
             window.set_preferences_open(true);
-            screenshot::render(&platform);
-            let frame = screenshot::render(&platform);
+            headless.render();
+            let frame = headless.render();
             assert_ne!(
                 frame.pixel(WIDTH - 60, 200),
                 Some(background),

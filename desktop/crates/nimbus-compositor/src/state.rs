@@ -13,6 +13,7 @@ use crate::config::ConfigManager;
 use crate::cursor::CursorThemeManager;
 use crate::ipc::IpcServer;
 use crate::keybindings::Bindings;
+use crate::lock_marker::LockMarker;
 use crate::process::Children;
 use crate::render::Wallpaper;
 use crate::shell_host::ShellHost;
@@ -151,6 +152,7 @@ pub struct Nimbus {
     pub ipc: IpcServer,
     pub shell: Option<ShellHost>,
     pub children: Children,
+    pub lock_marker: LockMarker,
     pub session_lock: SessionLock,
     /// The ext-session-lock that is pending or active.
     pub lock_owner: Option<ExtSessionLockV1>,
@@ -171,12 +173,20 @@ pub struct NimbusInit {
     pub seat_name: String,
     pub config: ConfigManager,
     pub ipc: IpcServer,
+    pub lock_marker: LockMarker,
 }
 
 impl Nimbus {
     pub fn new(init: NimbusInit) -> Self {
-        let NimbusInit { display_handle: dh, loop_handle, loop_signal, seat_name, config, ipc } =
-            init;
+        let NimbusInit {
+            display_handle: dh,
+            loop_handle,
+            loop_signal,
+            seat_name,
+            config,
+            ipc,
+            lock_marker,
+        } = init;
         let clock = Clock::<Monotonic>::new();
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, seat_name);
@@ -236,6 +246,7 @@ impl Nimbus {
             ipc,
             shell: None,
             children: Children::default(),
+            lock_marker,
             session_lock: SessionLock::Unlocked,
             lock_owner: None,
             lock_surfaces: HashMap::new(),
@@ -484,6 +495,22 @@ impl Nimbus {
         self.shell.as_ref().is_some_and(ShellHost::is_locked)
     }
 
+    /// Creates the lock marker once any lock screen is up and removes it after an unlock.
+    pub fn sync_lock_marker(&mut self) {
+        let locked = self.is_locked();
+        self.lock_marker.sync(locked);
+    }
+
+    /// Tells the shell which outputs presented a frame in the last render, from the redraws queued before it.
+    fn frames_rendered(&mut self, queued: &HashSet<String>) {
+        let live: HashSet<String> = self.outputs().map(|o| o.name()).collect();
+        let rendered: Vec<&str> =
+            queued.difference(&self.pending_redraws).map(String::as_str).collect();
+        if let Some(shell) = self.shell.as_mut() {
+            shell.frames_presented(&rendered, &live);
+        }
+    }
+
     /// Where keyboard input should go, by priority: lock screens, the shell, exclusive layer surfaces, windows.
     pub fn keyboard_target(&self) -> KeyboardTarget {
         if self.is_session_locked() {
@@ -574,7 +601,17 @@ impl State {
             // Draws what the events changed, and runs any actions they caused, in this frame.
             self.process_shell();
         }
+        self.nimbus.sync_lock_marker();
+        let queued = self
+            .nimbus
+            .shell
+            .as_ref()
+            .is_some_and(ShellHost::awaits_lock_presented)
+            .then(|| self.nimbus.pending_redraws.clone());
         self.backend.render(&mut self.nimbus);
+        if let Some(queued) = queued {
+            self.nimbus.frames_rendered(&queued);
+        }
         self.nimbus.confirm_session_lock();
         self.nimbus.ipc.flush_all();
         if let Err(err) = self.nimbus.display_handle.flush_clients() {

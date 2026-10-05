@@ -2,16 +2,14 @@
 
 //! Renders the main window with deterministic sample data, using the software renderer.
 //!
-//! Slint's platform can be set only once per process, so call [`render`] at most once.
+//! Slint's platform can be set only once per thread, so call [`render`] at most once per thread.
 
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Context as _;
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
-use slint::{ComponentHandle as _, PhysicalSize, PlatformError, Rgb8Pixel};
+use nimbus_theme::headless::{Frame, Headless};
+use slint::{ComponentHandle as _, Model as _};
 
 use crate::app::{Controller, Env};
 use crate::{AppWindow, Theme};
@@ -58,64 +56,13 @@ impl std::str::FromStr for Scene {
     }
 }
 
-/// A rendered frame.
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<Rgb8Pixel>,
-}
-
-impl Frame {
-    pub fn pixel(&self, x: u32, y: u32) -> Option<(u8, u8, u8)> {
-        (x < self.width && y < self.height).then(|| {
-            let p = self.pixels[(y * self.width + x) as usize];
-            (p.r, p.g, p.b)
-        })
-    }
-
-    pub fn write_png(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        }
-        let file =
-            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
-        encoder.set_color(png::ColorType::Rgb);
-        encoder.set_depth(png::BitDepth::Eight);
-        let bytes: Vec<u8> = self.pixels.iter().flat_map(|p| [p.r, p.g, p.b]).collect();
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(&bytes)?;
-        writer.finish()?;
-        Ok(())
-    }
-}
-
-struct ScreenshotPlatform {
-    window: Rc<MinimalSoftwareWindow>,
-}
-
-impl Platform for ScreenshotPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.window.clone())
-    }
-}
-
-fn draw(window: &MinimalSoftwareWindow) -> Frame {
-    let mut pixels = vec![Rgb8Pixel::default(); (WIDTH * HEIGHT) as usize];
-    window.request_redraw();
-    window.draw_if_needed(|renderer| {
-        renderer.render(&mut pixels, WIDTH as usize);
-    });
-    Frame { width: WIDTH, height: HEIGHT, pixels }
-}
-
 /// Handles worker results and redraws until nothing arrives for a while; drawing requests thumbnails.
-fn settle(controller: &Rc<Controller>, window: &MinimalSoftwareWindow, limit: Duration) {
+fn settle(controller: &Rc<Controller>, headless: &Headless, limit: Duration) {
     let deadline = Instant::now() + limit;
     let mut quiet_rounds = 0;
     while Instant::now() < deadline && quiet_rounds < 8 {
         let handled = controller.pump();
-        draw(window);
+        headless.draw();
         let busy =
             handled > 0 || controller.ui().get_loading() || controller.ui().get_props_computing();
         quiet_rounds = if busy { 0 } else { quiet_rounds + 1 };
@@ -125,15 +72,12 @@ fn settle(controller: &Rc<Controller>, window: &MinimalSoftwareWindow, limit: Du
 
 /// Renders the window and writes it to `path` as PNG.
 pub fn render_to_file(path: &Path, options: Options) -> anyhow::Result<()> {
-    render(options)?.write_png(path)
+    Ok(render(options)?.write_png(path)?)
 }
 
 /// Renders the window showing a sample home folder.
 pub fn render(options: Options) -> anyhow::Result<Frame> {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(ScreenshotPlatform { window: window.clone() }))
-        .map_err(|e| anyhow::anyhow!("the Slint platform is already set: {e}"))?;
-    window.set_size(PhysicalSize::new(WIDTH, HEIGHT));
+    let headless = Headless::install(WIDTH, HEIGHT)?;
 
     let sample = tempfile::Builder::new().prefix("nimbus-files-sample").tempdir()?;
     let home = sample.path().join("ada");
@@ -161,7 +105,7 @@ pub fn render(options: Options) -> anyhow::Result<Frame> {
     }
     ui.show()?;
 
-    settle(&controller, &window, Duration::from_secs(10));
+    settle(&controller, &headless, Duration::from_secs(10));
     for name in ["Mountains.png", "Holiday.jpg"] {
         if let Some(index) = (0..ui.get_files().row_count())
             .find(|&i| ui.get_files().row_data(i).is_some_and(|f| f.name == name))
@@ -219,7 +163,7 @@ pub fn render(options: Options) -> anyhow::Result<Frame> {
                 if let Some(index) = find(name) {
                     ui.invoke_item_pressed(index as i32, false, false);
                     ui.invoke_view_key(delete.as_str().into(), false, false, false);
-                    settle(&controller, &window, Duration::from_secs(5));
+                    settle(&controller, &headless, Duration::from_secs(5));
                 }
             }
             let places = ui.get_places();
@@ -231,15 +175,13 @@ pub fn render(options: Options) -> anyhow::Result<Frame> {
             ui.invoke_toast_dismissed();
         }
     }
-    settle(&controller, &window, Duration::from_secs(5));
+    settle(&controller, &headless, Duration::from_secs(5));
     ui.set_status_detail("48.2 GB free".into());
-    let frame = draw(&window);
+    let frame = headless.draw();
     ui.hide()?;
     drop(controller);
     Ok(frame)
 }
-
-use slint::Model as _;
 
 /// A fixed time, so dates in the screenshot don't depend on when it's taken.
 fn sample_time(days_ago: u64) -> SystemTime {

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Default applications per the MIME Applications Associations Specification 1.0.1.
+//!
+//! Wildcards such as `image/*` count in `MimeType=` keys, in `mimeinfo.cache`, which copies those keys,
+//! and in `mimeapps.list`, where KDE writes them.
+//! An exact MIME type takes precedence over its wildcard.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -24,13 +28,41 @@ pub struct MimeLookup {
 /// The ids in one `mimeapps.list` file for one MIME type.
 #[derive(Default)]
 struct ListFile {
-    defaults: Vec<String>,
+    /// Default applications for each of [`patterns`], in the same order.
+    defaults: Vec<Vec<String>>,
     added: Vec<String>,
     removed: Vec<String>,
 }
 
+/// `mime` itself, then the `type/*` wildcard that covers it.
+fn patterns(mime: &str) -> Vec<String> {
+    let mut patterns = vec![mime.to_owned()];
+    if let Some((major, minor)) = mime.split_once('/')
+        && !major.is_empty()
+        && minor != "*"
+    {
+        patterns.push(format!("{major}/*"));
+    }
+    patterns
+}
+
+/// Whether `pattern`, a MIME type or a `type/*` wildcard, covers `mime`.
+fn mime_matches(pattern: &str, mime: &str) -> bool {
+    if pattern.eq_ignore_ascii_case(mime) {
+        return true;
+    }
+    match (pattern.strip_suffix("/*"), mime.split_once('/')) {
+        (Some(major), Some((mime_major, _))) => major.eq_ignore_ascii_case(mime_major),
+        _ => false,
+    }
+}
+
 fn strip_suffix(id: &str) -> String {
     id.strip_suffix(".desktop").unwrap_or(id).to_owned()
+}
+
+fn ids_for_all(keyfile: &KeyFile, group: &str, patterns: &[String]) -> Vec<String> {
+    patterns.iter().flat_map(|pattern| ids_for(keyfile, group, pattern)).collect()
 }
 
 fn ids_for(keyfile: &KeyFile, group: &str, mime: &str) -> Vec<String> {
@@ -71,7 +103,7 @@ impl Resolver<'_> {
     }
 
     fn handles(&mut self, id: &str, mime: &str) -> bool {
-        self.get(id).is_some_and(|e| e.mime_types.iter().any(|m| m.eq_ignore_ascii_case(mime)))
+        self.get(id).is_some_and(|e| e.mime_types.iter().any(|m| mime_matches(m, mime)))
     }
 }
 
@@ -108,16 +140,19 @@ impl MimeLookup {
         config.chain(data).flat_map(|dir| names.iter().map(move |name| dir.join(name))).collect()
     }
 
-    fn list_files(&self, mime: &str) -> Vec<ListFile> {
+    fn list_files(&self, patterns: &[String]) -> Vec<ListFile> {
         self.list_paths()
             .into_iter()
             .filter_map(|path| std::fs::read(path).ok())
             .map(|bytes| {
                 let keyfile = KeyFile::parse(&String::from_utf8_lossy(&bytes));
                 ListFile {
-                    defaults: ids_for(&keyfile, "Default Applications", mime),
-                    added: ids_for(&keyfile, "Added Associations", mime),
-                    removed: ids_for(&keyfile, "Removed Associations", mime),
+                    defaults: patterns
+                        .iter()
+                        .map(|pattern| ids_for(&keyfile, "Default Applications", pattern))
+                        .collect(),
+                    added: ids_for_all(&keyfile, "Added Associations", patterns),
+                    removed: ids_for_all(&keyfile, "Removed Associations", patterns),
                 }
             })
             .collect()
@@ -134,12 +169,14 @@ impl MimeLookup {
     /// All installed applications associated with `mime`, most preferred first, as desktop file ids
     /// without the `.desktop` suffix.
     pub fn handlers(&self, mime: &str) -> Vec<String> {
-        self.handlers_with(mime, &self.list_files(mime), &mut self.resolver())
+        let patterns = patterns(mime);
+        self.handlers_with(mime, &patterns, &self.list_files(&patterns), &mut self.resolver())
     }
 
     fn handlers_with(
         &self,
         mime: &str,
+        patterns: &[String],
         lists: &[ListFile],
         resolver: &mut Resolver<'_>,
     ) -> Vec<String> {
@@ -157,9 +194,11 @@ impl MimeLookup {
         for dir in &self.data_dirs {
             let applications = dir.join("applications");
             let candidates = match std::fs::read(applications.join("mimeinfo.cache")) {
-                Ok(bytes) => {
-                    ids_for(&KeyFile::parse(&String::from_utf8_lossy(&bytes)), "MIME Cache", mime)
-                }
+                Ok(bytes) => ids_for_all(
+                    &KeyFile::parse(&String::from_utf8_lossy(&bytes)),
+                    "MIME Cache",
+                    patterns,
+                ),
                 Err(_) => desktop_files(&applications).into_iter().map(|(id, _)| id).collect(),
             };
             for id in candidates {
@@ -179,14 +218,18 @@ impl MimeLookup {
         if mime.is_empty() {
             return None;
         }
-        let lists = self.list_files(mime);
+        let patterns = patterns(mime);
+        let lists = self.list_files(&patterns);
         let mut resolver = self.resolver();
-        for list in &lists {
-            if let Some(id) = list.defaults.iter().find(|id| resolver.get(id).is_some()) {
-                return Some(id.clone());
+        for index in 0..patterns.len() {
+            for list in &lists {
+                if let Some(id) = list.defaults[index].iter().find(|id| resolver.get(id).is_some())
+                {
+                    return Some(id.clone());
+                }
             }
         }
-        self.handlers_with(mime, &lists, &mut resolver).into_iter().next()
+        self.handlers_with(mime, &patterns, &lists, &mut resolver).into_iter().next()
     }
 }
 
@@ -306,5 +349,60 @@ mod tests {
         let lookup = fixture.lookup();
         // `editor` isn't in the system cache, so only the cached and verified `viewer` remains there.
         assert_eq!(lookup.handlers("text/plain"), vec!["notes", "viewer"]);
+    }
+
+    #[test]
+    fn wildcards_match_whole_media_types() {
+        assert!(mime_matches("image/*", "image/png"));
+        assert!(mime_matches("IMAGE/*", "image/png"));
+        assert!(!mime_matches("image/*", "video/mp4"));
+        assert!(!mime_matches("image/png", "image/jpeg"));
+        assert_eq!(patterns("image/png"), ["image/png", "image/*"]);
+        assert_eq!(patterns("image/*"), ["image/*"]);
+        assert_eq!(patterns("plain"), ["plain"]);
+
+        let fixture = Fixture::new();
+        app(fixture.system.path(), "gallery", "image/*;", "");
+        let lookup = fixture.lookup();
+        assert_eq!(lookup.handlers("image/jpeg"), vec!["gallery"]);
+        assert_eq!(lookup.handlers("image/png"), vec!["gallery", "viewer"]);
+        assert_eq!(lookup.default_handler("video/mp4"), None);
+    }
+
+    #[test]
+    fn wildcards_in_cache_and_lists() {
+        let fixture = Fixture::new();
+        app(fixture.system.path(), "gallery", "image/*;", "");
+        write(
+            &fixture.system.path().join("applications/mimeinfo.cache"),
+            "[MIME Cache]\nimage/png=viewer.desktop;\nimage/*=gallery.desktop;\n",
+        );
+        let lookup = fixture.lookup();
+        assert_eq!(
+            lookup.handlers("image/png"),
+            vec!["viewer", "gallery"],
+            "exact before wildcard"
+        );
+        assert_eq!(lookup.handlers("image/gif"), vec!["gallery"]);
+
+        write(
+            &fixture.config.path().join("mimeapps.list"),
+            "[Default Applications]\nimage/*=gallery.desktop\n",
+        );
+        assert_eq!(lookup.default_handler("image/gif"), Some("gallery".into()));
+        write(
+            &fixture.system.path().join("applications/mimeapps.list"),
+            "[Default Applications]\nimage/png=viewer.desktop\n",
+        );
+        assert_eq!(
+            lookup.default_handler("image/png"),
+            Some("viewer".into()),
+            "an exact default anywhere beats a wildcard default"
+        );
+        write(
+            &fixture.config.path().join("mimeapps.list"),
+            "[Removed Associations]\nimage/*=viewer.desktop;\n",
+        );
+        assert_eq!(lookup.handlers("image/png"), vec!["gallery"]);
     }
 }

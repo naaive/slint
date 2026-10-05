@@ -115,6 +115,20 @@ Levels come in numbered sets: `wifi-0` to `wifi-3`, `battery-0` (empty) to `batt
 The SVGs and `ui/icons.slint` are generated.
 To add or change an icon, edit the shapes in `tools/icons.py` and run `python3 tools/icons.py` from this directory.
 
+## Headless Rendering
+
+The `headless` feature renders off screen with Slint's software renderer, for screenshots and tests:
+
+```rust
+let headless = nimbus_theme::headless::Headless::install(800, 600)?;
+let ui = MainWindow::new()?;
+ui.show()?;
+headless.render().write_png(Path::new("screenshot.png"))?;
+```
+
+Slint's platform is per thread, so call `Headless::install` once per thread.
+`render` advances timers and animations before drawing; `draw` doesn't.
+
 ## Testing
 
 `cargo test -p nimbus-theme` compiles the library with the interpreter and the Rust code generator,

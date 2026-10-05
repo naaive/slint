@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Starts the compositor, waits for it to become ready, runs autostart, and restarts it after crashes.
+//! Starts the compositor, waits for it to become ready, runs autostart once, and restarts the compositor after crashes.
 
 use crate::autostart::Launch;
 use crate::env::{ACTIVATION_VARIABLES, SessionEnv, find_in_path};
@@ -102,22 +102,53 @@ pub fn classify_exit(status: ExitStatus, shutdown_requested: bool) -> Outcome {
 pub struct CompositorCommand {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    /// The Wayland socket name; without one, restarts reuse the name the first compositor picked.
+    pub socket: Option<String>,
+    /// Whether the compositor runs the shell, which it needs for `--locked`.
+    pub can_lock: bool,
 }
 
 pub struct SessionPlan {
     pub compositor: CompositorCommand,
     /// The environment of the compositor; clients additionally get the compositor's sockets.
     pub env: SessionEnv,
-    /// Recomputed after every compositor start, so edits to autostart entries apply after a restart.
-    pub autostart: Box<dyn Fn() -> Vec<Launch>>,
+    /// What to start once the first compositor is ready; restarts don't run it again.
+    pub autostart: Box<dyn FnOnce() -> Vec<Launch>>,
     pub ready_timeout: Duration,
-    /// The file the compositor keeps while the screen is locked, from [`lock_marker`].
+    /// The file the compositor keeps while the screen is locked, from [`nimbus_ipc::lock_marker_path`].
     pub lock_marker: Option<PathBuf>,
 }
 
-/// Returns the lock marker in `runtime_dir`, which is `$XDG_RUNTIME_DIR`.
-pub fn lock_marker(runtime_dir: &Path) -> PathBuf {
-    runtime_dir.join("nimbus/locked")
+/// How to start the compositor this time.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Start {
+    socket: Option<String>,
+    locked: bool,
+}
+
+/// What to do after the compositor crashed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AfterCrash {
+    Restart { locked: bool },
+    EndLocked,
+    GiveUp,
+}
+
+/// Decides how to go on after a crash at `now`, given whether the lock marker exists.
+/// A crash while locked restarts the compositor locked, or ends the session when it can't lock.
+fn after_crash(
+    policy: &mut RestartPolicy,
+    now: Instant,
+    marker_exists: bool,
+    can_lock: bool,
+) -> AfterCrash {
+    if marker_exists && !can_lock {
+        return AfterCrash::EndLocked;
+    }
+    match policy.on_crash(now) {
+        CrashDecision::Restart => AfterCrash::Restart { locked: marker_exists },
+        CrashDecision::GiveUp => AfterCrash::GiveUp,
+    }
 }
 
 #[derive(Default)]
@@ -126,10 +157,16 @@ struct Shared {
     shutdown: AtomicBool,
 }
 
-fn compositor_command(plan: &SessionPlan) -> Command {
-    let mut command = Command::new(&plan.compositor.program);
-    command.args(&plan.compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
-    plan.env.apply(&mut command);
+fn compositor_command(compositor: &CompositorCommand, env: &SessionEnv, start: &Start) -> Command {
+    let mut command = Command::new(&compositor.program);
+    command.args(&compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
+    if let Some(socket) = &start.socket {
+        command.arg("--socket").arg(socket);
+    }
+    if start.locked {
+        command.arg("--locked");
+    }
+    env.apply(&mut command);
     command
 }
 
@@ -141,93 +178,108 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
     let mut children = Children::default();
     let mut target_started = false;
     let mut client_env = plan.env.clone();
+    let mut start = Start { socket: plan.compositor.socket.clone(), locked: false };
+    let mut autostart = Some(plan.autostart);
     // The display manager authenticated the user, so a marker left by an earlier session is stale.
     if let Some(marker) = &plan.lock_marker {
         let _ = std::fs::remove_file(marker);
     }
 
-    let code = loop {
-        if shared.shutdown.load(Ordering::SeqCst) {
-            break ExitCode::SUCCESS;
-        }
-        let mut compositor = compositor_command(&plan)
-            .spawn()
-            .with_context(|| format!("cannot start {}", plan.compositor.program.display()))?;
-        let pid = i32::try_from(compositor.id()).context("compositor process id out of range")?;
-        shared.compositor_pid.store(pid, Ordering::SeqCst);
-        if shared.shutdown.load(Ordering::SeqCst) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
-        }
-
-        let ready = match compositor.stdout.take() {
-            Some(stdout) => wait_for_ready(stdout, plan.ready_timeout),
-            None => Err(ReadyError::Closed),
-        };
-        match ready {
-            Ok(ready) => {
-                tracing::info!(
-                    "compositor ready on {} (control socket {})",
-                    ready.wayland_display,
-                    ready.socket.display()
-                );
-                client_env = plan.env.clone();
-                client_env.set("WAYLAND_DISPLAY", ready.wayland_display);
-                client_env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
-                update_activation_environment(&client_env);
-                target_started |= start_systemd_target(&client_env);
-                for launch in (plan.autostart)() {
-                    children.spawn(&launch, &client_env);
-                }
+    let result = (|| -> anyhow::Result<ExitCode> {
+        Ok(loop {
+            if shared.shutdown.load(Ordering::SeqCst) {
+                break ExitCode::SUCCESS;
             }
-            Err(ReadyError::Timeout) => {
-                tracing::error!(
-                    "compositor didn't report readiness within {:?}; stopping it",
-                    plan.ready_timeout
-                );
+            let mut compositor = compositor_command(&plan.compositor, &plan.env, &start)
+                .spawn()
+                .with_context(|| format!("cannot start {}", plan.compositor.program.display()))?;
+            let pid =
+                i32::try_from(compositor.id()).context("compositor process id out of range")?;
+            shared.compositor_pid.store(pid, Ordering::SeqCst);
+            if shared.shutdown.load(Ordering::SeqCst) {
                 let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
             }
-            Err(ReadyError::Closed) => {}
-        }
 
-        let status = loop {
-            if let Some(status) = compositor.try_wait().context("cannot wait for the compositor")? {
-                break status;
+            let ready = match compositor.stdout.take() {
+                Some(stdout) => wait_for_ready(stdout, plan.ready_timeout),
+                None => Err(ReadyError::Closed),
+            };
+            match ready {
+                Ok(ready) => {
+                    tracing::info!(
+                        "compositor ready on {} (control socket {})",
+                        ready.wayland_display,
+                        ready.socket.display()
+                    );
+                    // Autostarted clients keep their environment, so restarts keep the socket name.
+                    start.socket.get_or_insert_with(|| ready.wayland_display.clone());
+                    client_env = plan.env.clone();
+                    client_env.set("WAYLAND_DISPLAY", ready.wayland_display);
+                    client_env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
+                    update_activation_environment(&client_env);
+                    target_started |= start_systemd_target(&client_env);
+                    if let Some(autostart) = autostart.take() {
+                        for launch in autostart() {
+                            children.spawn(&launch, &client_env);
+                        }
+                    }
+                }
+                Err(ReadyError::Timeout) => {
+                    tracing::error!(
+                        "compositor didn't report readiness within {:?}; stopping it",
+                        plan.ready_timeout
+                    );
+                    let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+                }
+                Err(ReadyError::Closed) => {}
             }
-            children.reap();
-            std::thread::sleep(POLL);
-        };
-        shared.compositor_pid.store(0, Ordering::SeqCst);
-        children.terminate(CHILD_GRACE);
 
-        match classify_exit(status, shared.shutdown.load(Ordering::SeqCst)) {
-            Outcome::Shutdown => {
+            let status = loop {
+                if let Some(status) =
+                    compositor.try_wait().context("cannot wait for the compositor")?
+                {
+                    break status;
+                }
+                children.reap();
+                std::thread::sleep(POLL);
+            };
+            shared.compositor_pid.store(0, Ordering::SeqCst);
+
+            if classify_exit(status, shared.shutdown.load(Ordering::SeqCst)) == Outcome::Shutdown {
                 tracing::info!("compositor exited ({status}); ending the session");
                 break ExitCode::SUCCESS;
             }
-            Outcome::Crashed if plan.lock_marker.as_deref().is_some_and(Path::exists) => {
-                tracing::error!(
-                    "compositor exited ({status}) while the screen was locked; ending the session"
-                );
-                break ExitCode::FAILURE;
-            }
-            Outcome::Crashed => match policy.on_crash(Instant::now()) {
-                CrashDecision::Restart => {
-                    tracing::warn!("compositor exited unexpectedly ({status}); restarting it")
+            let marker_exists = plan.lock_marker.as_deref().is_some_and(Path::exists);
+            match after_crash(&mut policy, Instant::now(), marker_exists, plan.compositor.can_lock)
+            {
+                AfterCrash::Restart { locked } => {
+                    tracing::warn!(
+                        locked,
+                        "compositor exited unexpectedly ({status}); restarting it"
+                    );
+                    start.locked = locked;
                 }
-                CrashDecision::GiveUp => {
+                AfterCrash::EndLocked => {
+                    tracing::error!(
+                        "compositor exited ({status}) while the screen was locked; ending the session"
+                    );
+                    break ExitCode::FAILURE;
+                }
+                AfterCrash::GiveUp => {
                     tracing::error!("compositor crashed too often ({status}); giving up");
                     break ExitCode::FAILURE;
                 }
-            },
-        }
-    };
+            }
+        })
+    })();
+    children.terminate(CHILD_GRACE);
 
     if target_started {
         let mut stop = Command::new("systemctl");
         stop.args(["--user", "stop", SESSION_TARGET]);
         run_helper(stop, &client_env);
     }
-    Ok(code)
+    result
 }
 
 fn forward_signals(shared: Arc<Shared>) -> anyhow::Result<()> {
@@ -555,15 +607,36 @@ mod tests {
     fn compositor_doesnt_get_the_client_environment() {
         let mut env = SessionEnv::default();
         env.set("XDG_CURRENT_DESKTOP", "Nimbus");
-        let plan = SessionPlan {
-            compositor: CompositorCommand { program: "nimbus-compositor".into(), args: vec![] },
-            env,
-            autostart: Box::new(Vec::new),
-            ready_timeout: Duration::from_secs(1),
-            lock_marker: None,
+        let compositor = CompositorCommand {
+            program: "nimbus-compositor".into(),
+            args: vec![],
+            socket: None,
+            can_lock: true,
         };
-        let command = compositor_command(&plan);
+        let command = compositor_command(&compositor, &env, &Start::default());
         let names: Vec<_> = command.get_envs().map(|(name, _)| name.to_owned()).collect();
         assert_eq!(names, [OsString::from("XDG_CURRENT_DESKTOP")]);
+        assert_eq!(command.get_args().count(), 0);
+
+        let restart = Start { socket: Some("wayland-2".into()), locked: true };
+        let args: Vec<_> = compositor_command(&compositor, &env, &restart)
+            .get_args()
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(args, ["--socket", "wayland-2", "--locked"]);
+    }
+
+    #[test]
+    fn crashes_while_locked_restart_locked() {
+        let now = Instant::now();
+        let mut policy = RestartPolicy::default();
+        assert_eq!(
+            after_crash(&mut policy, now, false, true),
+            AfterCrash::Restart { locked: false }
+        );
+        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::Restart { locked: true });
+        assert_eq!(after_crash(&mut policy, now, true, false), AfterCrash::EndLocked);
+        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::Restart { locked: true });
+        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::GiveUp);
     }
 }

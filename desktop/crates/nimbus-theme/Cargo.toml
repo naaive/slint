@@ -6,11 +6,20 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The `headless` module: off-screen rendering with the software renderer, for screenshots.
+headless = ["dep:slint", "dep:png"]
+
 [dependencies]
 nimbus-config = { workspace = true }
+slint = { workspace = true, optional = true, features = ["renderer-software", "software-renderer-systemfonts"] }
+png = { version = "0.18", optional = true }
 
 [dev-dependencies]
+# Enables `headless` for the screenshot tests.
+nimbus-theme = { path = ".", features = ["headless"] }
 slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
 slint-interpreter = { path = "../../../internal/interpreter", default-features = false, features = ["std", "compat-1-18", "renderer-software"] }
 spin_on = "0.1"
 png = "0.18"
+tempfile = { workspace = true }

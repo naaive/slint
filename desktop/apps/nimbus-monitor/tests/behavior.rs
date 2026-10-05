@@ -9,6 +9,7 @@ use std::time::Duration;
 use nimbus_monitor::app::{Controller, Request};
 use nimbus_monitor::core::prefs::{Page, Prefs};
 use nimbus_monitor::core::rates::RateTracker;
+use nimbus_monitor::core::snapshot::RawSample;
 use nimbus_monitor::sampler::{ProcessSignal, SampleSource, SamplerEvent, SignalError, Source};
 use nimbus_monitor::{AppWindow, PendingSignal};
 use slint::Model;
@@ -50,7 +51,14 @@ impl Fixture {
     }
 
     fn tick(&mut self) {
-        let snapshot = self.rates.update(self.source.sample());
+        self.tick_with(|_| {});
+    }
+
+    /// Delivers the next sample after `change` edits it.
+    fn tick_with(&mut self, change: impl FnOnce(&mut RawSample)) {
+        let mut sample = self.source.sample();
+        change(&mut sample);
+        let snapshot = self.rates.update(sample);
         self.controller.handle(SamplerEvent::Snapshot(Box::new(snapshot)));
     }
 
@@ -175,4 +183,42 @@ fn resources_and_interval() {
     assert_eq!(f.saved().interval_ms, 10_000);
     f.ui.invoke_page_selected(2);
     assert_eq!(f.saved().page, Page::FileSystems);
+}
+
+/// Gives the process with `pid` a new start time, as if the PID now belonged to another process.
+fn reuse_pid(sample: &mut RawSample, pid: u32) {
+    for process in sample.processes.iter_mut().filter(|p| p.key.pid == pid) {
+        process.key.start_time += 5000;
+    }
+}
+
+#[test]
+fn confirmation_closes_when_the_process_exits() {
+    let mut f = Fixture::new(Prefs::default());
+    f.ui.invoke_select(2301);
+    f.ui.invoke_request_signal(PendingSignal::Kill);
+    assert_eq!(f.ui.get_pending(), PendingSignal::Kill);
+    f.tick_with(|sample| reuse_pid(sample, 2301));
+    assert_eq!(f.ui.get_pending(), PendingSignal::None);
+    assert!(f.ui.get_process_status().contains("exited"));
+    f.ui.invoke_confirm_signal();
+    assert!(f.requests.borrow().is_empty(), "{:?}", f.requests.borrow());
+}
+
+#[test]
+fn stop_and_continue_skip_a_reused_pid() {
+    let mut f = Fixture::new(Prefs::default());
+    f.ui.invoke_select(2301);
+    f.tick_with(|sample| reuse_pid(sample, 2301));
+    f.ui.invoke_stop_selected();
+    f.ui.invoke_continue_selected();
+    assert!(f.requests.borrow().is_empty(), "{:?}", f.requests.borrow());
+
+    f.ui.invoke_select(2301);
+    f.ui.invoke_stop_selected();
+    let requests = f.requests.borrow();
+    let [Request::Signal(key, ProcessSignal::Stop)] = requests.as_slice() else {
+        panic!("unexpected {requests:?}")
+    };
+    assert_eq!((key.pid, key.start_time), (2301, 1004 + 5000));
 }

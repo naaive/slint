@@ -8,29 +8,17 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use nimbus_services::ServiceEvent;
 use nimbus_shell::{Osd, Popup, Shell, ShellAction};
-use slint::platform::software_renderer::{
-    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
-};
-use slint::platform::{Platform, WindowAdapter};
-use slint::{PhysicalSize, PlatformError};
+use nimbus_theme::headless::{Frame, Headless};
+use slint::Rgb8Pixel;
+use slint::platform::software_renderer::PremultipliedRgbaColor;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
-
-struct HeadlessPlatform {
-    window: Rc<MinimalSoftwareWindow>,
-}
-
-impl Platform for HeadlessPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.window.clone())
-    }
-}
 
 /// A soft diagonal gradient with two glows, standing in for a wallpaper.
 fn backdrop(x: u32, y: u32) -> [f32; 3] {
@@ -50,15 +38,10 @@ fn backdrop(x: u32, y: u32) -> [f32; 3] {
     rgb
 }
 
-fn render(window: &MinimalSoftwareWindow) -> Vec<[u8; 3]> {
-    slint::platform::update_timers_and_animations();
-    let mut buffer = vec![PremultipliedRgbaColor::default(); (WIDTH * HEIGHT) as usize];
-    window.request_redraw();
-    let drawn = window.draw_if_needed(|renderer| {
-        renderer.render(&mut buffer, WIDTH as usize);
-    });
-    assert!(drawn, "the window didn't redraw");
-    buffer
+/// Renders the shell over [`backdrop`].
+fn render(headless: &Headless) -> Frame {
+    let pixels = headless
+        .render_pixels::<PremultipliedRgbaColor>()
         .iter()
         .enumerate()
         .map(|(i, p)| {
@@ -66,39 +49,33 @@ fn render(window: &MinimalSoftwareWindow) -> Vec<[u8; 3]> {
             let under = backdrop(x, y);
             let alpha = f32::from(p.alpha) / 255.0;
             let over = [p.red, p.green, p.blue];
-            std::array::from_fn(|c| {
+            let [r, g, b] = std::array::from_fn(|c| {
                 (f32::from(over[c]) + under[c] * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8
-            })
+            });
+            Rgb8Pixel { r, g, b }
         })
-        .collect()
+        .collect();
+    Frame { width: WIDTH, height: HEIGHT, pixels }
 }
 
-fn pixel(buffer: &[[u8; 3]], x: u32, y: u32) -> [u8; 3] {
-    buffer[(y * WIDTH + x) as usize]
-}
-
-fn differs_from_backdrop(buffer: &[[u8; 3]], x: u32, y: u32) -> bool {
+fn differs_from_backdrop(frame: &Frame, x: u32, y: u32) -> bool {
     let expected = backdrop(x, y);
-    pixel(buffer, x, y).iter().zip(expected).any(|(a, b)| (f32::from(*a) - b).abs() > 6.0)
+    let (r, g, b) = frame.pixel(x, y).expect("the pixel is inside the frame");
+    [r, g, b].iter().zip(expected).any(|(a, b)| (f32::from(*a) - b).abs() > 6.0)
 }
 
-fn save(name: &str, buffer: &[[u8; 3]]) {
+fn save(name: &str, frame: &Frame) {
     let Some(_) = std::env::var_os("NIMBUS_UPDATE_SCREENSHOTS") else {
         return;
     };
-    let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/screenshots");
-    std::fs::create_dir_all(&dir).expect("screenshot directory can be created");
-    let bytes: Vec<u8> = buffer.iter().flatten().copied().collect();
-    let image = image::RgbImage::from_raw(WIDTH, HEIGHT, bytes).expect("buffer matches the size");
-    image.save(dir.join(format!("shell-{name}.png"))).expect("PNG encodes");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../docs/screenshots/shell-{name}.png"));
+    frame.write_png(&path).expect("the screenshot is written");
 }
 
 #[test]
 fn shell_states_render() {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(HeadlessPlatform { window: window.clone() }))
-        .expect("no platform was set on this thread");
-    window.set_size(PhysicalSize::new(WIDTH, HEIGHT));
+    let headless = Headless::install(WIDTH, HEIGHT).expect("no platform was set on this thread");
 
     let dir = tempfile::tempdir().expect("temporary directory");
     let (apps, icons) = support::apps(dir.path()).expect("mock apps are written");
@@ -117,26 +94,26 @@ fn shell_states_render() {
     shell.show().expect("the window shows");
 
     // Idle: the panel along the top and the dock at the bottom, the rest showing the wallpaper.
-    let idle = render(&window);
+    let idle = render(&headless);
     assert!(differs_from_backdrop(&idle, 640, 10), "the panel draws");
     assert!(differs_from_backdrop(&idle, 640, HEIGHT - 30), "the dock draws");
     assert!(!differs_from_backdrop(&idle, 640, 400), "the middle stays clear");
     save("idle", &idle);
 
     shell.toggle_launcher();
-    let launcher = render(&window);
+    let launcher = render(&headless);
     assert!(differs_from_backdrop(&launcher, 640, 400), "the launcher covers the output");
     save("launcher", &launcher);
     shell.toggle_launcher();
 
     shell.component().invoke_popup_requested(Popup::QuickSettings);
-    let quick_settings = render(&window);
+    let quick_settings = render(&headless);
     assert!(differs_from_backdrop(&quick_settings, WIDTH - 200, 200), "quick settings draw");
     save("quick-settings", &quick_settings);
     shell.component().invoke_popup_requested(Popup::None);
 
     shell.toggle_overview();
-    let overview = render(&window);
+    let overview = render(&headless);
     assert!(differs_from_backdrop(&overview, 640, 400), "the overview covers the output");
     save("overview", &overview);
     shell.toggle_overview();
@@ -145,20 +122,20 @@ fn shell_states_render() {
         shell.handle_service_event(&ServiceEvent::Notification(notification));
     }
     shell.show_osd(Osd::Volume { level: 0.62, muted: false });
-    let toasts = render(&window);
+    let toasts = render(&headless);
     assert!(differs_from_backdrop(&toasts, WIDTH - 200, 80), "toasts draw");
     save("toast-osd", &toasts);
 
     // Lets the OSD time out; toasts step aside while a popup is open.
     std::thread::sleep(std::time::Duration::from_millis(1600));
     shell.component().invoke_popup_requested(Popup::Calendar);
-    let calendar = render(&window);
+    let calendar = render(&headless);
     assert!(differs_from_backdrop(&calendar, 640, 300), "the calendar draws");
     save("calendar", &calendar);
     shell.component().invoke_popup_requested(Popup::None);
 
     shell.set_locked(true);
-    let lock = render(&window);
+    let lock = render(&headless);
     assert!(
         (0..WIDTH).step_by(40).all(|x| differs_from_backdrop(&lock, x, HEIGHT / 2)),
         "the lock screen is opaque"
@@ -170,7 +147,7 @@ fn shell_states_render() {
     light.appearance.color_scheme = nimbus_config::ColorScheme::Light;
     shell.set_config(&light);
     shell.component().invoke_popup_requested(Popup::QuickSettings);
-    let light_settings = render(&window);
+    let light_settings = render(&headless);
     save("quick-settings-light", &light_settings);
 
     assert!(actions.borrow().is_empty(), "rendering emits no actions: {:?}", actions.borrow());

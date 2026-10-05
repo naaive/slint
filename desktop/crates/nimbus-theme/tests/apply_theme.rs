@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-use std::rc::Rc;
-
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
-use slint::{Color, PlatformError};
+use nimbus_theme::headless::Headless;
+use slint::Color;
 
 // Compiling the gallery here also checks that the whole library works with the Rust code generator.
 slint::slint! {
@@ -33,14 +30,6 @@ mod scoped {
     }
 }
 
-struct HeadlessPlatform(Rc<MinimalSoftwareWindow>);
-
-impl Platform for HeadlessPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
-}
-
 fn settings() -> nimbus_theme::ThemeSettings {
     nimbus_theme::ThemeSettings {
         dark: false,
@@ -54,9 +43,7 @@ fn settings() -> nimbus_theme::ThemeSettings {
 
 #[test]
 fn apply_theme_sets_every_input() {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(HeadlessPlatform(window)))
-        .expect("no platform was set on this thread");
+    let _headless = Headless::install(1, 1).expect("no platform was set on this thread");
 
     let probe = Probe::new().expect("Probe instantiates");
     nimbus_theme::apply_theme!(probe, settings());

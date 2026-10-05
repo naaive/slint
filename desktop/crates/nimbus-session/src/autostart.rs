@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Session autostart of XDG autostart entries.
-//! The compositor runs the configuration's `autostart` commands itself.
+//! Session autostart: the configuration's `autostart` commands and XDG autostart entries.
 //!
 //! Follows the Desktop Application Autostart Specification and the parts of the
 //! Desktop Entry Specification it relies on.
@@ -225,6 +224,19 @@ pub fn discover(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
         .collect()
 }
 
+/// Runs each of the configuration's `autostart` command lines through `sh -c`.
+pub fn config_launches(commands: &[String]) -> Vec<Launch> {
+    commands
+        .iter()
+        .filter(|command| !command.trim().is_empty())
+        .map(|command| Launch {
+            label: command.clone(),
+            argv: vec!["/bin/sh".into(), "-c".into(), command.clone()],
+            working_dir: None,
+        })
+        .collect()
+}
+
 /// Lists the XDG entries in `dirs` that apply.
 pub fn plan(
     dirs: &[PathBuf],
@@ -426,6 +438,19 @@ mod tests {
             Err(SkipReason::TryExecMissing("missing-tool".into()))
         );
         assert!(evaluate(&try_exec, &["Nimbus"], |_| true).is_ok());
+    }
+
+    #[test]
+    fn config_commands_run_through_the_shell() {
+        let launches = config_launches(&["nm-applet --indicator".into(), "  ".into()]);
+        assert_eq!(
+            launches,
+            vec![Launch {
+                label: "nm-applet --indicator".into(),
+                argv: vec!["/bin/sh".into(), "-c".into(), "nm-applet --indicator".into()],
+                working_dir: None,
+            }]
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //!
 //! Edits run in order on one background thread, so the UI never waits for the disk
 //! and a later edit never loses to an earlier one.
+//! Each edit goes through `nimbus_config::update`, so it doesn't lose the Settings app's concurrent edits.
 //! The compositor watches the file and pushes the new configuration back through `Shell::set_config`.
 
 use std::path::PathBuf;
@@ -61,16 +62,7 @@ fn spawn_writer() -> Option<mpsc::Sender<(Option<PathBuf>, Edit)>> {
                     continue;
                 }
             };
-            let mut config = match Config::load_from(&path) {
-                Ok(config) => config,
-                Err(err) => {
-                    // Saving over a file that doesn't parse would discard the user's other settings.
-                    tracing::warn!("Not saving the configuration: {err}");
-                    continue;
-                }
-            };
-            edit(&mut config);
-            if let Err(err) = config.save_to(&path) {
+            if let Err(err) = nimbus_config::update(&path, edit) {
                 tracing::warn!("Can't save the configuration: {err}");
             }
         }
@@ -113,6 +105,31 @@ mod tests {
         writer.edit(|c| c.appearance.color_scheme = ColorScheme::Dark);
         assert!(wait_for(|| Config::load_from(&path).is_ok_and(|c| {
             c.appearance.color_scheme == ColorScheme::Dark && c.favorites == ["firefox", "foot"]
+        })));
+    }
+
+    #[test]
+    fn edits_keep_concurrent_changes_from_other_writers() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("config.toml");
+        let mut writer = ConfigWriter::new();
+        writer.set_path(Some(path.clone()));
+        let other = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for i in 0..20 {
+                    nimbus_config::update(&path, |c| c.autostart.push(format!("other-{i}")))
+                        .expect("the other writer saves");
+                }
+            })
+        };
+        for i in 0..20 {
+            writer.edit(move |c| c.favorites.push(format!("pin-{i}")));
+        }
+        other.join().expect("the other writer finishes");
+        assert!(wait_for(|| Config::load_from(&path).is_ok_and(|c| {
+            c.autostart.len() == 20
+                && c.favorites.iter().filter(|f| f.starts_with("pin-")).count() == 20
         })));
     }
 

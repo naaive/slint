@@ -471,6 +471,13 @@ mod tests {
     }
 
     #[test]
+    fn shipped_service_checks_accounts() {
+        let shipped = include_str!("../../../data/pam.d/nimbus");
+        assert!(has_account_section(shipped));
+        assert!(shipped.lines().any(|line| line.split_whitespace().next() == Some("auth")));
+    }
+
+    #[test]
     fn service_falls_back_to_login() {
         let service = service_name();
         assert!(service == SERVICE || service == FALLBACK_SERVICE);

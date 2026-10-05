@@ -2930,6 +2930,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "notify",
+ "rustix 1.1.5",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -2994,7 +2995,6 @@ dependencies = [
  "i-slint-core",
  "nimbus-config",
  "nimbus-theme",
- "png",
  "rustix 1.1.5",
  "serde",
  "slint",
@@ -3091,7 +3091,6 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "arboard",
- "dirs",
  "fontdb",
  "futures-channel",
  "futures-util",
@@ -3099,7 +3098,6 @@ dependencies = [
  "i-slint-core",
  "nimbus-config",
  "nimbus-theme",
- "png",
  "rustix 1.1.5",
  "serde",
  "slint",
@@ -3118,10 +3116,12 @@ name = "nimbus-theme"
 version = "0.1.0"
 dependencies = [
  "nimbus-config",
+ "nimbus-theme",
  "png",
  "slint",
  "slint-interpreter",
  "spin_on",
+ "tempfile",
 ]
 
 [[package]]

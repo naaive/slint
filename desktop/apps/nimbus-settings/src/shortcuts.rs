@@ -5,47 +5,17 @@
 
 use std::collections::BTreeMap;
 
+use nimbus_config::chord::Chord;
+pub use nimbus_config::chord::Modifiers;
 use nimbus_config::{Action, Keybindings};
 use xkbcommon::xkb;
 
-/// Modifiers in the canonical order of a chord string.
-const MODIFIERS: [&str; 4] = ["Super", "Ctrl", "Alt", "Shift"];
-
-fn modifier_name(token: &str) -> Option<&'static str> {
-    match token.to_ascii_lowercase().as_str() {
-        "super" | "logo" | "mod4" | "win" | "meta" => Some("Super"),
-        "ctrl" | "control" => Some("Ctrl"),
-        "alt" | "mod1" => Some("Alt"),
-        "shift" => Some("Shift"),
-        _ => None,
-    }
-}
-
 /// Rewrites a chord such as `shift+super+q` as `Super+Shift+Q`, using the compositor's grammar.
 ///
-/// Returns `None` unless the chord is modifiers followed by one XKB keysym name.
-/// `Super++` binds the plus key.
+/// Returns `None` unless the chord parses with [`Chord::parse`] and its key is an XKB keysym name.
 pub fn normalize_chord(chord: &str) -> Option<String> {
-    let parts: Vec<&str> = chord.split('+').map(str::trim).collect();
-    let (key, modifiers) = parts.split_last()?;
-    let (key, modifiers) = match (key.is_empty(), modifiers.split_last()) {
-        (true, Some((&"", rest))) => ("plus", rest),
-        _ => (*key, modifiers),
-    };
-    if key.is_empty() || modifier_name(key).is_some() {
-        return None;
-    }
-    let mut mods = [false; 4];
-    for token in modifiers {
-        let name = modifier_name(token)?;
-        let slot = MODIFIERS.iter().position(|m| *m == name)?;
-        mods[slot] = true;
-    }
-    let key = normalize_key(key)?;
-    let mut parts: Vec<&str> =
-        MODIFIERS.iter().zip(mods).filter(|(_, on)| *on).map(|(m, _)| *m).collect();
-    parts.push(&key);
-    Some(parts.join("+"))
+    let Chord { modifiers, key } = Chord::parse(chord).ok()?;
+    Some(Chord { modifiers, key: normalize_key(&key)? }.to_string())
 }
 
 /// Resolves a keysym name the way the compositor does, exactly first and then ignoring case,
@@ -82,15 +52,6 @@ fn keysym_name(sym: xkb::Keysym) -> String {
     }
 }
 
-/// The modifier state of a key event.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub meta: bool,
-}
-
 /// Builds a chord string from a Slint key event's `text` and modifiers.
 ///
 /// Returns `None` for modifier-only presses and keys without a keysym name.
@@ -101,22 +62,7 @@ pub fn chord_from_key_event(text: &str, modifiers: Modifiers) -> Option<String> 
     if chars.next().is_some() {
         return None;
     }
-    let key = keysym_for(c)?;
-    let mut parts: Vec<&str> = Vec::with_capacity(5);
-    if modifiers.meta {
-        parts.push("Super");
-    }
-    if modifiers.ctrl {
-        parts.push("Ctrl");
-    }
-    if modifiers.alt {
-        parts.push("Alt");
-    }
-    if modifiers.shift {
-        parts.push("Shift");
-    }
-    parts.push(&key);
-    Some(parts.join("+"))
+    Some(Chord { modifiers, key: keysym_for(c)? }.to_string())
 }
 
 /// The XKB keysym name for a character of Slint's key event text.
@@ -531,8 +477,8 @@ pub fn bind(
 mod tests {
     use super::*;
 
-    fn mods(meta: bool, ctrl: bool, alt: bool, shift: bool) -> Modifiers {
-        Modifiers { ctrl, alt, shift, meta }
+    fn mods(logo: bool, ctrl: bool, alt: bool, shift: bool) -> Modifiers {
+        Modifiers { logo, ctrl, alt, shift }
     }
 
     #[test]

@@ -126,9 +126,6 @@ export global Prefs {
 
     in property <[string]> lock-choices;
     in-out property <int> lock-index;
-    in property <[string]> blank-choices;
-    in-out property <int> blank-index;
-    in-out property <bool> suspend-on-lid-close: true;
 
     // Generic edits, keyed by setting name such as "panel.height".
     callback set-bool(key: string, value: bool);

@@ -22,14 +22,14 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 
 | Crate | Kind | Responsibility |
 | --- | --- | --- |
-| `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client. |
-| `nimbus-config` | lib | TOML configuration schema with defaults, atomic save, and file watching. |
+| `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker. |
+| `nimbus-config` | lib | TOML configuration schema with defaults, atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
-| `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`. |
+| `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, shell hosting, control socket. |
-| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor; `nimbusctl` is the command-line client. |
+| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and runs autostart; `nimbusctl` is the command-line client. |
 | `nimbus-settings` | app | System settings, editing `nimbus-config`. |
 | `nimbus-files` | app | File manager. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
@@ -44,7 +44,9 @@ nimbus-compositor ──> nimbus-shell ──> nimbus-theme ──> nimbus-confi
         │                  ├──> nimbus-xdg
         │                  └──> nimbus-services
         └──> (all of the above)
-apps ──> nimbus-theme, nimbus-config
+apps ──> nimbus-theme[headless], nimbus-config
+nimbus-files ──> nimbus-xdg
+nimbus-settings ──> nimbus-ipc
 nimbus-session ──> nimbus-ipc, nimbus-config
 ```
 
@@ -53,6 +55,7 @@ nimbus-session ──> nimbus-ipc, nimbus-config
 Modules in `crates/nimbus-compositor/src`:
 
 - `main.rs`: argument parsing (`--backend winit|udev|headless`), logging, startup.
+- `lock_marker.rs`: keeps the lock marker in step with the lock state; see [Locking](#locking).
 - `state.rs`: the `Nimbus` state struct and Smithay handler implementations
   (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, ext and wlr data control,
   output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale).
@@ -63,6 +66,7 @@ Modules in `crates/nimbus-compositor/src`:
   maximize/fullscreen/minimize, interactive move and resize, and the shell's exclusive zone.
   Layouts implement a `Layout` trait so more can be added.
 - `input.rs`: keyboard shortcuts from `nimbus-config`, pointer and keyboard routing between the shell and clients.
+- `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
 - `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform`,
   creates one `MinimalSoftwareWindow` per output, renders damaged regions into a `MemoryRenderBuffer`,
   forwards input inside `Shell::input_region()`, and maps `ShellAction`s to compositor requests, services, and launches.
@@ -74,7 +78,7 @@ Modules in `crates/nimbus-compositor/src`:
 Command line, which `nimbus-session` relies on:
 
 ```text
-nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell]
+nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell | --locked]
 ```
 
 When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
@@ -107,6 +111,23 @@ Surfaces:
   and the compositor answers with `Shell::set_locked(false)` or `Shell::unlock_failed()`.
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
+## Locking
+
+The session locks through the shell's lock screen, or through an `ext-session-lock` client.
+While it's locked, the compositor draws only the lock screen over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
+`Request::GetLockState` reports the lock state over the control socket.
+
+The lock marker, `$XDG_RUNTIME_DIR/nimbus/locked` (`nimbus_ipc::lock_marker_path`), exists while the session is locked.
+The compositor creates it, with mode 0600 in a 0700 directory, as a lock starts and before any locked frame.
+It removes the marker once the session unlocks.
+A compositor started with `--locked`, or with the marker present, starts locked before it creates any output.
+`--locked` can't be combined with `--no-shell`.
+
+`nimbus-session` deletes a stale marker when the session starts.
+When the compositor crashes with the marker present, the session restarts it with `--locked`.
+Without the shell, it ends the session instead.
+The marker is per runtime directory, so a nested compositor in the same `XDG_RUNTIME_DIR` shares it with the real session.
+
 ## Theming
 
 `nimbus-theme` owns all colors, spacing, radii, typography, and motion as a `Theme` global,
@@ -119,17 +140,28 @@ Every Nimbus UI imports it, so the shell and apps look like one product.
 `$XDG_CONFIG_HOME/nimbus/config.toml`; see `nimbus-config` for the schema.
 The compositor watches the file and applies changes live, so the Settings app only writes the file.
 The shell saves its own changes, such as the dark style toggle and dock pins, to the file the compositor was started with.
+The shell and Settings both write through `nimbus_config::update` or `update_with`,
+which hold a lock on `config.toml.lock` from load to save,
+so neither loses the other's changes.
+Settings and the compositor parse key chords with the same `nimbus_config::chord` grammar.
 
 ## Sessions and Logout
 
 `nimbus-session` treats a compositor exit status of 0 as a logout and anything else as a crash to restart.
+A restarted compositor reuses the first one's Wayland socket name, so clients keep a valid `WAYLAND_DISPLAY`.
+
+`nimbus-session` owns autostart, and runs it once per session, after the first compositor reports readiness.
+It runs each `config.autostart` command through `/bin/sh -c`, then the XDG autostart entries.
+Each autostarted process leads its own process group.
+The session terminates these groups when it ends, for any reason, but not when the compositor restarts.
 Logging out asks logind to end the session.
 Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested` and the compositor exits with status 0.
 
 ## Testing
 
 - Domain crates have unit tests with fixture directories.
-- The shell has tests on Slint's testing backend, and renders reference screenshots with the software renderer.
+- The shell has tests on Slint's testing backend.
+  The shell and apps render reference screenshots off screen through `nimbus_theme::headless`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   The shell tests run it with the real shell and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle over IPC, maximized windows stay below the panel, and notifications show toasts.

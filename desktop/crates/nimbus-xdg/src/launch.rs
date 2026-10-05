@@ -116,11 +116,13 @@ fn commands(
             return Err(LaunchError::EmptyExec(entry.id.clone()));
         };
         let mut command = Command::new(program);
+        // Standard error stays inherited, so launched apps log next to the compositor.
+        // Standard output doesn't, because `nimbus-session` reads the compositor's for its ready line.
         command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .process_group(0);
         if let Some(dir) = working_dir {
             command.current_dir(dir);

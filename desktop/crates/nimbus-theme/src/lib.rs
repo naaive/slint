@@ -15,6 +15,9 @@ use std::time::{Duration, Instant};
 
 use nimbus_config::{Appearance, ColorScheme};
 
+#[cfg(feature = "headless")]
+pub mod headless;
+
 /// Library paths for `slint_build::CompilerConfiguration::with_library_paths`.
 pub fn library_paths() -> HashMap<String, PathBuf> {
     HashMap::from([("nimbus".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"))])

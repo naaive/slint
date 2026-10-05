@@ -422,6 +422,22 @@ impl Source for SystemSource {
     }
 
     fn signal(&mut self, key: ProcessKey, signal: ProcessSignal) -> Result<(), SignalError> {
+        let raw = i32::try_from(key.pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .ok_or(SignalError::Gone)?;
+        let errno = |err: rustix::io::Errno| match err {
+            rustix::io::Errno::SRCH => SignalError::Gone,
+            rustix::io::Errno::PERM => SignalError::PermissionDenied,
+            other => SignalError::Other(other.to_string()),
+        };
+        // A pidfd pins the process, so the PID can't be reused between the check below and the signal.
+        // Kernels before 5.3 lack `pidfd_open`; they fall back to `kill`.
+        let pidfd = match rustix::process::pidfd_open(raw, rustix::process::PidfdFlags::empty()) {
+            Ok(fd) => Some(fd),
+            Err(rustix::io::Errno::SRCH) => return Err(SignalError::Gone),
+            Err(_) => None,
+        };
         let pid = Pid::from_u32(key.pid);
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
@@ -432,15 +448,11 @@ impl Source for SystemSource {
         if self.system.process(pid).is_none_or(|p| p.start_time() != key.start_time) {
             return Err(SignalError::Gone);
         }
-        let raw = i32::try_from(key.pid)
-            .ok()
-            .and_then(rustix::process::Pid::from_raw)
-            .ok_or(SignalError::Gone)?;
-        rustix::process::kill_process(raw, signal.to_rustix()).map_err(|err| match err {
-            rustix::io::Errno::SRCH => SignalError::Gone,
-            rustix::io::Errno::PERM => SignalError::PermissionDenied,
-            other => SignalError::Other(other.to_string()),
-        })
+        match pidfd {
+            Some(fd) => rustix::process::pidfd_send_signal(fd, signal.to_rustix()),
+            None => rustix::process::kill_process(raw, signal.to_rustix()),
+        }
+        .map_err(errno)
     }
 }
 
@@ -743,7 +755,13 @@ mod tests {
         let sample = source.sample();
         let key = sample.processes.iter().find(|p| p.key.pid == pid).unwrap().key;
         let stale = ProcessKey { start_time: key.start_time + 1000, ..key };
-        assert_eq!(source.signal(stale, ProcessSignal::End), Err(SignalError::Gone));
+        for signal in
+            [ProcessSignal::Stop, ProcessSignal::Continue, ProcessSignal::End, ProcessSignal::Kill]
+        {
+            assert_eq!(source.signal(stale, signal), Err(SignalError::Gone), "{signal:?}");
+        }
+        assert_eq!(source.signal(key, ProcessSignal::Stop), Ok(()));
+        assert_eq!(source.signal(key, ProcessSignal::Continue), Ok(()));
         assert_eq!(source.signal(key, ProcessSignal::End), Ok(()));
         let status = child.wait().unwrap();
         assert!(!status.success());

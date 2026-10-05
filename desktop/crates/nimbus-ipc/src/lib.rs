@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Compositor-assigned toplevel identifier, unique for the compositor's lifetime.
 pub type WindowId = u64;
@@ -112,6 +112,8 @@ pub enum Request {
     ToggleLauncher,
     ToggleOverview,
     Lock,
+    /// Ask whether a lock screen is up; the answer is [`Response::LockState`].
+    GetLockState,
     ReloadConfig,
     /// Save a PNG of an output: the named one, or the one with the pointer.
     /// With a `path`, the compositor answers once the file is written;
@@ -130,6 +132,7 @@ pub enum Request {
 pub enum Response {
     Ok,
     State(CompositorState),
+    LockState { locked: bool },
     Error { message: String },
 }
 
@@ -166,7 +169,20 @@ pub fn socket_path() -> Option<PathBuf> {
     }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
-    Some(PathBuf::from(runtime).join(format!("nimbus-{display}.sock")))
+    Some(socket_path_for(Path::new(&runtime), &display))
+}
+
+/// Returns the control socket of the compositor serving the Wayland socket `display` in `runtime_dir`.
+pub fn socket_path_for(runtime_dir: &Path, display: &str) -> PathBuf {
+    runtime_dir.join(format!("nimbus-{display}.sock"))
+}
+
+/// Returns the file that exists while the compositor shows a lock screen, in `runtime_dir`.
+///
+/// `nimbus-session` restarts a compositor that exits while this file exists with `--locked`,
+/// so a crash never unlocks the session.
+pub fn lock_marker_path(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("nimbus").join("locked")
 }
 
 /// Writes `message` as one JSON line and flushes.
@@ -248,6 +264,24 @@ mod tests {
         let back: Request =
             serde_json::from_str(r#"{"request":"screenshot","path":"/tmp/a.png"}"#).unwrap();
         assert_eq!(back, Request::Screenshot { output: None, path: Some("/tmp/a.png".into()) });
+    }
+
+    #[test]
+    fn runtime_paths() {
+        let runtime = Path::new("/run/user/1000");
+        assert_eq!(
+            socket_path_for(runtime, "wayland-1"),
+            Path::new("/run/user/1000/nimbus-wayland-1.sock")
+        );
+        assert_eq!(lock_marker_path(runtime), Path::new("/run/user/1000/nimbus/locked"));
+    }
+
+    #[test]
+    fn lock_state_wire_format() {
+        let json = serde_json::to_string(&Request::GetLockState).unwrap();
+        assert_eq!(json, r#"{"request":"get-lock-state"}"#);
+        let json = serde_json::to_string(&Response::LockState { locked: true }).unwrap();
+        assert_eq!(json, r#"{"response":"lock-state","locked":true}"#);
     }
 
     #[test]

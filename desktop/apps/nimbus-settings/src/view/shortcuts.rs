@@ -44,7 +44,7 @@ pub(super) fn wire(ui: &AppWindow, with: &With) {
     model.on_reset(move || h(&|i| i.update(|config| config.keybindings = Keybindings::default())));
     let h = with.clone();
     model.on_key_captured(move |text, control, alt, shift, meta| {
-        h(&|i| i.key_captured(&text, Modifiers { ctrl: control, alt, shift, meta }));
+        h(&|i| i.key_captured(&text, Modifiers { logo: meta, ctrl: control, alt, shift }));
     });
     let h = with.clone();
     model.on_capture_kind_chosen(move |index| {

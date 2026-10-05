@@ -85,12 +85,8 @@ impl Inner {
 
         let p = &config.power;
         let lock = settings::timeout_choices(p.lock_after_minutes);
-        let blank = settings::timeout_choices(p.blank_after_minutes);
         prefs.set_lock_index(
             lock.iter().position(|(v, _)| *v == p.lock_after_minutes).unwrap_or(0) as i32,
-        );
-        prefs.set_blank_index(
-            blank.iter().position(|(v, _)| *v == p.blank_after_minutes).unwrap_or(0) as i32,
         );
         {
             let mut state = self.state.borrow_mut();
@@ -99,13 +95,7 @@ impl Inner {
                 prefs.set_lock_choices(strings(lock.into_iter().map(|(_, label)| label)));
                 state.lock_values = lock_values;
             }
-            let blank_values: Vec<u32> = blank.iter().map(|(v, _)| *v).collect();
-            if state.blank_values != blank_values || prefs.get_blank_choices().row_count() == 0 {
-                prefs.set_blank_choices(strings(blank.into_iter().map(|(_, label)| label)));
-                state.blank_values = blank_values;
-            }
         }
-        prefs.set_suspend_on_lid_close(p.suspend_on_lid_close);
 
         self.request_theme(&config);
     }
@@ -248,7 +238,6 @@ impl Inner {
     pub fn choose_timeout(&self, key: &str, index: i32) {
         let values = match key.parse::<Key>() {
             Ok(Key::LockAfter) => self.state.borrow().lock_values.clone(),
-            Ok(Key::BlankAfter) => self.state.borrow().blank_values.clone(),
             _ => {
                 tracing::error!("'{key}' isn't a timeout setting");
                 return;

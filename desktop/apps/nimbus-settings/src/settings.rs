@@ -43,12 +43,10 @@ pub enum Key {
     TapToClick,
     PointerSpeed,
     LockAfter,
-    BlankAfter,
-    SuspendOnLidClose,
 }
 
 impl Key {
-    pub const ALL: [Key; 27] = [
+    pub const ALL: [Key; 25] = [
         Key::ColorScheme,
         Key::Accent,
         Key::Wallpaper,
@@ -74,8 +72,6 @@ impl Key {
         Key::TapToClick,
         Key::PointerSpeed,
         Key::LockAfter,
-        Key::BlankAfter,
-        Key::SuspendOnLidClose,
     ];
 
     pub fn name(self) -> &'static str {
@@ -105,8 +101,6 @@ impl Key {
             Key::TapToClick => "input.tap-to-click",
             Key::PointerSpeed => "input.pointer-speed",
             Key::LockAfter => "power.lock-after",
-            Key::BlankAfter => "power.blank-after",
-            Key::SuspendOnLidClose => "power.suspend-on-lid-close",
         }
     }
 }
@@ -142,7 +136,7 @@ pub const SCALE: (f64, f64) = (1.0, 2.0);
 pub const CORNER_RADIUS: (f64, f64) = (0.0, 24.0);
 pub const REPEAT_DELAY: (u32, u32) = (150, 1000);
 pub const REPEAT_RATE: (u32, u32) = (5, 80);
-/// Presets for the lock and blank timeouts, in minutes; 0 means never.
+/// Presets for the lock timeout, in minutes; 0 means never.
 pub const TIMEOUT_PRESETS: [u32; 8] = [0, 1, 2, 5, 10, 15, 30, 60];
 
 fn clamp_u32(value: i64, (min, max): (u32, u32)) -> u32 {
@@ -231,10 +225,6 @@ pub fn apply(config: &mut Config, key: Key, value: Value) -> Result<(), SettingE
         (Key::LockAfter, Value::Int(i)) => {
             config.power.lock_after_minutes = clamp_u32(i, (0, 24 * 60))
         }
-        (Key::BlankAfter, Value::Int(i)) => {
-            config.power.blank_after_minutes = clamp_u32(i, (0, 24 * 60))
-        }
-        (Key::SuspendOnLidClose, Value::Bool(b)) => config.power.suspend_on_lid_close = b,
         _ => return Err(wrong()),
     }
     Ok(())
@@ -369,6 +359,13 @@ mod tests {
             apply(&mut c, Key::ShowDock, Value::Int(1)),
             Err(SettingError::WrongType { key: "panel.show-dock" })
         );
+        for unimplemented in ["power.blank-after", "power.suspend-on-lid-close"] {
+            assert_eq!(
+                unimplemented.parse::<Key>(),
+                Err(SettingError::UnknownKey(unimplemented.into())),
+                "the compositor ignores {unimplemented}"
+            );
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::{Config, Error};
 use notify::event::{AccessKind, AccessMode};
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -30,10 +30,7 @@ pub fn watch(
     on_change: impl Fn(Config) + Send + 'static,
 ) -> Result<ConfigWatcher, Error> {
     let path = path.to_path_buf();
-    let dir = match path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
+    let dir = crate::parent_dir(&path).to_path_buf();
     let file_name = path.file_name().map(OsString::from).ok_or_else(|| Error::Io {
         path: path.clone(),
         source: std::io::ErrorKind::InvalidInput.into(),

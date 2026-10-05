@@ -8,9 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+pub mod chord;
+mod update;
 mod watch;
+pub use update::{update, update_with};
 pub use watch::{ConfigWatcher, watch};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -176,9 +182,7 @@ impl Default for Input {
     }
 }
 
-/// Maps key chords such as `Super+Shift+Q` to actions.
-///
-/// Modifier names are `Super`, `Ctrl`, `Alt`, and `Shift`; the key is an XKB keysym name.
+/// Maps key chords such as `Super+Shift+Q` to actions; see [`chord`] for their grammar.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Keybindings(pub BTreeMap<String, Action>);
@@ -255,7 +259,10 @@ pub struct Power {
     /// Minutes of inactivity before the screen locks; 0 disables locking.
     pub lock_after_minutes: u32,
     /// Minutes of inactivity before outputs blank; 0 disables blanking.
+    ///
+    /// Reserved: the compositor doesn't blank outputs yet and ignores this value.
     pub blank_after_minutes: u32,
+    /// Reserved: the compositor doesn't handle the lid switch yet and ignores this value.
     pub suspend_on_lid_close: bool,
 }
 
@@ -300,28 +307,55 @@ impl Config {
         Self::load_from(&default_path()?)
     }
 
-    /// Writes atomically through a temporary file next to `path`.
+    /// Writes atomically through a temporary file next to `path`, synced to disk before it replaces `path`.
     ///
     /// When `path` already holds a valid configuration, only the values that differ are rewritten,
     /// so comments and keys this version doesn't know about are kept.
+    /// To change a few values without losing another program's concurrent edits, use [`update`].
     pub fn save_to(&self, path: &Path) -> Result<(), Error> {
         let io = |source| Error::Io { path: path.into(), source };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(io)?;
-        }
+        let dir = parent_dir(path);
+        std::fs::create_dir_all(dir).map_err(io)?;
         let text = toml::to_string_pretty(self)?;
-        let text = match std::fs::read_to_string(path) {
-            Ok(existing) => merge_into(&existing, &text).unwrap_or(text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => text,
+        let (text, permissions) = match std::fs::read_to_string(path) {
+            Ok(existing) => {
+                let permissions = std::fs::metadata(path).map_err(io)?.permissions();
+                (merge_into(&existing, &text).unwrap_or(text), permissions)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (text, std::fs::Permissions::from_mode(0o666))
+            }
             Err(source) => return Err(io(source)),
         };
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text).map_err(io)?;
-        std::fs::rename(&tmp, path).map_err(io)
+        let mut prefix = OsString::from(".");
+        prefix.push(path.file_name().unwrap_or_default());
+        prefix.push(".");
+        let mut tmp = tempfile::Builder::new()
+            .prefix(&prefix)
+            .suffix(".tmp")
+            .permissions(permissions)
+            .tempfile_in(dir)
+            .map_err(io)?;
+        tmp.write_all(text.as_bytes()).map_err(io)?;
+        tmp.as_file().sync_all().map_err(io)?;
+        tmp.persist(path).map_err(|e| io(e.error))?;
+        // Some file systems can't sync a directory; the rename has happened either way.
+        if let Ok(dir) = std::fs::File::open(dir) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<(), Error> {
         self.save_to(&default_path()?)
+    }
+}
+
+/// The directory holding `path`, which is `.` for a bare file name.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
     }
 }
 
@@ -457,6 +491,42 @@ mod tests {
         assert!(!text.contains("wallpaper"), "{text}");
         assert!(text.contains("unknown = true"), "{text}");
         assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn concurrent_saves_use_separate_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let threads: Vec<_> = (0..8u32)
+            .map(|height| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let config = Config {
+                        panel: Panel { height: 30 + height, ..Panel::default() },
+                        ..Config::default()
+                    };
+                    for _ in 0..20 {
+                        config.save_to(&path).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!((30..38).contains(&Config::load_from(&path).unwrap().panel.height));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "temporary files remain");
+    }
+
+    #[test]
+    fn save_keeps_file_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Config::default().save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

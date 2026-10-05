@@ -50,8 +50,7 @@ struct Cli {
     /// Run the compositor without the desktop shell.
     #[arg(long)]
     no_shell: bool,
-    /// Skip XDG autostart entries.
-    /// The compositor still runs the configuration's `autostart` commands.
+    /// Skip the configuration's `autostart` commands and XDG autostart entries.
     #[arg(long)]
     no_autostart: bool,
     /// Compositor executable instead of the one next to nimbus-session or on PATH.
@@ -67,11 +66,9 @@ fn default_backend(lookup: impl Fn(&str) -> Option<String>) -> Backend {
     if set("WAYLAND_DISPLAY") || set("DISPLAY") { Backend::Winit } else { Backend::Udev }
 }
 
+/// The compositor's arguments, except `--socket` and `--locked`, which the supervisor adds.
 fn compositor_args(cli: &Cli, backend: Backend) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["--backend".into(), backend.as_arg().into()];
-    if let Some(socket) = &cli.socket {
-        args.extend(["--socket".into(), socket.into()]);
-    }
     if let Some(config) = &cli.config {
         args.extend(["--config".into(), config.into()]);
     }
@@ -79,6 +76,25 @@ fn compositor_args(cli: &Cli, backend: Backend) -> Vec<OsString> {
         args.push("--no-shell".into());
     }
     args
+}
+
+/// Loads the configuration for its `autostart` commands; the compositor reports configuration errors.
+fn load_config(path: Option<&std::path::Path>) -> nimbus_config::Config {
+    let path = match path
+        .map(std::path::Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(nimbus_config::default_path)
+    {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!("{error}; running no configured autostart commands");
+            return nimbus_config::Config::default();
+        }
+    };
+    nimbus_config::Config::load_from(&path).unwrap_or_else(|error| {
+        tracing::warn!("{error}; running no configured autostart commands");
+        nimbus_config::Config::default()
+    })
 }
 
 fn lookup_env(name: &str) -> Option<String> {
@@ -147,22 +163,33 @@ fn main() -> ExitCode {
         .map(str::to_string)
         .collect();
 
+    let config_path = cli.config.clone();
     let plan = supervisor::SessionPlan {
-        compositor: supervisor::CompositorCommand { program, args: compositor_args(&cli, backend) },
+        compositor: supervisor::CompositorCommand {
+            program,
+            args: compositor_args(&cli, backend),
+            socket: cli.socket.clone(),
+            can_lock: !cli.no_shell,
+        },
         env: session_env,
         autostart: Box::new(move || {
             if !run_autostart {
                 return Vec::new();
             }
+            let config = load_config(config_path.as_deref());
             let desktops: Vec<&str> = desktops.iter().map(String::as_str).collect();
             let path = std::env::var_os("PATH");
-            autostart::plan(&autostart::autostart_dirs(lookup_env), &desktops, |program| {
-                env::find_in_path(program, path.clone()).is_some()
-            })
+            let mut launches = autostart::config_launches(&config.autostart);
+            launches.extend(autostart::plan(
+                &autostart::autostart_dirs(lookup_env),
+                &desktops,
+                |program| env::find_in_path(program, path.clone()).is_some(),
+            ));
+            launches
         }),
         ready_timeout: Duration::from_secs(cli.ready_timeout),
         lock_marker: lookup_env("XDG_RUNTIME_DIR")
-            .map(|dir| supervisor::lock_marker(std::path::Path::new(&dir))),
+            .map(|dir| nimbus_ipc::lock_marker_path(std::path::Path::new(&dir))),
     };
 
     match supervisor::run(plan) {
@@ -203,18 +230,7 @@ mod tests {
         let backend = cli.backend.unwrap();
         let args: Vec<_> =
             compositor_args(&cli, backend).into_iter().map(|a| a.into_string().unwrap()).collect();
-        assert_eq!(
-            args,
-            [
-                "--backend",
-                "headless",
-                "--socket",
-                "wayland-9",
-                "--config",
-                "/tmp/c.toml",
-                "--no-shell"
-            ]
-        );
+        assert_eq!(args, ["--backend", "headless", "--config", "/tmp/c.toml", "--no-shell"]);
 
         let cli = Cli::try_parse_from(["nimbus-session"]).unwrap();
         assert_eq!(

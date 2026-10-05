@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
 # PAM configuration for the Nimbus lock screen, installed as /etc/pam.d/nimbus.
 # Without it, Nimbus uses the "login" service.
+# "login" exists on Debian, Ubuntu, Fedora, and Arch, so including it keeps their local policy.
 auth include login
+account include login

@@ -111,6 +111,7 @@ impl State {
                     no_shell()
                 }
             }
+            Request::GetLockState => Response::LockState { locked: self.nimbus.is_locked() },
             Request::ReloadConfig => match self.nimbus.config.reload() {
                 Ok(config) => {
                     self.apply_config(config);
@@ -236,6 +237,7 @@ impl State {
         // Typing goes to the lock screen in front of the user.
         shell.focus_output(output.as_deref());
         shell.set_locked(true);
+        self.nimbus.sync_lock_marker();
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
         true

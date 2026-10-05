@@ -16,7 +16,7 @@ use crate::core::history::{HISTORY_LEN, History};
 use crate::core::prefs::{Page, Prefs};
 use crate::core::processes::{self, Filter, Row, SortColumn, SortOrder};
 use crate::core::snapshot::{ProcessKey, ProcessKind, ProcessState, Snapshot};
-use crate::sampler::{ProcessSignal, Sampler, SamplerEvent, SystemSource};
+use crate::sampler::{ProcessSignal, Sampler, SamplerEvent, SignalError, SystemSource};
 use crate::{
     AppWindow, CoreItem, FileSystemRow, Graph, PendingSignal, ProcessIcon, ProcessRow, Theme,
 };
@@ -316,24 +316,45 @@ impl Controller {
             ui.set_pending(PendingSignal::None);
         }
         if let Some((key, signal)) = pending {
-            (self.requests)(Request::Signal(key, signal));
+            self.send_signal(key, signal);
         }
     }
 
     fn signal_selected(&self, signal: ProcessSignal) {
-        if let Some((key, _)) = self.selected_name() {
+        if let Some(key) = self.state.borrow().selected {
+            self.send_signal(key, signal);
+        }
+    }
+
+    fn send_signal(&self, key: ProcessKey, signal: ProcessSignal) {
+        let running = self.state.borrow().snapshot.processes.iter().any(|p| p.key == key);
+        if running {
             (self.requests)(Request::Signal(key, signal));
+        } else {
+            self.set_status(&SignalError::Gone.to_string());
         }
     }
 
     fn apply_snapshot(&self, snapshot: Snapshot) {
+        let mut pending_gone = false;
         {
             let mut state = self.state.borrow_mut();
             state.history.push(&snapshot);
-            if state.selected.is_some_and(|key| !snapshot.processes.iter().any(|p| p.key == key)) {
+            let gone = |key: &ProcessKey| !snapshot.processes.iter().any(|p| p.key == *key);
+            if state.selected.as_ref().is_some_and(gone) {
                 state.selected = None;
             }
+            if state.pending.as_ref().is_some_and(|(key, _)| gone(key)) {
+                state.pending = None;
+                pending_gone = true;
+            }
             state.snapshot = snapshot;
+        }
+        if pending_gone {
+            if let Some(ui) = self.ui.upgrade() {
+                ui.set_pending(PendingSignal::None);
+            }
+            self.set_status(&SignalError::Gone.to_string());
         }
         self.show_selection();
         self.refresh_processes();

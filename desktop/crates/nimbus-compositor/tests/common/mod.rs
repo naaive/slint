@@ -39,19 +39,35 @@ pub struct Compositor {
 impl Compositor {
     /// Starts `--backend headless --no-shell` with `config` as its configuration file.
     pub fn start(config: &str, extra_env: &[(&str, &str)]) -> Self {
-        Self::launch(config, extra_env, false)
+        Self::launch(config, extra_env, false, &[], |_| {})
     }
 
     /// Starts `--backend headless` with the shell.
     /// Applications come from an empty data directory and D-Bus is unreachable unless `extra_env` says otherwise.
     pub fn start_with_shell(config: &str, extra_env: &[(&str, &str)]) -> Self {
-        Self::launch(config, extra_env, true)
+        Self::launch(config, extra_env, true, &[], |_| {})
     }
 
-    fn launch(config: &str, extra_env: &[(&str, &str)], shell: bool) -> Self {
+    /// Like [`Compositor::start_with_shell`], with `extra_args`, after `prepare` ran on the runtime directory.
+    pub fn start_with_shell_in(
+        config: &str,
+        extra_args: &[&str],
+        prepare: impl FnOnce(&Path),
+    ) -> Self {
+        Self::launch(config, &[], true, extra_args, prepare)
+    }
+
+    fn launch(
+        config: &str,
+        extra_env: &[(&str, &str)],
+        shell: bool,
+        extra_args: &[&str],
+        prepare: impl FnOnce(&Path),
+    ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let runtime = dir.path().join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
+        prepare(&runtime);
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, config).unwrap();
         let log = dir.path().join("compositor.log");
@@ -70,6 +86,7 @@ impl Compositor {
             command.arg("--no-shell");
         }
         command
+            .args(extra_args)
             .arg("--config")
             .arg(&config_path)
             .env("XDG_RUNTIME_DIR", &runtime)

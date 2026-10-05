@@ -30,6 +30,7 @@ slint-build = { workspace = true }
 nimbus-theme = { workspace = true }
 
 [dev-dependencies]
+nimbus-theme = { workspace = true, features = ["headless"] }
 i-slint-backend-testing = { workspace = true }
 tempfile = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }

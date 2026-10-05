@@ -14,7 +14,7 @@ name = "nimbus-monitor"
 path = "src/main.rs"
 
 [dependencies]
-nimbus-theme = { workspace = true }
+nimbus-theme = { workspace = true, features = ["headless"] }
 nimbus-config = { workspace = true }
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
 # Decodes the embedded SVG icons when rendering with the software renderer, as in `--screenshot`.
@@ -30,7 +30,6 @@ futures-channel = "0.3"
 futures-util = { workspace = true }
 sysinfo = "0.39"
 rustix = { version = "1", features = ["process"] }
-png = "0.18"
 
 [build-dependencies]
 slint-build = { workspace = true }

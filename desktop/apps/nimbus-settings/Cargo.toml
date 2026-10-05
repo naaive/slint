@@ -14,7 +14,7 @@ name = "nimbus-settings"
 path = "src/main.rs"
 
 [dependencies]
-nimbus-theme = { workspace = true }
+nimbus-theme = { workspace = true, features = ["headless"] }
 nimbus-config = { workspace = true }
 nimbus-ipc = { workspace = true }
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts"] }

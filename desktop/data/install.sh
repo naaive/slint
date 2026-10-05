@@ -83,6 +83,10 @@ done
 # The lock screen's PAM service; a distribution's own file takes precedence.
 if [ ! -e "$DESTDIR$PAM_DIR/nimbus" ]; then
     install -Dm644 "$data_dir/pam.d/nimbus" "$DESTDIR$PAM_DIR/nimbus"
+    # The shipped file includes the "login" service.
+    if [ -z "$DESTDIR" ] && [ ! -e "$PAM_DIR/login" ]; then
+        echo "install.sh: $PAM_DIR/nimbus includes 'login', which doesn't exist; edit it so the lock screen can authenticate" >&2
+    fi
 fi
 
 if [ -z "$DESTDIR" ] && command -v update-desktop-database >/dev/null 2>&1; then
