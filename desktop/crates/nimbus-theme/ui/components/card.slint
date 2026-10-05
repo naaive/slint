@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+
+// A rounded surface grouping related content, laid out vertically with `content-padding` and `spacing`.
+// Set `clickable` to get hover feedback and the `clicked` callback.
+export component Card inherits Rectangle {
+    in property <length> content-padding: Theme.spacing-lg;
+    in property <length> spacing: Theme.spacing-md;
+    // Lifts the card with a shadow, for content above the window background.
+    in property <bool> elevated;
+    in property <bool> clickable;
+    out property <bool> has-hover: touch.has-hover;
+
+    callback clicked;
+
+    background: root.clickable && touch.pressed ? Theme.surface-pressed.mix(Theme.surface, 50%)
+        : root.clickable && touch.has-hover ? Theme.surface-raised
+        : Theme.surface;
+    border-radius: Theme.radius-xlarge;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: root.elevated ? Theme.elevation-1.blur : 0;
+    drop-shadow-offset-y: root.elevated ? Theme.elevation-1.offset-y : 0;
+    drop-shadow-color: root.elevated ? Theme.elevation-1.color : transparent;
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+
+    touch := TouchArea {
+        enabled: root.clickable;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    VerticalLayout {
+        padding: root.content-padding;
+        spacing: root.spacing;
+
+        @children
+    }
+}
+
+// A floating surface for menus, popovers, and notifications, with the strongest elevation.
+// Children are laid out vertically with `content-padding` and `spacing`.
+export component Popover inherits Rectangle {
+    in property <length> content-padding: Theme.spacing-sm;
+    in property <length> spacing: Theme.spacing-sm;
+
+    background: Theme.popup-background;
+    border-radius: Theme.radius-xlarge;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-3.blur;
+    drop-shadow-offset-y: Theme.elevation-3.offset-y;
+    drop-shadow-color: Theme.elevation-3.color;
+
+    // Swallows clicks so they don't reach what's behind the popover.
+    TouchArea { }
+
+    VerticalLayout {
+        padding: root.content-padding;
+        spacing: root.spacing;
+
+        @children
+    }
+}

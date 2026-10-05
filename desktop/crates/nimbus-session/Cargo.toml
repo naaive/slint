@@ -21,3 +21,10 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+nix = { version = "0.30", features = ["signal", "process"] }
+signal-hook = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml = { workspace = true }

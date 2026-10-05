@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Divider } from "@nimbus/theme.slint";
+
+struct MenuEntry {
+    // Empty for a separator.
+    id: string,
+    label: string,
+    keys: string,
+}
+
+component MenuRow inherits Rectangle {
+    in property <MenuEntry> entry;
+
+    callback activated(id: string);
+
+    height: root.entry.id == "" ? 9px : Theme.control-height;
+    border-radius: Theme.radius-medium - Theme.spacing-xs / 2;
+    background: root.entry.id != "" && touch.has-hover ? Theme.surface-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.entry.label;
+    accessible-action-default => {
+        root.activated(root.entry.id);
+    }
+
+    if root.entry.id == "": Divider {
+        y: 4px;
+    }
+
+    if root.entry.id != "": HorizontalLayout {
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-md;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.entry.label;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.entry.keys;
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.entry.id != "";
+        clicked => {
+            root.activated(root.entry.id);
+        }
+    }
+}
+
+// The terminal grid: an image rendered by Rust, with keyboard, pointer, and wheel input forwarded to it.
+export component TerminalView inherits Rectangle {
+    // The rendered grid, and its size in logical pixels.
+    in property <image> screen;
+    in property <length> screen-width;
+    in property <length> screen-height;
+    in property <color> term-background: Theme.background;
+    // The I-beam pointer while the terminal handles selection; the arrow when the program takes the mouse.
+    in property <bool> pointer-text: true;
+    // The viewport as fractions of the scrollback: its top and its height.
+    in property <float> scroll-position;
+    in property <float> scroll-size: 1;
+    in property <bool> bell-flash;
+    // The space around the grid.
+    out property <length> inset: 8px;
+    out property <length> grid-width: max(0px, root.width - 2 * root.inset);
+    out property <length> grid-height: max(0px, root.height - 2 * root.inset);
+    out property <bool> focused: scope.has-focus;
+
+    callback key(text: string, ctrl: bool, alt: bool, shift: bool, meta: bool) -> bool;
+    // `kind` is 0 for a press, 1 for a release, 2 for motion; `button` is 1 left, 2 middle, 3 right, 0 other.
+    // The position is relative to the grid's top-left corner.
+    callback pointer(kind: int, button: int, x: length, y: length, ctrl: bool, alt: bool, shift: bool);
+    callback scrolled(delta-x: length, delta-y: length, ctrl: bool, shift: bool) -> bool;
+    callback focus-changed(focused: bool);
+    // The scrollbar was dragged to put the viewport's top at `position`, a fraction of the scrollback.
+    callback scrollbar-moved(position: float);
+    callback geometry-changed();
+    // A context menu entry was chosen: "copy", "paste", "select-all", "new-tab", "find", or "preferences".
+    callback menu-action(id: string);
+
+    private property <length> menu-x;
+    private property <length> menu-y;
+
+    public function grab-focus() {
+        scope.focus();
+    }
+
+    background: root.term-background;
+    clip: true;
+    accessible-role: text-input;
+    accessible-label: "Terminal";
+
+    changed grid-width => {
+        root.geometry-changed();
+    }
+    changed grid-height => {
+        root.geometry-changed();
+    }
+
+    Image {
+        x: root.inset;
+        y: root.inset;
+        width: root.screen-width;
+        height: root.screen-height;
+        source: root.screen;
+        image-rendering: pixelated;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.pointer-text ? MouseCursor.text : MouseCursor.default;
+        pointer-event(event) => {
+            let kind = event.kind == PointerEventKind.down ? 0 : event.kind == PointerEventKind.up ? 1 : event.kind == PointerEventKind.move ? 2 : -1;
+            let button = event.button == PointerEventButton.left ? 1 : event.button == PointerEventButton.middle ? 2 : event.button == PointerEventButton.right ? 3 : 0;
+            if kind == 0 {
+                scope.focus();
+            }
+            // Programs that take the mouse get right clicks too, unless Shift is held.
+            if kind == 0 && button == 3 && (root.pointer-text || event.modifiers.shift) {
+                root.menu-x = self.mouse-x;
+                root.menu-y = self.mouse-y;
+                menu.show();
+                return;
+            }
+            if kind >= 0 {
+                root.pointer(kind, button, self.mouse-x - root.inset, self.mouse-y - root.inset, event.modifiers.control, event.modifiers.alt, event.modifiers.shift);
+            }
+        }
+        scroll-event(event) => {
+            root.scrolled(event.delta-x, event.delta-y, event.modifiers.control, event.modifiers.shift) ? accept : reject
+        }
+    }
+
+    scope := FocusScope {
+        key-pressed(event) => {
+            root.key(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta) ? accept : reject
+        }
+        focus-gained => {
+            root.focus-changed(true);
+        }
+        focus-lost => {
+            root.focus-changed(false);
+        }
+    }
+
+    // An overlay scrollbar, shown while scrolled back or hovered.
+    scrollbar := Rectangle {
+        property <bool> active: root.scroll-size < 1 && (root.scroll-position + root.scroll-size < 0.999 || bar-touch.has-hover || bar-touch.pressed);
+
+        x: root.width - self.width - 2px;
+        y: 2px;
+        width: bar-touch.has-hover || bar-touch.pressed ? 10px : 6px;
+        height: root.height - 4px;
+        opacity: self.active ? 1 : 0;
+        animate opacity, width { duration: Theme.duration-normal; easing: Motion.standard; }
+
+        Rectangle {
+            property <length> thumb: max(24px, parent.height * root.scroll-size);
+
+            y: (parent.height - self.thumb) * clamp(root.scroll-size >= 1 ? 0 : root.scroll-position / (1 - root.scroll-size), 0, 1);
+            height: self.thumb;
+            border-radius: self.width / 2;
+            background: Theme.dark ? #ffffff66 : #00000055;
+        }
+
+        bar-touch := TouchArea {
+            mouse-cursor: MouseCursor.default;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.scrollbar-moved(clamp(self.mouse-y / self.height - root.scroll-size / 2, 0, 1));
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.scrollbar-moved(clamp(self.mouse-y / self.height - root.scroll-size / 2, 0, 1));
+                }
+            }
+            scroll-event(event) => {
+                root.scrolled(event.delta-x, event.delta-y, event.modifiers.control, event.modifiers.shift) ? accept : reject
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: min(root.menu-x, root.width - self.width - Theme.spacing-xs);
+        y: min(root.menu-y, root.height - self.height - Theme.spacing-xs);
+        width: 240px;
+
+        Rectangle {
+            border-radius: Theme.radius-large;
+            background: Theme.popup-background;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Theme.elevation-2.blur;
+            drop-shadow-offset-y: Theme.elevation-2.offset-y;
+            drop-shadow-color: Theme.elevation-2.color;
+        }
+
+        VerticalLayout {
+            padding: Theme.spacing-xs;
+
+            for entry in [
+                { id: "copy", label: "Copy", keys: "Ctrl+Shift+C" },
+                { id: "paste", label: "Paste", keys: "Ctrl+Shift+V" },
+                { id: "select-all", label: "Select All", keys: "Ctrl+Shift+A" },
+                { id: "", label: "", keys: "" },
+                { id: "new-tab", label: "New Tab", keys: "Ctrl+Shift+T" },
+                { id: "find", label: "Find…", keys: "Ctrl+Shift+F" },
+                { id: "", label: "", keys: "" },
+                { id: "preferences", label: "Preferences", keys: "Ctrl+," },
+            ]: MenuRow {
+                entry: entry;
+                activated(id) => {
+                    menu.close();
+                    root.menu-action(id);
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        background: Theme.text;
+        opacity: root.bell-flash ? 0.08 : 0;
+        animate opacity { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+}

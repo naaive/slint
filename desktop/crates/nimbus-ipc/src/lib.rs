@@ -32,7 +32,9 @@ pub struct WindowInfo {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OutputInfo {
     pub name: String,
+    /// Width of the current mode in physical pixels.
     pub width: i32,
+    /// Height of the current mode in physical pixels.
     pub height: i32,
     pub scale: f64,
     pub refresh_mhz: u32,
@@ -72,21 +74,54 @@ pub enum Request {
     GetState,
     /// Switch the connection to event streaming; see [`Event`].
     Subscribe,
-    Activate { id: WindowId },
-    Close { id: WindowId },
-    SetMinimized { id: WindowId, minimized: bool },
-    SetMaximized { id: WindowId, maximized: bool },
-    SetFullscreen { id: WindowId, fullscreen: bool },
-    MoveToWorkspace { id: WindowId, workspace: WorkspaceId },
-    FocusDirection { direction: Direction },
-    SwitchWorkspace { workspace: WorkspaceId },
-    SetLayout { layout: LayoutMode },
+    Activate {
+        id: WindowId,
+    },
+    Close {
+        id: WindowId,
+    },
+    SetMinimized {
+        id: WindowId,
+        minimized: bool,
+    },
+    SetMaximized {
+        id: WindowId,
+        maximized: bool,
+    },
+    SetFullscreen {
+        id: WindowId,
+        fullscreen: bool,
+    },
+    MoveToWorkspace {
+        id: WindowId,
+        workspace: WorkspaceId,
+    },
+    FocusDirection {
+        direction: Direction,
+    },
+    SwitchWorkspace {
+        workspace: WorkspaceId,
+    },
+    SetLayout {
+        layout: LayoutMode,
+    },
     /// Run a command line through `sh -c` with the session's Wayland environment.
-    Spawn { command: String },
+    Spawn {
+        command: String,
+    },
     ToggleLauncher,
     ToggleOverview,
     Lock,
     ReloadConfig,
+    /// Save a PNG of an output: the named one, or the one with the pointer.
+    /// With a `path`, the compositor answers once the file is written;
+    /// without one, it saves into `$XDG_PICTURES_DIR/Screenshots` in the background.
+    Screenshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
+    },
     Quit,
 }
 
@@ -160,7 +195,10 @@ pub struct Client {
 impl Client {
     pub fn connect() -> Result<Self, Error> {
         let path = socket_path().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "neither NIMBUS_SOCKET nor XDG_RUNTIME_DIR is set")
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "neither NIMBUS_SOCKET nor XDG_RUNTIME_DIR is set",
+            )
         })?;
         Self::connect_to(&path)
     }
@@ -203,9 +241,20 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_fields_are_optional() {
+        let json =
+            serde_json::to_string(&Request::Screenshot { output: None, path: None }).unwrap();
+        assert_eq!(json, r#"{"request":"screenshot"}"#);
+        let back: Request =
+            serde_json::from_str(r#"{"request":"screenshot","path":"/tmp/a.png"}"#).unwrap();
+        assert_eq!(back, Request::Screenshot { output: None, path: Some("/tmp/a.png".into()) });
+    }
+
+    #[test]
     fn messages_round_trip_through_lines() {
         let mut buffer = Vec::new();
-        let event = Event::WindowOpened(WindowInfo { id: 7, app_id: "foot".into(), ..Default::default() });
+        let event =
+            Event::WindowOpened(WindowInfo { id: 7, app_id: "foot".into(), ..Default::default() });
         write_message(&mut buffer, &event).unwrap();
         write_message(&mut buffer, &Event::WindowClosed { id: 7 }).unwrap();
         let mut reader = std::io::BufReader::new(buffer.as_slice());
@@ -224,7 +273,8 @@ mod tests {
             let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
             let mut writer = stream;
             let _: Request = read_message(&mut reader).unwrap();
-            write_message(&mut writer, &Response::Error { message: "no such window".into() }).unwrap();
+            write_message(&mut writer, &Response::Error { message: "no such window".into() })
+                .unwrap();
         });
         let mut client = Client::connect_to(&path).unwrap();
         let result = client.request(&Request::Close { id: 1 });

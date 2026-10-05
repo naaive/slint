@@ -1,0 +1,302 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Button, IconButton, Icon, Icons, Label, ProgressBar, Spinner } from "@nimbus/theme.slint";
+import { JobItem, IconKind } from "types.slint";
+import { FileStyle } from "style.slint";
+
+// Running file operations with progress and a cancel button each.
+export component JobsPanel inherits Rectangle {
+    in property <[JobItem]> jobs;
+
+    callback cancel(id: int);
+
+    width: 360px;
+    height: layout.preferred-height;
+    border-radius: Theme.radius-xlarge;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-2.blur;
+    drop-shadow-offset-y: Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+    accessible-role: list;
+    accessible-label: "File operations";
+
+    TouchArea { }
+
+    layout := VerticalLayout {
+        padding: Theme.spacing-md;
+        spacing: Theme.spacing-md;
+
+        for job in root.jobs: HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            VerticalLayout {
+                spacing: Theme.spacing-xs;
+                alignment: center;
+
+                Text {
+                    text: job.title;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                ProgressBar {
+                    progress: job.progress;
+                    indeterminate: job.indeterminate;
+                }
+
+                Text {
+                    text: job.detail;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                    overflow: elide;
+                }
+            }
+
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.close;
+                size: Theme.control-height-small;
+                accessible-label: "Cancel " + job.title;
+                clicked => {
+                    root.cancel(job.id);
+                }
+            }
+        }
+    }
+}
+
+// A short notification with an optional action, such as Undo.
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> action;
+
+    callback action-clicked();
+    callback dismissed();
+
+    height: Theme.control-height + 2 * Theme.spacing-sm;
+    width: min(layout.preferred-width, 640px);
+    border-radius: self.height / 2;
+    background: Theme.dark ? #3a3a40 : #2a2a30;
+    drop-shadow-blur: Theme.elevation-2.blur;
+    drop-shadow-offset-y: Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    TouchArea { }
+
+    layout := HorizontalLayout {
+        padding-left: Theme.spacing-lg + Theme.spacing-xs;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-sm;
+
+        Text {
+            text: root.text;
+            color: #f3f3f6;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.action != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: Theme.control-height-small;
+            width: action-label.preferred-width + 2 * Theme.spacing-md;
+            border-radius: self.height / 2;
+            background: action-touch.has-hover ? #ffffff24 : #ffffff14;
+            accessible-role: button;
+            accessible-label: root.action;
+            accessible-action-default => {
+                root.action-clicked();
+            }
+
+            action-label := Text {
+                text: root.action;
+                color: Theme.accent.brighter(0.4);
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                vertical-alignment: center;
+            }
+
+            action-touch := TouchArea {
+                clicked => {
+                    root.action-clicked();
+                }
+            }
+        }
+
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: Theme.control-height-small;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: close-touch.has-hover ? #ffffff24 : transparent;
+            accessible-role: button;
+            accessible-label: "Dismiss";
+            accessible-action-default => {
+                root.dismissed();
+            }
+
+            Icon {
+                source: Icons.close;
+                size: 14px;
+                color: #f3f3f6;
+            }
+
+            close-touch := TouchArea {
+                clicked => {
+                    root.dismissed();
+                }
+            }
+        }
+    }
+}
+
+// The message shown in place of an empty or unreadable folder.
+export component EmptyState {
+    in property <IconKind> kind: IconKind.folder;
+    in property <string> title;
+    in property <string> subtitle;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+
+        Rectangle {
+            height: 96px;
+
+            Rectangle {
+                width: 88px;
+                height: 88px;
+                border-radius: self.width / 2;
+                background: Theme.control;
+
+                Icon {
+                    source: FileStyle.icon(root.kind);
+                    size: 40px;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+
+        Label {
+            text: root.title;
+            style: Theme.headline;
+            horizontal-alignment: center;
+        }
+
+        Label {
+            text: root.subtitle;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// The bar under the view: item counts and free space.
+export component StatusBar inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+
+    height: 30px;
+    background: Theme.surface;
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        padding-right: Theme.spacing-lg;
+        spacing: Theme.spacing-md;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.detail;
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The bar above the trash view with its actions.
+export component TrashBanner inherits Rectangle {
+    in property <bool> empty;
+    in property <bool> has-selection;
+
+    callback restore();
+    callback empty-trash();
+
+    height: Theme.control-height + 2 * Theme.spacing-sm;
+    background: Theme.surface-sunken;
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+        cross-axis-alignment: center;
+
+        Icon {
+            source: Icons.info;
+            color: Theme.text-secondary;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: "Items in the Trash stay until you empty it.";
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Button {
+            text: "Restore";
+            icon: Icons.restore;
+            compact: true;
+            enabled: root.has-selection;
+            clicked => {
+                root.restore();
+            }
+        }
+
+        Button {
+            text: "Empty Trash…";
+            compact: true;
+            variant: destructive;
+            enabled: !root.empty;
+            clicked => {
+                root.empty-trash();
+            }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+}

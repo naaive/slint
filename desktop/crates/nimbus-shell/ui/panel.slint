@@ -1,0 +1,197 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon } from "@nimbus/theme.slint";
+import { WorkspaceItem, SystemStatus, AppVisual } from "models.slint";
+import { AppIcon, PanelButton, StatusIcons } from "common.slint";
+
+component WorkspaceDot inherits Rectangle {
+    in property <WorkspaceItem> workspace;
+
+    callback clicked;
+
+    width: root.workspace.active ? 26px : 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: root.workspace.active ? Theme.text
+        : touch.has-hover ? Theme.text.with-alpha(0.75)
+        : root.workspace.occupied ? Theme.text.with-alpha(0.55) : Theme.text.with-alpha(0.28);
+    animate width { duration: Theme.duration-normal; easing: Motion.standard; }
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: button;
+    accessible-label: "Workspace " + (root.workspace.index + 1);
+    accessible-checked: root.workspace.active;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    // A larger hit target than the dot itself.
+    touch := TouchArea {
+        x: -4px;
+        y: -8px;
+        width: parent.width + 8px;
+        height: parent.height + 16px;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The bar along the top or bottom edge: overview and workspaces, the clock, and system status.
+export component Panel inherits Rectangle {
+    in property <[WorkspaceItem]> workspaces;
+    in property <string> focused-title;
+    in property <AppVisual> focused-visual;
+    in property <string> clock-text;
+    in property <SystemStatus> status;
+    in property <float> volume;
+    in property <bool> do-not-disturb;
+    in property <bool> show-battery-percentage;
+    in property <bool> has-unread;
+    in property <bool> overview-open;
+    in property <bool> calendar-open;
+    in property <bool> quick-settings-open;
+
+    callback overview-clicked;
+    callback workspace-clicked(index: int);
+    callback clock-clicked;
+    callback status-clicked;
+
+    background: Theme.panel-background;
+
+    // Left: overview and workspaces, then the focused application.
+    HorizontalLayout {
+        padding: 3px;
+        padding-left: Theme.spacing-xs;
+        alignment: start;
+        spacing: Theme.spacing-xs;
+
+        PanelButton {
+            active: root.overview-open;
+            accessible-label: "Activities";
+            padding-x: Theme.spacing-md;
+            clicked => {
+                root.overview-clicked();
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: center;
+
+                for workspace in root.workspaces: WorkspaceDot {
+                    cross-axis-self-alignment: center;
+                    workspace: workspace;
+                    clicked => {
+                        root.workspace-clicked(workspace.index);
+                    }
+                }
+            }
+        }
+
+        if root.focused-title != "": HorizontalLayout {
+            padding-left: Theme.spacing-sm;
+            spacing: Theme.spacing-sm;
+
+            AppIcon {
+                cross-axis-self-alignment: center;
+                size: 18px;
+                visual: root.focused-visual;
+            }
+            Text {
+                max-width: 320px;
+                text: root.focused-title;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+
+    // Center: the clock, which opens the calendar and notifications.
+    clock := PanelButton {
+        x: (root.width - self.width) / 2;
+        y: 3px;
+        width: self.preferred-width;
+        height: root.height - 6px;
+        active: root.calendar-open;
+        accessible-label: "Calendar and notifications";
+        padding-x: Theme.spacing-lg;
+        clicked => {
+            root.clock-clicked();
+        }
+
+        Text {
+            text: root.clock-text;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body-strong.font-size;
+            font-weight: Theme.body-strong.font-weight;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+        if root.do-not-disturb: Icon {
+            cross-axis-self-alignment: center;
+            source: Icons.bell-off;
+            size: 14px;
+        }
+        if root.has-unread && !root.do-not-disturb: Rectangle {
+            cross-axis-self-alignment: center;
+            width: 6px;
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.text;
+        }
+    }
+
+    // Right: system status, which opens quick settings.
+    HorizontalLayout {
+        padding: 3px;
+        padding-right: Theme.spacing-xs;
+        alignment: end;
+
+        PanelButton {
+            active: root.quick-settings-open;
+            accessible-label: "System menu";
+            clicked => {
+                root.status-clicked();
+            }
+
+            Icon {
+                cross-axis-self-alignment: center;
+                source: StatusIcons.network(root.status);
+            }
+            if root.status.has-bluetooth && root.status.bluetooth-powered: Icon {
+                cross-axis-self-alignment: center;
+                source: Icons.bluetooth;
+            }
+            if root.status.has-audio: Icon {
+                cross-axis-self-alignment: center;
+                source: StatusIcons.volume(root.volume / 100, root.status.muted);
+            }
+            if root.status.has-battery: HorizontalLayout {
+                cross-axis-self-alignment: center;
+                spacing: Theme.spacing-xs;
+
+                Icon {
+                    cross-axis-self-alignment: center;
+                    source: StatusIcons.battery(root.status);
+                    color: !root.status.charging && root.status.battery-level <= 0.1 ? Theme.error : Theme.text;
+                }
+                if root.show-battery-percentage: Text {
+                    text: round(root.status.battery-level * 100) + " %";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body-strong.font-size;
+                    font-weight: Theme.body-strong.font-weight;
+                    vertical-alignment: center;
+                }
+            }
+            Icon {
+                cross-axis-self-alignment: center;
+                source: Icons.power;
+            }
+        }
+    }
+}

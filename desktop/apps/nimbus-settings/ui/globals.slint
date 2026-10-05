@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: MIT
+
+// The data shared between Rust and the pages. Rust fills the `in` properties and handles the callbacks;
+// widgets bind two-way to the `in-out` ones so changes from either side stay visible.
+
+export struct AccentSwatch {
+    name: string,
+    hex: string,
+    color: color,
+}
+
+export struct WallpaperItem {
+    path: string,
+    name: string,
+    thumbnail: image,
+}
+
+export struct SearchHit {
+    page: int,
+    title: string,
+    page-title: string,
+}
+
+export struct PickerItem {
+    id: string,
+    title: string,
+    subtitle: string,
+}
+
+export struct InputSource {
+    title: string,
+    subtitle: string,
+    can-choose-variant: bool,
+}
+
+export struct ShortcutItem {
+    chord: string,
+    keys: [string],
+    description: string,
+    conflict: bool,
+}
+
+export struct ShortcutCategory {
+    title: string,
+    items: [ShortcutItem],
+}
+
+export struct DisplayItem {
+    name: string,
+    resolution: string,
+    refresh: string,
+    scale: string,
+    // The output's rectangle in the arrangement preview, as fractions of the whole arrangement.
+    frac-x: float,
+    frac-y: float,
+    frac-width: float,
+    frac-height: float,
+}
+
+export struct InfoRow {
+    label: string,
+    value: string,
+}
+
+export struct OptionGroup {
+    title: string,
+    choices: [string],
+    current: int,
+}
+
+// Navigation, search, and the status banner.
+export global Nav {
+    in-out property <int> page;
+    in-out property <string> search;
+    in property <[SearchHit]> search-results;
+    // A message shown above the page, such as a failed save.
+    in property <string> banner;
+    in property <bool> banner-is-error;
+
+    callback search-edited(text: string);
+    callback dismiss-banner();
+    callback quit();
+}
+
+// The values of every setting, in the shape the widgets need.
+export global Prefs {
+    in-out property <int> color-scheme: 2;
+    in property <[AccentSwatch]> accents;
+    in-out property <string> accent: "#3584e4";
+    in property <bool> accent-is-custom;
+    in property <[WallpaperItem]> wallpapers;
+    in property <bool> wallpapers-loading: true;
+    in-out property <string> wallpaper;
+    in-out property <string> font-family: "Inter";
+    in-out property <float> font-size: 11;
+    in-out property <int> scale-index;
+    in-out property <bool> animations: true;
+    in-out property <float> corner-radius: 12;
+
+    in-out property <int> panel-position;
+    in-out property <float> panel-height: 32;
+    in-out property <bool> show-dock: true;
+    in-out property <bool> dock-autohide;
+    in property <[string]> clock-presets;
+    in-out property <int> clock-preset-index;
+    in-out property <string> clock-format;
+    in property <string> clock-preview;
+    in property <bool> clock-valid: true;
+    in-out property <bool> battery-percentage: true;
+
+    in-out property <int> workspace-count: 4;
+    in-out property <int> window-layout;
+    in-out property <float> gaps: 8;
+    in-out property <bool> focus-follows-mouse;
+
+    in property <[InputSource]> input-sources;
+    in property <bool> can-add-source: true;
+    in property <[OptionGroup]> option-groups;
+    in-out property <string> keyboard-options;
+    in-out property <float> repeat-delay: 300;
+    in-out property <float> repeat-rate: 30;
+    in-out property <bool> natural-scroll: true;
+    in-out property <bool> tap-to-click: true;
+    in-out property <float> pointer-speed;
+
+    in property <[string]> lock-choices;
+    in-out property <int> lock-index;
+    in property <[string]> blank-choices;
+    in-out property <int> blank-index;
+    in-out property <bool> suspend-on-lid-close: true;
+
+    // Generic edits, keyed by setting name such as "panel.height".
+    callback set-bool(key: string, value: bool);
+    callback set-int(key: string, value: int);
+    callback set-float(key: string, value: float);
+    callback set-text(key: string, value: string);
+    pure callback is-color(text: string) -> bool;
+
+    callback choose-clock-preset(index: int);
+    callback choose-timeout(key: string, index: int);
+    callback choose-option(group: int, index: int);
+    callback pick-font();
+    callback add-source();
+    callback remove-source(index: int);
+    callback move-source-up(index: int);
+    callback pick-variant(index: int);
+}
+
+// A searchable list dialog, shared by the font, layout, and variant choosers.
+export global Picker {
+    in property <bool> open;
+    in property <string> title;
+    in property <string> placeholder: "Search";
+    in property <[PickerItem]> items;
+    in property <string> current;
+    // The position of `current` in `items`, or -1.
+    in property <int> current-index: -1;
+    in-out property <string> query;
+
+    callback query-edited(text: string);
+    callback chosen(id: string);
+    callback close();
+}
+
+export global ShortcutsModel {
+    in property <[ShortcutCategory]> categories;
+    in property <int> conflict-count;
+    in property <[string]> action-kinds;
+    in-out property <string> filter;
+
+    callback filter-edited(text: string);
+    callback edit(chord: string);
+    callback add();
+    callback remove(chord: string);
+    callback reset();
+
+    // The dialog that captures a key chord.
+    in property <bool> capture-open;
+    in property <bool> capture-adding;
+    in property <string> capture-action;
+    in-out property <int> capture-kind;
+    // 0: none, 1: a command, 2: a workspace number.
+    in property <int> capture-parameter;
+    in-out property <string> capture-argument;
+    in property <[string]> captured-keys;
+    in property <string> capture-conflict;
+    in property <bool> capture-can-apply;
+
+    callback key-captured(text: string, control: bool, alt: bool, shift: bool, meta: bool);
+    callback capture-kind-chosen(index: int);
+    callback capture-argument-edited(text: string);
+    callback capture-apply();
+    callback capture-cancel();
+}
+
+export global DisplaysModel {
+    // 0: loading, 1: ready, 2: unavailable.
+    in property <int> state;
+    in property <string> message;
+    in property <[DisplayItem]> items;
+    // The arrangement's width divided by its height.
+    in property <float> arrangement-aspect: 1;
+
+    callback refresh();
+}
+
+export global AboutModel {
+    in property <string> os-name: "Linux";
+    in property <image> logo;
+    in property <color> brand: #3584e4;
+    in property <[InfoRow]> hardware;
+    in property <[InfoRow]> software;
+}

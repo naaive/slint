@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, SearchField, IconButton, Icons } from "@nimbus/theme.slint";
+
+// Find in the scrollback. Enter or Up finds the next older match, Shift+Enter or Down a newer one, Escape closes.
+export component SearchBar inherits Rectangle {
+    in-out property <string> text;
+    // Feedback such as "No matches", or empty.
+    in property <string> status;
+
+    callback edited(text: string);
+    callback older();
+    callback newer();
+    callback close();
+
+    public function focus-field() {
+        field.focus();
+        field.select-all();
+    }
+
+    min-height: Theme.control-height + 2 * Theme.spacing-sm;
+    vertical-stretch: 0;
+    background: Theme.surface;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    FocusScope {
+        // The field takes Enter whatever the modifiers, so Shift+Enter must be caught first.
+        capture-key-pressed(event) => {
+            if event.text == Key.Return && event.modifiers.shift {
+                root.newer();
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            if event.text == Key.DownArrow {
+                root.newer();
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.older();
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.spacing-md;
+            padding-right: Theme.spacing-sm;
+            padding-top: Theme.spacing-sm;
+            padding-bottom: Theme.spacing-sm;
+            spacing: Theme.spacing-sm;
+            alignment: center;
+
+            field := SearchField {
+                max-width: 420px;
+                placeholder: "Find in terminal";
+                text <=> root.text;
+                edited(text) => {
+                    root.edited(text);
+                }
+                accepted => {
+                    root.older();
+                }
+            }
+
+            Text {
+                min-width: 90px;
+                text: root.status;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                icon: Icons.chevron-up;
+                size: Theme.control-height-small;
+                accessible-label: "Find Older";
+                clicked => {
+                    root.older();
+                }
+            }
+
+            IconButton {
+                icon: Icons.chevron-down;
+                size: Theme.control-height-small;
+                accessible-label: "Find Newer";
+                clicked => {
+                    root.newer();
+                }
+            }
+
+            IconButton {
+                icon: Icons.close;
+                size: Theme.control-height-small;
+                accessible-label: "Close Search";
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Label, ListRow } from "@nimbus/theme.slint";
+import { PageScroll, Group, RowDivider } from "../widgets.slint";
+
+export component NotificationsPage inherits PageScroll {
+    Group {
+        title: "Do Not Disturb";
+
+        ListRow {
+            icon: Icons.do-not-disturb;
+            title: "Silence notification banners";
+            subtitle: "Turn Do Not Disturb on and off in Quick Settings, at the right of the top panel";
+            clickable: false;
+        }
+    }
+
+    Group {
+        title: "How Notifications Work";
+
+        ListRow {
+            icon: Icons.bell;
+            title: "Banners";
+            subtitle: "New notifications appear briefly at the top of the screen";
+            clickable: false;
+        }
+
+        RowDivider { }
+
+        ListRow {
+            icon: Icons.calendar;
+            title: "History";
+            subtitle: "Missed notifications wait in the calendar menu, opened from the clock";
+            clickable: false;
+        }
+
+        RowDivider { }
+
+        ListRow {
+            icon: Icons.lock;
+            title: "Lock screen";
+            subtitle: "The lock screen doesn't show notification content";
+            clickable: false;
+        }
+    }
+}

@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Label, Card, Icon } from "@nimbus/theme.slint";
+import { Graph } from "types.slint";
+
+export component GraphView inherits Rectangle {
+    in property <Graph> graph;
+    in property <color> primary-color: Theme.accent;
+    in property <color> secondary-color: Theme.warning;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-sunken;
+    clip: true;
+
+    for i in 3: Rectangle {
+        y: parent.height * (i + 1) / 4;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 59;
+        viewbox-height: 100;
+        fit: fill;
+        commands: root.graph.area;
+        fill: root.primary-color.with-alpha(0.22);
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 59;
+        viewbox-height: 100;
+        fit: fill;
+        commands: root.graph.line;
+        stroke: root.primary-color;
+        stroke-width: 1.5px;
+    }
+
+    Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 59;
+        viewbox-height: 100;
+        fit: fill;
+        commands: root.graph.secondary-line;
+        stroke: root.secondary-color;
+        stroke-width: 1.5px;
+    }
+
+    if root.graph.scale != "": Label {
+        x: Theme.spacing-sm;
+        y: Theme.spacing-xs;
+        text: root.graph.scale;
+        style: Theme.caption;
+        color: Theme.text-secondary;
+    }
+}
+
+export component Legend inherits HorizontalLayout {
+    in property <color> primary-color;
+    in property <string> label;
+    in property <string> value;
+    spacing: Theme.spacing-xs;
+    alignment: start;
+
+    Rectangle {
+        width: 10px;
+        height: 10px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 3px;
+        background: root.primary-color;
+    }
+
+    Label {
+        text: root.label;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+    }
+
+    Label {
+        text: root.value;
+        style: Theme.body-strong;
+        vertical-alignment: center;
+    }
+}
+
+export component ResourceCard inherits Card {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> detail;
+    spacing: Theme.spacing-sm;
+
+    HorizontalLayout {
+        spacing: Theme.spacing-sm;
+
+        Icon {
+            source: root.icon;
+            color: Theme.accent-text;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Label {
+            text: root.title;
+            style: Theme.title;
+            vertical-alignment: center;
+        }
+
+        Label {
+            text: root.detail;
+            color: Theme.text-secondary;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+
+    @children
+}

@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: MIT
+
+// Data shared between Rust and the UI.
+
+export enum IconKind {
+    folder,
+    folder-home,
+    folder-desktop,
+    folder-documents,
+    folder-downloads,
+    folder-music,
+    folder-pictures,
+    folder-videos,
+    file,
+    text,
+    document,
+    image,
+    audio,
+    video,
+    archive,
+    executable,
+    script,
+    broken-link,
+    trash,
+    computer,
+    drive,
+    bookmark,
+}
+
+export enum ViewKind {
+    // A folder.
+    folder,
+    // Recursive search results, which show each file's folder.
+    search,
+    // The trash, which shows each item's original location and deletion date.
+    trash,
+}
+
+export struct FileItem {
+    name: string,
+    path: string,
+    kind: IconKind,
+    // A short extension label, such as "PDF", drawn on large file icons.
+    badge: string,
+    type-label: string,
+    size-label: string,
+    modified-label: string,
+    // The containing folder in search results, or the original location in the trash.
+    location-label: string,
+    is-dir: bool,
+    is-link: bool,
+    hidden: bool,
+    selected: bool,
+    // Cut to the clipboard, so drawn faded.
+    cut: bool,
+    thumbnail: image,
+    has-thumbnail: bool,
+    // A thumbnail can be generated once the item is on screen.
+    wants-thumbnail: bool,
+}
+
+export struct PlaceItem {
+    label: string,
+    kind: IconKind,
+    // The first item of a section carries its heading.
+    heading: string,
+    // A tooltip, such as the full path.
+    detail: string,
+}
+
+export struct Crumb {
+    label: string,
+    kind: IconKind,
+}
+
+export struct MenuRow {
+    label: string,
+    shortcut: string,
+    enabled: bool,
+    destructive: bool,
+    separator: bool,
+    checkable: bool,
+    checked: bool,
+}
+
+export struct JobItem {
+    id: int,
+    title: string,
+    detail: string,
+    progress: float,
+    indeterminate: bool,
+}
+
+export struct AppChoice {
+    name: string,
+    detail: string,
+}
+
+export struct PropertyRow {
+    label: string,
+    value: string,
+}

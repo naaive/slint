@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 mod watch;
 pub use watch::{ConfigWatcher, watch};
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub appearance: Appearance,
@@ -25,6 +25,28 @@ pub struct Config {
     pub autostart: Vec<String>,
     /// Desktop entry ids pinned to the dock, in order, without the `.desktop` suffix.
     pub favorites: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            panel: Panel::default(),
+            workspaces: Workspaces::default(),
+            input: Input::default(),
+            keybindings: Keybindings::default(),
+            power: Power::default(),
+            autostart: Vec::new(),
+            favorites: [
+                "org.nimbus.Files",
+                "org.nimbus.Terminal",
+                "org.nimbus.Monitor",
+                "org.nimbus.Settings",
+            ]
+            .map(String::from)
+            .to_vec(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +79,7 @@ impl Default for Appearance {
             color_scheme: ColorScheme::System,
             accent: "#3584e4".into(),
             wallpaper: None,
-            icon_theme: "hicolor".into(),
+            icon_theme: "Adwaita".into(),
             font_family: "Inter".into(),
             font_size: 11.0,
             scale: 1.0,
@@ -263,7 +285,9 @@ impl Config {
     /// Loads `path`, or returns the defaults when it doesn't exist.
     pub fn load_from(path: &Path) -> Result<Self, Error> {
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).map_err(|source| Error::Parse { path: path.into(), source }),
+            Ok(text) => {
+                toml::from_str(&text).map_err(|source| Error::Parse { path: path.into(), source })
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(source) => Err(Error::Io { path: path.into(), source }),
         }
@@ -295,7 +319,9 @@ mod tests {
 
     #[test]
     fn partial_file_keeps_other_defaults() {
-        let config: Config = toml::from_str("[panel]\nheight = 40\n[keybindings]\n\"Super+X\" = \"lock\"\n").unwrap();
+        let config: Config =
+            toml::from_str("[panel]\nheight = 40\n[keybindings]\n\"Super+X\" = \"lock\"\n")
+                .unwrap();
         assert_eq!(config.panel.height, 40);
         assert_eq!(config.panel.position, PanelPosition::Top);
         assert_eq!(config.keybindings.0.get("Super+X"), Some(&Action::Lock));
@@ -307,8 +333,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/config.toml");
         assert_eq!(Config::load_from(&path).unwrap(), Config::default());
-        let mut config = Config::default();
-        config.favorites = vec!["org.nimbus.Files".into()];
+        let config = Config { favorites: vec!["firefox".into()], ..Config::default() };
         config.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), config);
     }

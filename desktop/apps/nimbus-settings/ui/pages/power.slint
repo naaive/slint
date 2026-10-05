@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme } from "@nimbus/theme.slint";
+import { Prefs } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow, ChoiceRow } from "../widgets.slint";
+
+export component PowerPage inherits PageScroll {
+    Group {
+        title: "Power Saving";
+
+        ChoiceRow {
+            title: "Blank screen";
+            subtitle: "Turn the screen off when the computer is idle";
+            model: Prefs.blank-choices;
+            current-index <=> Prefs.blank-index;
+            chosen(index) => {
+                Prefs.choose-timeout("power.blank-after", index);
+            }
+        }
+    }
+
+    Group {
+        title: "Privacy";
+
+        ChoiceRow {
+            title: "Automatic screen lock";
+            subtitle: "Lock the screen when the computer is idle";
+            model: Prefs.lock-choices;
+            current-index <=> Prefs.lock-index;
+            chosen(index) => {
+                Prefs.choose-timeout("power.lock-after", index);
+            }
+        }
+    }
+
+    Group {
+        title: "Laptop";
+
+        SwitchRow {
+            title: "Suspend when the lid is closed";
+            subtitle: "Keeps running on battery from draining in a bag";
+            checked <=> Prefs.suspend-on-lid-close;
+            toggled(checked) => {
+                Prefs.set-bool("power.suspend-on-lid-close", checked);
+            }
+        }
+    }
+}

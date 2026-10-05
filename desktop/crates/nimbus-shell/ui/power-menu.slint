@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, Button, ButtonVariant } from "@nimbus/theme.slint";
+import { PowerAction } from "models.slint";
+
+// Asks before ending the session: restarting, powering off, or logging out.
+export component PowerDialog inherits Rectangle {
+    in property <PowerAction> action;
+
+    callback confirmed(action: PowerAction);
+    callback cancelled;
+
+    public function focus-keys() {
+        keys.focus();
+    }
+
+    private property <bool> open: root.action != PowerAction.none;
+    private property <float> progress: root.open ? 1 : 0;
+    // Keeps the text while fading out.
+    private property <PowerAction> last-action: PowerAction.power-off;
+    private property <PowerAction> shown-action: root.action != PowerAction.none ? root.action : root.last-action;
+    private property <string> title: root.shown-action == PowerAction.restart ? "Restart?" : root.shown-action == PowerAction.log-out ? "Log Out?" : "Power Off?";
+    private property <string> message: root.shown-action == PowerAction.restart ? "Open applications will be closed and the computer will restart."
+        : root.shown-action == PowerAction.log-out ? "Open applications will be closed and you will be logged out."
+        : "Open applications will be closed and the computer will power off.";
+    private property <string> confirm-text: root.shown-action == PowerAction.restart ? "Restart" : root.shown-action == PowerAction.log-out ? "Log Out" : "Power Off";
+
+    changed action => {
+        if root.action != PowerAction.none {
+            root.last-action = root.action;
+        }
+    }
+
+    visible: root.open || self.progress > 0;
+    opacity: root.progress;
+    background: Theme.overlay;
+    animate progress { duration: Theme.duration-normal; easing: root.open ? Motion.enter : Motion.exit; }
+
+    TouchArea {
+        clicked => {
+            root.cancelled();
+        }
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.confirmed(root.action);
+                return accept;
+            }
+            reject
+        }
+
+        dialog := Rectangle {
+            width: 400px;
+            height: layout.preferred-height;
+            border-radius: Theme.radius-xlarge * 1.5;
+            background: Theme.popup-background;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Theme.elevation-3.blur;
+            drop-shadow-offset-y: Theme.elevation-3.offset-y;
+            drop-shadow-color: Theme.elevation-3.color;
+            transform-scale: 0.94 + 0.06 * root.progress;
+            accessible-role: groupbox;
+            accessible-label: root.title;
+
+            TouchArea { }
+
+            layout := VerticalLayout {
+                padding: Theme.spacing-xl;
+                spacing: Theme.spacing-md;
+
+                Rectangle {
+                    height: 56px;
+
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: 28px;
+                        background: Theme.destructive.with-alpha(0.15);
+
+                        Icon {
+                            source: root.shown-action == PowerAction.restart ? Icons.restart : root.shown-action == PowerAction.log-out ? Icons.logout : Icons.power;
+                            size: 26px;
+                            color: Theme.error;
+                        }
+                    }
+                }
+                Text {
+                    text: root.title;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.headline.font-size;
+                    font-weight: Theme.headline.font-weight;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.message;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    padding-top: Theme.spacing-md;
+                    spacing: Theme.spacing-sm;
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Cancel";
+                        clicked => {
+                            root.cancelled();
+                        }
+                    }
+                    Button {
+                        horizontal-stretch: 1;
+                        text: root.confirm-text;
+                        variant: ButtonVariant.destructive;
+                        clicked => {
+                            root.confirmed(root.action);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

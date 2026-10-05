@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, IconButton, Slider, Divider } from "@nimbus/theme.slint";
+import { SystemStatus, PowerAction, NetworkKind } from "models.slint";
+import { ShellPopup, MenuItem, StatusIcons } from "common.slint";
+
+// A quick toggle: the main area switches the feature, the optional chevron opens its settings.
+component ToggleTile inherits Rectangle {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <bool> has-details;
+
+    callback toggled;
+    callback details;
+
+    private property <color> content: root.checked ? Theme.on-accent : Theme.text;
+
+    height: 56px;
+    min-width: 0;
+    preferred-width: 0;
+    horizontal-stretch: 1;
+    border-radius: self.height / 2;
+    background: root.checked
+        ? (main-touch.pressed ? Theme.accent-pressed : main-touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : (main-touch.pressed ? Theme.control-pressed : main-touch.has-hover ? Theme.control-hover : Theme.control);
+    opacity: root.enabled ? 1 : 0.5;
+    animate background { duration: Theme.duration-normal; easing: Motion.standard; }
+    accessible-role: switch;
+    accessible-label: root.title;
+    accessible-description: root.subtitle;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.toggled();
+        }
+    }
+
+    main-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.toggled();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        spacing: Theme.spacing-md;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            source: root.icon;
+            color: root.content;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.title;
+                color: root.content;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                overflow: elide;
+            }
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                color: root.content.with-alpha(0.8);
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                overflow: elide;
+            }
+        }
+        if root.has-details: Rectangle {
+            width: 40px;
+            border-radius: root.height / 2;
+            background: details-touch.has-hover ? (root.checked ? Theme.accent-pressed : Theme.control-pressed) : transparent;
+            accessible-role: button;
+            accessible-label: root.title + " settings";
+            accessible-action-default => {
+                root.details();
+            }
+
+            Rectangle {
+                x: 0;
+                width: 1px;
+                height: 24px;
+                background: root.content.with-alpha(0.25);
+            }
+            Icon {
+                source: Icons.chevron-right;
+                color: root.content;
+            }
+            details-touch := TouchArea {
+                clicked => {
+                    root.details();
+                }
+            }
+        }
+        if !root.has-details: Rectangle {
+            width: Theme.spacing-sm;
+        }
+    }
+}
+
+component MediaCard inherits Rectangle {
+    in property <SystemStatus> status;
+
+    callback previous;
+    callback play-pause;
+    callback next;
+
+    height: 72px;
+    border-radius: Theme.radius-xlarge;
+    background: Theme.control;
+
+    HorizontalLayout {
+        padding: Theme.spacing-md;
+        spacing: Theme.spacing-md;
+
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            cross-axis-self-alignment: center;
+            border-radius: Theme.radius-medium;
+            background: @linear-gradient(135deg, Theme.accent 0%, Theme.accent-pressed 100%);
+
+            Icon {
+                source: Icons.music;
+                size: 24px;
+                color: Theme.on-accent;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.status.media-title != "" ? root.status.media-title : root.status.media-player;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                overflow: elide;
+            }
+            if root.status.media-artist != "": Text {
+                text: root.status.media-artist;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                overflow: elide;
+            }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.previous;
+            accessible-label: "Previous track";
+            clicked => {
+                root.previous();
+            }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: root.status.media-playing ? Icons.pause : Icons.play;
+            filled: true;
+            accessible-label: root.status.media-playing ? "Pause" : "Play";
+            clicked => {
+                root.play-pause();
+            }
+        }
+        IconButton {
+            cross-axis-self-alignment: center;
+            icon: Icons.next;
+            accessible-label: "Next track";
+            clicked => {
+                root.next();
+            }
+        }
+    }
+}
+
+// The system menu: levels, quick toggles, media, and session actions.
+export component QuickSettings inherits ShellPopup {
+    in property <SystemStatus> status;
+    in property <bool> dark-style;
+    in property <bool> do-not-disturb;
+    in-out property <float> volume;
+    in-out property <float> brightness;
+    in-out property <bool> power-menu-open;
+
+    callback volume-changed(value: float);
+    callback mute-toggled;
+    callback brightness-changed(value: float);
+    callback wifi-toggled;
+    callback bluetooth-toggled;
+    callback do-not-disturb-toggled;
+    callback dark-style-toggled;
+    callback settings-requested(page: string);
+    callback media-previous;
+    callback media-play-pause;
+    callback media-next;
+    callback lock-requested;
+    callback suspend-requested;
+    callback power-requested(action: PowerAction);
+
+    width: 420px;
+    content-padding: Theme.spacing-lg;
+    spacing: Theme.spacing-lg;
+
+    HorizontalLayout {
+        spacing: Theme.spacing-sm;
+
+        if root.status.has-battery: Rectangle {
+            border-radius: self.height / 2;
+            background: Theme.control;
+            height: Theme.control-height;
+
+            HorizontalLayout {
+                padding-left: Theme.spacing-md;
+                padding-right: Theme.spacing-md;
+                spacing: Theme.spacing-sm;
+
+                Icon {
+                    cross-axis-self-alignment: center;
+                    source: StatusIcons.battery(root.status);
+                }
+                Text {
+                    text: round(root.status.battery-level * 100) + " %";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body-strong.font-size;
+                    font-weight: Theme.body-strong.font-weight;
+                    vertical-alignment: center;
+                }
+                if root.status.battery-detail != "": Text {
+                    text: root.status.battery-detail;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        IconButton {
+            icon: Icons.settings;
+            filled: true;
+            accessible-label: "System Settings";
+            clicked => {
+                root.settings-requested("");
+            }
+        }
+        IconButton {
+            icon: Icons.lock;
+            filled: true;
+            accessible-label: "Lock Screen";
+            clicked => {
+                root.lock-requested();
+            }
+        }
+        IconButton {
+            icon: Icons.power;
+            filled: true;
+            checked: root.power-menu-open;
+            accessible-label: "Power Off or Log Out";
+            clicked => {
+                root.power-menu-open = !root.power-menu-open;
+            }
+        }
+    }
+
+    if root.power-menu-open: Rectangle {
+        border-radius: Theme.radius-xlarge;
+        background: Theme.control;
+        height: power-layout.preferred-height;
+
+        power-layout := VerticalLayout {
+            padding: Theme.spacing-xs;
+
+            MenuItem {
+                icon: Icons.suspend;
+                text: "Suspend";
+                clicked => {
+                    root.suspend-requested();
+                }
+            }
+            MenuItem {
+                icon: Icons.restart;
+                text: "Restart…";
+                clicked => {
+                    root.power-requested(PowerAction.restart);
+                }
+            }
+            MenuItem {
+                icon: Icons.power;
+                text: "Power Off…";
+                clicked => {
+                    root.power-requested(PowerAction.power-off);
+                }
+            }
+            Divider { }
+            MenuItem {
+                icon: Icons.logout;
+                text: "Log Out…";
+                clicked => {
+                    root.power-requested(PowerAction.log-out);
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        if root.status.has-audio: HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            IconButton {
+                cross-axis-self-alignment: center;
+                icon: StatusIcons.volume(root.volume / 100, root.status.muted);
+                accessible-label: root.status.muted ? "Unmute" : "Mute";
+                clicked => {
+                    root.mute-toggled();
+                }
+            }
+            Slider {
+                minimum: 0;
+                maximum: 100;
+                step: 5;
+                value <=> root.volume;
+                accessible-label: "Volume";
+                changed(value) => {
+                    root.volume-changed(value);
+                }
+            }
+        }
+        if root.status.has-brightness: HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            Rectangle {
+                width: Theme.control-height;
+                height: Theme.control-height;
+                cross-axis-self-alignment: center;
+
+                Icon {
+                    source: Icons.brightness;
+                }
+            }
+            Slider {
+                minimum: 1;
+                maximum: 100;
+                step: 5;
+                value <=> root.brightness;
+                accessible-label: "Brightness";
+                changed(value) => {
+                    root.brightness-changed(value);
+                }
+            }
+        }
+    }
+
+    GridLayout {
+        spacing: Theme.spacing-sm;
+
+        Row {
+            ToggleTile {
+                icon: StatusIcons.network(root.status);
+                title: root.status.network == NetworkKind.ethernet ? "Wired" : "Wi-Fi";
+                subtitle: root.status.network == NetworkKind.ethernet ? (root.status.online ? "Connected" : "No Internet")
+                    : !root.status.wifi-enabled ? "Off"
+                    : root.status.network == NetworkKind.wifi ? root.status.network-name : "Not Connected";
+                checked: root.status.network == NetworkKind.ethernet || root.status.wifi-enabled;
+                has-details: true;
+                toggled => {
+                    root.wifi-toggled();
+                }
+                details => {
+                    root.settings-requested("network");
+                }
+            }
+            ToggleTile {
+                icon: root.status.bluetooth-powered ? Icons.bluetooth : Icons.bluetooth-off;
+                title: "Bluetooth";
+                subtitle: !root.status.has-bluetooth ? "Unavailable" : root.status.bluetooth-detail;
+                checked: root.status.has-bluetooth && root.status.bluetooth-powered;
+                enabled: root.status.has-bluetooth;
+                has-details: root.status.has-bluetooth;
+                toggled => {
+                    root.bluetooth-toggled();
+                }
+                details => {
+                    root.settings-requested("bluetooth");
+                }
+            }
+        }
+        Row {
+            ToggleTile {
+                icon: root.do-not-disturb ? Icons.bell-off : Icons.bell;
+                title: "Do Not Disturb";
+                subtitle: root.do-not-disturb ? "On" : "Off";
+                checked: root.do-not-disturb;
+                toggled => {
+                    root.do-not-disturb-toggled();
+                }
+            }
+            ToggleTile {
+                icon: root.dark-style ? Icons.moon : Icons.sun;
+                title: "Dark Style";
+                subtitle: root.dark-style ? "On" : "Off";
+                checked: root.dark-style;
+                toggled => {
+                    root.dark-style-toggled();
+                }
+            }
+        }
+    }
+
+    if root.status.has-media: MediaCard {
+        status: root.status;
+        previous => {
+            root.media-previous();
+        }
+        play-pause => {
+            root.media-play-pause();
+        }
+        next => {
+            root.media-next();
+        }
+    }
+}

@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "icon.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// A button that opens a list of options, for longer or dynamic choices.
+export component Dropdown {
+    in property <[string]> model;
+    in property <bool> enabled: true;
+    // Shown when `current-index` doesn't name an entry of `model`.
+    in property <string> placeholder;
+    in-out property <int> current-index: 0;
+    out property <string> current-value: root.current-index >= 0 && root.current-index < root.model.length
+        ? root.model[root.current-index] : "";
+    out property <bool> has-focus: focus-scope.has-focus;
+
+    // Emitted after a user action changes `current-index`.
+    callback selected(index: int, value: string);
+
+    function select(index: int) {
+        if root.enabled && index >= 0 && index < root.model.length && index != root.current-index {
+            root.current-index = index;
+            root.selected(index, root.model[index]);
+        }
+    }
+
+    public function open() {
+        if root.enabled && root.model.length > 0 {
+            popup.show();
+        }
+    }
+
+    min-height: Theme.control-height;
+    min-width: max(140px, layout.min-width);
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: combobox;
+    accessible-value: root.current-value;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.open();
+    }
+    forward-focus: focus-scope;
+
+    Rectangle {
+        border-radius: Theme.radius-medium;
+        background: touch.pressed ? Theme.control-pressed : touch.has-hover ? Theme.control-hover : Theme.control;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    layout := HorizontalLayout {
+        cross-axis-alignment: center;
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-sm;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.current-value != "" ? root.current-value : root.placeholder;
+            color: root.current-value != "" ? Theme.text : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Icon {
+            source: Icons.chevron-down;
+            color: Theme.text-secondary;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            focus-scope.focus();
+            root.open();
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.open();
+                return accept;
+            }
+            if event.text == Key.DownArrow {
+                root.select(root.current-index + 1);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.select(root.current-index - 1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if focus-scope.keyboard-focus: FocusRing {
+        radius: Theme.radius-medium;
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + Theme.spacing-xs;
+        width: root.width;
+
+        Rectangle {
+            border-radius: Theme.radius-large;
+            background: Theme.popup-background;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Theme.elevation-2.blur;
+            drop-shadow-offset-y: Theme.elevation-2.offset-y;
+            drop-shadow-color: Theme.elevation-2.color;
+        }
+
+        VerticalLayout {
+            padding: Theme.spacing-xs;
+
+            for item[index] in root.model: Rectangle {
+                height: Theme.control-height;
+                border-radius: Theme.radius-medium - Theme.spacing-xs / 2;
+                background: item-touch.has-hover ? Theme.surface-hover : transparent;
+
+                HorizontalLayout {
+                    cross-axis-alignment: center;
+                    padding-left: Theme.spacing-sm;
+                    padding-right: Theme.spacing-sm;
+                    spacing: Theme.spacing-sm;
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: item;
+                        color: Theme.text;
+                        font-family: Theme.font-family;
+                        font-size: Theme.body.font-size;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    Icon {
+                        source: Icons.check;
+                        color: Theme.accent-text;
+                        visible: index == root.current-index;
+                    }
+                }
+
+                item-touch := TouchArea {
+                    clicked => {
+                        root.select(index);
+                    }
+                }
+            }
+        }
+    }
+}

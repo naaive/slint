@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Card, Label, Button, Icon, Icons } from "@nimbus/theme.slint";
+import { ShortcutInfo } from "types.slint";
+
+// A dimmed backdrop that swallows clicks, with a dialog card centered on it.
+component Backdrop inherits Rectangle {
+    background: Theme.overlay;
+
+    TouchArea { }
+
+    @children
+}
+
+// Asks before closing something that has a program running.
+export component ConfirmDialog inherits Backdrop {
+    in property <string> title;
+    in property <string> message;
+    in property <string> action: "Close";
+
+    callback accepted();
+    callback cancelled();
+
+    Card {
+        width: min(420px, root.width - 2 * Theme.spacing-xl);
+        height: self.preferred-height;
+        elevated: true;
+        content-padding: Theme.spacing-xl;
+        spacing: Theme.spacing-lg;
+        accessible-role: groupbox;
+        accessible-label: root.title;
+
+        scope := FocusScope {
+            height: 0;
+            init => {
+                self.focus();
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.cancelled();
+                    return accept;
+                }
+                if event.text == Key.Return {
+                    root.accepted();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.spacing-md;
+
+            Icon {
+                y: 2px;
+                source: Icons.warning;
+                size: Theme.icon-size-large;
+                color: Theme.warning;
+            }
+
+            VerticalLayout {
+                spacing: Theme.spacing-sm;
+
+                Label {
+                    text: root.title;
+                    style: Theme.title;
+                    wrap: word-wrap;
+                }
+
+                Text {
+                    text: root.message;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: Theme.spacing-sm;
+
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancelled();
+                }
+            }
+
+            Button {
+                text: root.action;
+                variant: destructive;
+                clicked => {
+                    root.accepted();
+                }
+            }
+        }
+    }
+}
+
+// The keyboard shortcuts reference.
+export component ShortcutsDialog inherits Backdrop {
+    in property <[ShortcutInfo]> shortcuts;
+
+    callback close();
+
+    Card {
+        width: min(440px, root.width - 2 * Theme.spacing-xl);
+        height: self.preferred-height;
+        elevated: true;
+        content-padding: Theme.spacing-xl;
+        spacing: Theme.spacing-sm;
+        accessible-role: groupbox;
+        accessible-label: "Keyboard Shortcuts";
+
+        FocusScope {
+            height: 0;
+            init => {
+                self.focus();
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape || event.text == Key.Return {
+                    root.close();
+                    return accept;
+                }
+                reject
+            }
+        }
+
+        HorizontalLayout {
+            Label {
+                horizontal-stretch: 1;
+                text: "Keyboard Shortcuts";
+                style: Theme.title;
+                vertical-alignment: center;
+            }
+
+            Button {
+                icon: Icons.close;
+                variant: flat;
+                compact: true;
+                accessible-label: "Close";
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+
+        for shortcut in root.shortcuts: HorizontalLayout {
+            spacing: Theme.spacing-md;
+
+            Text {
+                horizontal-stretch: 1;
+                text: shortcut.action;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                width: keys.preferred-width + 2 * Theme.spacing-sm;
+                height: keys.preferred-height + Theme.spacing-xs * 2;
+                border-radius: Theme.radius-small;
+                background: Theme.control;
+
+                keys := Text {
+                    text: shortcut.keys;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                }
+            }
+        }
+    }
+}

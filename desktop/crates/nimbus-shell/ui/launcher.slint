@@ -1,0 +1,359 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, FocusRing } from "@nimbus/theme.slint";
+import { AppItem } from "models.slint";
+import { AppIcon } from "common.slint";
+
+// The launcher's search entry. Unlike `SearchField`, it can place the cursor,
+// so that typing in the overview continues here.
+component LauncherSearch inherits Rectangle {
+    in-out property <string> text;
+
+    callback edited(text: string);
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    // `offset` is in UTF-8 bytes.
+    public function place-cursor(offset: int) {
+        input.focus();
+        input.set-selection-offsets(offset, offset);
+    }
+
+    function clear() {
+        if root.text != "" {
+            root.text = "";
+            root.edited("");
+        }
+    }
+
+    height: 44px;
+    border-radius: self.height / 2;
+    background: input.has-focus ? Theme.surface-sunken : Theme.control;
+    border-width: input.has-focus ? 2px : 0;
+    border-color: Theme.focus-ring;
+    accessible-role: text-input;
+    accessible-label: "Search";
+    accessible-value: root.text;
+    accessible-placeholder-text: "Type to search applications";
+
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        padding-right: Theme.spacing-xs;
+        spacing: Theme.spacing-sm;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            source: Icons.search;
+            color: Theme.text-secondary;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            if root.text == "": Text {
+                width: 100%;
+                text: "Type to search applications";
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            input := TextInput {
+                width: 100%;
+                text <=> root.text;
+                single-line: true;
+                color: Theme.text;
+                selection-background-color: Theme.accent.with-alpha(0.4);
+                selection-foreground-color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+                edited => {
+                    root.edited(self.text);
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape && root.text != "" {
+                        root.clear();
+                        return accept;
+                    }
+                    reject
+                }
+            }
+        }
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: 36px;
+            height: 36px;
+            border-radius: 18px;
+            visible: root.text != "";
+            background: clear-touch.has-hover ? Theme.control-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Clear";
+            accessible-action-default => {
+                root.clear();
+            }
+
+            Icon {
+                source: Icons.close;
+                size: 14px;
+                color: Theme.text-secondary;
+            }
+            clear-touch := TouchArea {
+                clicked => {
+                    root.clear();
+                    input.focus();
+                }
+            }
+        }
+    }
+}
+
+component AppTile inherits Rectangle {
+    in property <AppItem> app;
+    in property <bool> selected;
+
+    callback clicked;
+    callback hovered;
+
+    border-radius: Theme.radius-xlarge;
+    background: touch.pressed ? Theme.surface-pressed : root.selected ? Theme.surface-selected : touch.has-hover ? Theme.surface-hover : transparent;
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: list-item;
+    accessible-label: root.app.name;
+    accessible-description: root.app.description;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    VerticalLayout {
+        padding: Theme.spacing-md;
+        padding-top: Theme.spacing-lg;
+        spacing: Theme.spacing-sm;
+        alignment: start;
+
+        AppIcon {
+            size: 64px;
+            visual: root.app.visual;
+            cross-axis-self-alignment: center;
+        }
+        Text {
+            text: root.app.name;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            horizontal-alignment: center;
+            vertical-alignment: top;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 2.6 * Theme.body.font-size;
+        }
+    }
+
+    if root.selected: FocusRing {
+        radius: Theme.radius-xlarge;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if self.has-hover {
+                root.hovered();
+            }
+        }
+    }
+}
+
+// The full-screen application launcher: a search field over a grid of applications.
+// Typing filters through `query-edited`; arrow keys move the selection and Enter launches it.
+export component Launcher inherits Rectangle {
+    in property <bool> open;
+    in property <[AppItem]> apps;
+    in property <length> top-inset;
+    in property <length> bottom-inset;
+    in-out property <string> query;
+    in-out property <int> selected;
+
+    callback query-edited(text: string);
+    callback activated(index: int);
+    callback close-requested;
+
+    public function focus-search() {
+        search.focus-input();
+    }
+
+    public function place-cursor(offset: int) {
+        search.place-cursor(offset);
+    }
+
+    private property <float> progress: root.open ? 1 : 0;
+    private property <length> cell-width: 132px;
+    private property <length> cell-height: 132px;
+    private property <int> columns: max(1, min(8, floor((root.width - 2 * Theme.spacing-xxl) / root.cell-width)));
+    private property <int> rows: ceil(root.apps.length / root.columns);
+    private property <length> grid-width: root.columns * root.cell-width;
+
+    visible: root.open || self.progress > 0;
+    opacity: root.progress;
+    background: Theme.background.with-alpha(0.88);
+    animate progress { duration: Theme.duration-normal; easing: root.open ? Motion.enter : Motion.exit; }
+
+    function move-selection(delta: int) {
+        if root.apps.length == 0 {
+            return;
+        }
+        root.selected = clamp(root.selected + delta, 0, root.apps.length - 1);
+        root.ensure-visible();
+    }
+
+    function ensure-visible() {
+        let top = floor(root.selected / root.columns) * root.cell-height;
+        if top < -flick.content-y {
+            flick.content-y = -top;
+        } else if top + root.cell-height > -flick.content-y + flick.height {
+            flick.content-y = -(top + root.cell-height - flick.height);
+        }
+    }
+
+    // A click on the backdrop closes the launcher, like in the overview.
+    TouchArea {
+        clicked => {
+            root.close-requested();
+        }
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        capture-key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                root.move-selection(root.columns);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.move-selection(-root.columns);
+                return accept;
+            }
+            if event.text == Key.RightArrow || (event.text == Key.Tab && !event.modifiers.shift) {
+                root.move-selection(1);
+                return accept;
+            }
+            if event.text == Key.LeftArrow || event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift) {
+                root.move-selection(-1);
+                return accept;
+            }
+            if event.text == Key.PageDown {
+                root.move-selection(root.columns * max(1, floor(flick.height / root.cell-height)));
+                return accept;
+            }
+            if event.text == Key.PageUp {
+                root.move-selection(-root.columns * max(1, floor(flick.height / root.cell-height)));
+                return accept;
+            }
+            if event.text == Key.Return {
+                if root.apps.length > 0 {
+                    root.activated(clamp(root.selected, 0, root.apps.length - 1));
+                }
+                return accept;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close-requested();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding-top: root.top-inset + Theme.spacing-xxl;
+            padding-bottom: root.bottom-inset + Theme.spacing-lg;
+            spacing: Theme.spacing-xl;
+            transform-scale: 0.96 + 0.04 * root.progress;
+
+            HorizontalLayout {
+                alignment: center;
+
+                padding-left: Theme.spacing-xl;
+                padding-right: Theme.spacing-xl;
+
+                search := LauncherSearch {
+                    preferred-width: 520px;
+                    max-width: 520px;
+                    horizontal-stretch: 1;
+                    text <=> root.query;
+                    edited(text) => {
+                        root.selected = 0;
+                        flick.content-y = 0;
+                        root.query-edited(text);
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                flick := Flickable {
+                    content-width: self.width;
+                    content-height: max(self.height, root.rows * root.cell-height);
+
+                    for app[index] in root.apps: AppTile {
+                        x: (flick.width - root.grid-width) / 2 + mod(index, root.columns) * root.cell-width + 4px;
+                        y: floor(index / root.columns) * root.cell-height + 4px;
+                        width: root.cell-width - 8px;
+                        height: root.cell-height - 8px;
+                        app: app;
+                        selected: index == root.selected;
+                        clicked => {
+                            root.activated(index);
+                        }
+                        hovered => {
+                            root.selected = index;
+                        }
+                    }
+                }
+
+                if root.apps.length == 0: VerticalLayout {
+                    y: Theme.spacing-xxl;
+                    height: self.preferred-height;
+                    spacing: Theme.spacing-sm;
+
+                    Icon {
+                        cross-axis-self-alignment: center;
+                        source: Icons.search;
+                        size: 48px;
+                        color: Theme.text-secondary;
+                    }
+                    Text {
+                        text: "No Applications Found";
+                        color: Theme.text;
+                        font-family: Theme.font-family;
+                        font-size: Theme.title.font-size;
+                        font-weight: Theme.title.font-weight;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Try a different search";
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: Theme.body.font-size;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

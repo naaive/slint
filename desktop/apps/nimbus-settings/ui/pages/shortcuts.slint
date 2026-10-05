@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Icon, Label, ListRow, Button, IconButton, SearchField } from "@nimbus/theme.slint";
+import { ShortcutsModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, Keycap, Banner, EmptyState } from "../widgets.slint";
+
+export component ShortcutsPage inherits PageScroll {
+    HorizontalLayout {
+        spacing: Theme.spacing-sm;
+
+        SearchField {
+            placeholder: "Search shortcuts";
+            text <=> ShortcutsModel.filter;
+            edited(text) => {
+                ShortcutsModel.filter-edited(text);
+            }
+        }
+
+        Button {
+            text: "Add Shortcut";
+            icon: Icons.plus;
+            variant: primary;
+            clicked => {
+                ShortcutsModel.add();
+            }
+        }
+
+        Button {
+            text: "Reset All";
+            icon: Icons.restart;
+            clicked => {
+                ShortcutsModel.reset();
+            }
+        }
+    }
+
+    if ShortcutsModel.conflict-count > 0: Banner {
+        error: true;
+        dismissible: false;
+        min-height: Theme.control-height + 2 * Theme.spacing-xs;
+        text: ShortcutsModel.conflict-count + " shortcuts share their keys with another one, so only one of each works. Change or remove the marked ones.";
+    }
+
+    if ShortcutsModel.categories.length == 0: EmptyState {
+        icon: Icons.search;
+        title: "No Shortcuts Found";
+        description: "Try a different search, or add a shortcut.";
+    }
+
+    for category in ShortcutsModel.categories: Group {
+        title: category.title;
+
+        for item[index] in category.items: VerticalLayout {
+            if index > 0: RowDivider { }
+
+            ListRow {
+                title: item.description;
+                subtitle: item.conflict ? "Uses the same keys as another shortcut" : "";
+                accessible-description: item.chord;
+                clicked => {
+                    ShortcutsModel.edit(item.chord);
+                }
+
+                if item.conflict: Icon {
+                    source: Icons.warning;
+                    color: Theme.warning;
+                }
+
+                for key in item.keys: Keycap {
+                    text: key;
+                }
+
+                IconButton {
+                    icon: Icons.close;
+                    size: Theme.control-height-small;
+                    accessible-label: "Remove the shortcut for " + item.description;
+                    clicked => {
+                        ShortcutsModel.remove(item.chord);
+                    }
+                }
+            }
+        }
+    }
+
+    Label {
+        text: "Select a shortcut to change its keys. Shortcuts take effect immediately.";
+        style: Theme.caption;
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+}

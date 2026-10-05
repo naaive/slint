@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: MIT
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Label, Icons, ProgressBar, Tone } from "@nimbus/theme.slint";
+import { Graph, CoreItem } from "types.slint";
+import { GraphView, Legend, ResourceCard } from "widgets.slint";
+
+export component ResourcesPage inherits Rectangle {
+    in property <Graph> cpu;
+    in property <string> cpu-detail;
+    in property <[CoreItem]> cores;
+    in property <Graph> memory;
+    in property <string> memory-detail;
+    in property <Graph> network;
+    in property <string> network-detail;
+    in property <Graph> disk;
+    in property <string> disk-detail;
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.spacing-lg;
+            spacing: Theme.spacing-lg;
+
+            ResourceCard {
+                icon: Icons.cpu;
+                title: "CPU";
+                detail: root.cpu-detail;
+                GraphView {
+                    height: 150px;
+                    graph: root.cpu;
+                }
+                Legend {
+                    primary-color: Theme.accent;
+                    label: "Total";
+                    value: root.cpu.value;
+                }
+                if root.cores.length > 0: GridLayout {
+                    spacing: Theme.spacing-sm;
+                    for core[i] in root.cores: HorizontalLayout {
+                        row: i / 4;
+                        col: mod(i, 4);
+                        spacing: Theme.spacing-sm;
+                        Label {
+                            width: 44px;
+                            text: core.label;
+                            style: Theme.caption;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        ProgressBar {
+                            progress: core.usage;
+                            tone: core.usage > 0.85 ? Tone.warning : Tone.accent;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Label {
+                            width: 40px;
+                            text: core.text;
+                            style: Theme.caption;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            ResourceCard {
+                icon: Icons.memory;
+                title: "Memory and Swap";
+                detail: root.memory-detail;
+                GraphView {
+                    height: 120px;
+                    graph: root.memory;
+                    primary-color: #9b6bf2;
+                    secondary-color: Theme.success;
+                }
+                HorizontalLayout {
+                    spacing: Theme.spacing-xl;
+                    alignment: start;
+                    Legend {
+                        primary-color: #9b6bf2;
+                        label: "Memory";
+                        value: root.memory.value;
+                    }
+                    Legend {
+                        primary-color: Theme.success;
+                        label: "Swap";
+                        value: root.memory.secondary-value;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-lg;
+
+                ResourceCard {
+                    icon: Icons.network-activity;
+                    title: "Network";
+                    detail: root.network-detail;
+                    GraphView {
+                        height: 110px;
+                        graph: root.network;
+                        primary-color: Theme.accent;
+                        secondary-color: #f28f3b;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.spacing-lg;
+                        alignment: start;
+                        Legend {
+                            primary-color: Theme.accent;
+                            label: "Receiving";
+                            value: root.network.value;
+                        }
+                        Legend {
+                            primary-color: #f28f3b;
+                            label: "Sending";
+                            value: root.network.secondary-value;
+                        }
+                    }
+                }
+
+                ResourceCard {
+                    icon: Icons.disk;
+                    title: "Disk";
+                    detail: root.disk-detail;
+                    GraphView {
+                        height: 110px;
+                        graph: root.disk;
+                        primary-color: #2ec27e;
+                        secondary-color: #e66100;
+                    }
+                    HorizontalLayout {
+                        spacing: Theme.spacing-lg;
+                        alignment: start;
+                        Legend {
+                            primary-color: #2ec27e;
+                            label: "Reading";
+                            value: root.disk.value;
+                        }
+                        Legend {
+                            primary-color: #e66100;
+                            label: "Writing";
+                            value: root.disk.secondary-value;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

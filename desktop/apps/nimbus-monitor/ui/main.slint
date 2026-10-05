@@ -1,7 +1,370 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: replaced by the app's agent.
-import { Theme } from "@nimbus/theme.slint";
-export { Theme }
+import { Palette } from "std-widgets.slint";
+import {
+    Theme, Motion, Label, Icon, Icons, Button, ButtonVariant, NavigationItem, HeaderBar, Dropdown, Card,
+} from "@nimbus/theme.slint";
+import { ProcessRow, ProcessIcon, CoreItem, FileSystemRow, Graph, PendingSignal } from "types.slint";
+import { ProcessesPage } from "processes.slint";
+import { ResourcesPage } from "resources.slint";
+import { FileSystemsPage } from "filesystems.slint";
 
-export component AppWindow inherits Window {}
+export { Theme, ProcessRow, ProcessIcon, CoreItem, FileSystemRow, Graph, PendingSignal }
+
+export component AppWindow inherits Window {
+    title: "System Monitor";
+    preferred-width: 1040px;
+    preferred-height: 700px;
+    min-width: 760px;
+    min-height: 480px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+
+    // 0 Processes, 1 Resources, 2 File Systems.
+    in-out property <int> page: 0;
+
+    in property <string> host-name;
+    in property <string> os-name;
+    in property <string> uptime;
+    in property <string> load;
+
+    // Processes.
+    in property <[ProcessRow]> processes;
+    in property <int> sort-column: 2;
+    in property <bool> sort-descending: true;
+    in-out property <int> selected-pid: -1;
+    in property <string> process-summary;
+    in property <string> process-status;
+    in-out property <string> query;
+    in-out property <bool> tree;
+    // 0 My processes, 1 All processes.
+    in-out property <int> scope;
+
+    // Resources.
+    in property <Graph> cpu-graph;
+    in property <string> cpu-detail;
+    in property <[CoreItem]> cores;
+    in property <Graph> memory-graph;
+    in property <string> memory-detail;
+    in property <Graph> network-graph;
+    in property <string> network-detail;
+    in property <Graph> disk-graph;
+    in property <string> disk-detail;
+    // Index into the update interval choices.
+    in-out property <int> interval-index;
+
+    // File systems.
+    in property <[FileSystemRow]> file-systems;
+
+    // The signal awaiting confirmation, and the process it's for.
+    in-out property <PendingSignal> pending: PendingSignal.none;
+    in property <string> pending-name;
+
+    callback page-selected(page: int);
+    callback query-edited(text: string);
+    callback tree-toggled(tree: bool);
+    callback scope-selected(scope: int);
+    callback interval-selected(index: int);
+    callback sort-requested(column: int);
+    callback select(pid: int);
+    callback move-selection(delta: int);
+    callback request-signal(signal: PendingSignal);
+    callback stop-selected();
+    callback continue-selected();
+    callback confirm-signal();
+    callback quit();
+
+    private property <bool> dark: Theme.dark;
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+        processes-page.focus();
+    }
+
+    public function focus-search() {
+        root.page = 0;
+        processes-page.focus-search();
+    }
+
+    function handle-key(event: KeyEvent) -> bool {
+        if event.modifiers.control && (event.text == "f" || event.text == "F") {
+            root.focus-search();
+            root.page-selected(0);
+            return true;
+        }
+        if event.modifiers.control && (event.text == "q" || event.text == "w") {
+            root.quit();
+            return true;
+        }
+        if event.modifiers.alt && event.text >= "1" && event.text <= "3" {
+            root.page = event.text.to-float() - 1;
+            root.page-selected(root.page);
+            return true;
+        }
+        if root.page == 0 {
+            if event.text == Key.UpArrow {
+                root.move-selection(-1);
+                return true;
+            }
+            if event.text == Key.DownArrow {
+                root.move-selection(1);
+                return true;
+            }
+            if event.text == Key.PageUp {
+                root.move-selection(-10);
+                return true;
+            }
+            if event.text == Key.PageDown {
+                root.move-selection(10);
+                return true;
+            }
+            if event.text == Key.Delete && root.selected-pid >= 0 {
+                root.request-signal(event.modifiers.shift ? PendingSignal.kill : PendingSignal.end);
+                return true;
+            }
+        }
+        if event.text == Key.Escape && root.pending != PendingSignal.none {
+            root.pending = PendingSignal.none;
+            return true;
+        }
+        false
+    }
+
+    FocusScope {
+        key-pressed(event) => {
+            root.handle-key(event) ? EventResult.accept : EventResult.reject
+        }
+
+        HorizontalLayout {
+            // Sidebar.
+            Rectangle {
+                width: 220px;
+                background: Theme.surface-sunken;
+
+                VerticalLayout {
+                    padding: Theme.spacing-md;
+                    spacing: Theme.spacing-xs;
+
+                    HorizontalLayout {
+                        padding: Theme.spacing-sm;
+                        padding-bottom: Theme.spacing-md;
+                        spacing: Theme.spacing-sm;
+                        Icon {
+                            source: Icons.monitor;
+                            size: Theme.icon-size-large;
+                            color: Theme.accent-text;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Label {
+                            text: "System Monitor";
+                            style: Theme.title;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    NavigationItem {
+                        icon: Icons.application;
+                        text: "Processes";
+                        selected: root.page == 0;
+                        clicked => {
+                            root.page = 0;
+                            root.page-selected(0);
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.network-activity;
+                        text: "Resources";
+                        selected: root.page == 1;
+                        clicked => {
+                            root.page = 1;
+                            root.page-selected(1);
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.disk;
+                        text: "File Systems";
+                        selected: root.page == 2;
+                        clicked => {
+                            root.page = 2;
+                            root.page-selected(2);
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; }
+
+                    VerticalLayout {
+                        padding: Theme.spacing-sm;
+                        spacing: Theme.spacing-xxs;
+                        Label {
+                            text: root.host-name;
+                            style: Theme.body-strong;
+                            overflow: elide;
+                        }
+                        Label {
+                            text: root.os-name;
+                            style: Theme.caption;
+                            color: Theme.text-secondary;
+                            overflow: elide;
+                        }
+                        Label {
+                            text: "Up " + root.uptime;
+                            style: Theme.caption;
+                            color: Theme.text-secondary;
+                        }
+                        Label {
+                            text: "Load " + root.load;
+                            style: Theme.caption;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.border;
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+
+                HeaderBar {
+                    title: root.page == 0 ? "Processes" : root.page == 1 ? "Resources" : "File Systems";
+
+                    Label {
+                        text: "Update every";
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    Dropdown {
+                        width: 96px;
+                        model: ["0.5 s", "1 s", "2 s", "5 s", "10 s"];
+                        current-index <=> root.interval-index;
+                        selected(index) => {
+                            root.interval-selected(index);
+                        }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    processes-page := ProcessesPage {
+                        visible: root.page == 0;
+                        rows: root.processes;
+                        sort-column: root.sort-column;
+                        sort-descending: root.sort-descending;
+                        selected-pid: root.selected-pid;
+                        summary: root.process-summary;
+                        status: root.process-status;
+                        query <=> root.query;
+                        tree <=> root.tree;
+                        scope <=> root.scope;
+                        query-edited(text) => {
+                            root.query-edited(text);
+                        }
+                        tree-toggled(tree) => {
+                            root.tree-toggled(tree);
+                        }
+                        scope-selected(scope) => {
+                            root.scope-selected(scope);
+                        }
+                        sort-requested(column) => {
+                            root.sort-requested(column);
+                        }
+                        select(pid) => {
+                            root.select(pid);
+                        }
+                        activate(pid) => {
+                            root.select(pid);
+                        }
+                        end-selected => {
+                            root.request-signal(PendingSignal.end);
+                        }
+                        kill-selected => {
+                            root.request-signal(PendingSignal.kill);
+                        }
+                        stop-selected => {
+                            root.stop-selected();
+                        }
+                        continue-selected => {
+                            root.continue-selected();
+                        }
+                        key-pressed(event) => {
+                            root.handle-key(event)
+                        }
+                    }
+
+                    if root.page == 1: ResourcesPage {
+                        cpu: root.cpu-graph;
+                        cpu-detail: root.cpu-detail;
+                        cores: root.cores;
+                        memory: root.memory-graph;
+                        memory-detail: root.memory-detail;
+                        network: root.network-graph;
+                        network-detail: root.network-detail;
+                        disk: root.disk-graph;
+                        disk-detail: root.disk-detail;
+                    }
+
+                    if root.page == 2: FileSystemsPage {
+                        rows: root.file-systems;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.pending != PendingSignal.none: Rectangle {
+        background: Theme.overlay;
+
+        TouchArea {
+            clicked => {
+                root.pending = PendingSignal.none;
+            }
+        }
+
+        Card {
+            width: 400px;
+            height: self.preferred-height;
+            elevated: true;
+            spacing: Theme.spacing-lg;
+            content-padding: Theme.spacing-xl;
+            accessible-role: groupbox;
+            accessible-label: title.text;
+
+            title := Label {
+                text: root.pending == PendingSignal.kill ? "Kill " + root.pending-name + "?" : "End " + root.pending-name + "?";
+                style: Theme.title;
+                wrap: word-wrap;
+            }
+            Label {
+                text: root.pending == PendingSignal.kill
+                    ? "Killing a process stops it immediately. Unsaved data will be lost."
+                    : "Ending a process asks it to quit. Unsaved data may be lost.";
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.pending = PendingSignal.none;
+                    }
+                }
+                Button {
+                    text: root.pending == PendingSignal.kill ? "Kill Process" : "End Process";
+                    variant: ButtonVariant.destructive;
+                    clicked => {
+                        root.confirm-signal();
+                    }
+                }
+            }
+        }
+    }
+}

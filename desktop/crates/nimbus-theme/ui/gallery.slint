@@ -1,0 +1,531 @@
+// SPDX-License-Identifier: MIT
+
+// Every Nimbus component and icon on one page, for tests and screenshots.
+// Toggle `Theme.dark` to see the other scheme.
+
+import {
+    Theme, Icons, Icon, Label, Button, IconButton, ToggleSwitch, CheckBox, Slider, SegmentedControl, Dropdown,
+    Card, Popover, ListRow, TextField, SearchField, Badge, ProgressBar, Divider, Spinner, NavigationItem, TabBar,
+    HeaderBar,
+} from "theme.slint";
+import { GalleryIcons } from "gallery-icons.slint";
+
+export { Theme }
+
+component Section inherits Card {
+    in property <string> title;
+
+    Label {
+        text: root.title;
+        style: Theme.title;
+    }
+}
+
+component Caption inherits Label {
+    style: Theme.caption;
+    color: Theme.text-secondary;
+}
+
+export component Gallery inherits Window {
+    property <int> icon-columns: 14;
+    property <length> icon-cell-width: (icon-grid.width) / root.icon-columns;
+    property <length> icon-cell-height: 64px;
+    property <int> page: 0;
+
+    title: "Nimbus Gallery";
+    preferred-width: 1280px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+
+    VerticalLayout {
+        HeaderBar {
+            title: "Nimbus Gallery";
+            subtitle: Theme.dark ? "Dark" : "Light";
+
+            IconButton {
+                icon: Icons.sidebar;
+                accessible-label: "Sidebar";
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: Icons.search;
+                accessible-label: "Search";
+            }
+            IconButton {
+                icon: Icons.menu;
+                accessible-label: "Menu";
+            }
+            Divider {
+                vertical: true;
+            }
+            IconButton {
+                icon: Icons.minimize;
+                size: 26px;
+                filled: true;
+                accessible-label: "Minimize";
+            }
+            IconButton {
+                icon: Icons.maximize;
+                size: 26px;
+                filled: true;
+                accessible-label: "Maximize";
+            }
+            IconButton {
+                icon: Icons.close;
+                size: 26px;
+                filled: true;
+                accessible-label: "Close";
+            }
+        }
+
+        HorizontalLayout {
+            Rectangle {
+                width: 220px;
+                background: Theme.surface-sunken;
+
+                VerticalLayout {
+                    padding: Theme.spacing-sm;
+                    spacing: Theme.spacing-xxs;
+                    alignment: start;
+
+                    NavigationItem {
+                        icon: Icons.wifi-3;
+                        text: "Wi-Fi";
+                        selected: root.page == 0;
+                        clicked => {
+                            root.page = 0;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.bluetooth;
+                        text: "Bluetooth";
+                        selected: root.page == 1;
+                        clicked => {
+                            root.page = 1;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.palette;
+                        text: "Appearance";
+                        selected: root.page == 2;
+                        clicked => {
+                            root.page = 2;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.bell;
+                        text: "Notifications";
+                        badge: "3";
+                        selected: root.page == 3;
+                        clicked => {
+                            root.page = 3;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.volume-high;
+                        text: "Sound";
+                        selected: root.page == 4;
+                        clicked => {
+                            root.page = 4;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.battery-3;
+                        text: "Power";
+                        selected: root.page == 5;
+                        clicked => {
+                            root.page = 5;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.keyboard;
+                        text: "Keyboard";
+                        selected: root.page == 6;
+                        clicked => {
+                            root.page = 6;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.monitor;
+                        text: "Displays";
+                        selected: root.page == 7;
+                        clicked => {
+                            root.page = 7;
+                        }
+                    }
+                    NavigationItem {
+                        icon: Icons.user;
+                        text: "Users";
+                        selected: root.page == 8;
+                        clicked => {
+                            root.page = 8;
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                padding: Theme.spacing-xl;
+                spacing: Theme.spacing-lg;
+
+                HorizontalLayout {
+                    spacing: Theme.spacing-lg;
+
+                    VerticalLayout {
+                        spacing: Theme.spacing-lg;
+                        horizontal-stretch: 1;
+
+                        Section {
+                            title: "Buttons";
+
+                            HorizontalLayout {
+                                spacing: Theme.spacing-sm;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                Button {
+                                    text: "Default";
+                                }
+                                Button {
+                                    text: "Suggested";
+                                    variant: primary;
+                                }
+                                Button {
+                                    text: "Flat";
+                                    variant: flat;
+                                }
+                                Button {
+                                    text: "Delete";
+                                    icon: Icons.trash;
+                                    variant: destructive;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.spacing-sm;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                Button {
+                                    text: "New Folder";
+                                    icon: Icons.plus;
+                                }
+                                Button {
+                                    text: "Disabled";
+                                    enabled: false;
+                                }
+                                Button {
+                                    text: "Compact";
+                                    compact: true;
+                                }
+                                Button {
+                                    icon: Icons.settings;
+                                    accessible-label: "Settings";
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.spacing-sm;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                IconButton {
+                                    icon: Icons.copy;
+                                    accessible-label: "Copy";
+                                }
+                                IconButton {
+                                    icon: Icons.paste;
+                                    filled: true;
+                                    accessible-label: "Paste";
+                                }
+                                IconButton {
+                                    icon: Icons.wifi-3;
+                                    checked: true;
+                                    accessible-label: "Wi-Fi";
+                                }
+                                IconButton {
+                                    icon: Icons.bluetooth-off;
+                                    filled: true;
+                                    accessible-label: "Bluetooth";
+                                }
+                                IconButton {
+                                    icon: Icons.cut;
+                                    enabled: false;
+                                    accessible-label: "Cut";
+                                }
+                            }
+                        }
+
+                        Section {
+                            title: "Selection";
+
+                            HorizontalLayout {
+                                spacing: Theme.spacing-xl;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                ToggleSwitch {
+                                    checked: true;
+                                }
+                                ToggleSwitch { }
+                                ToggleSwitch {
+                                    enabled: false;
+                                }
+                                CheckBox {
+                                    text: "Checked";
+                                    checked: true;
+                                }
+                                CheckBox {
+                                    text: "Unchecked";
+                                }
+                            }
+
+                            SegmentedControl {
+                                model: ["Light", "Dark", "Automatic"];
+                                current-index: Theme.dark ? 1 : 0;
+                            }
+
+                            Dropdown {
+                                model: ["Master and stack", "Floating", "Columns"];
+                                current-index: 0;
+                            }
+
+                            TabBar {
+                                model: ["Overview", "Processes", "Resources"];
+                                current-index: 1;
+                            }
+                        }
+
+                        Section {
+                            title: "Inputs";
+
+                            SearchField {
+                                placeholder: "Search apps";
+                            }
+                            SearchField {
+                                text: "term";
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.spacing-sm;
+
+                                TextField {
+                                    placeholder: "Name";
+                                }
+                                TextField {
+                                    text: "secret";
+                                    password: true;
+                                    icon: Icons.lock;
+                                }
+                                TextField {
+                                    text: "Invalid";
+                                    invalid: true;
+                                }
+                            }
+                            Slider {
+                                icon: Icons.volume-medium;
+                                value: 60;
+                            }
+                            Slider {
+                                icon: Icons.brightness;
+                                value: 35;
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: Theme.spacing-lg;
+                        horizontal-stretch: 1;
+
+                        Card {
+                            content-padding: Theme.spacing-xs;
+                            spacing: 0;
+
+                            ListRow {
+                                icon: Icons.moon;
+                                title: "Dark Style";
+                                subtitle: "Applies to the shell and apps";
+
+                                ToggleSwitch {
+                                    checked: Theme.dark;
+                                }
+                            }
+                            Divider { }
+                            ListRow {
+                                icon: Icons.bell;
+                                title: "Notifications";
+
+                                Badge {
+                                    text: "12";
+                                }
+                            }
+                            Divider { }
+                            ListRow {
+                                icon: Icons.folder;
+                                title: "Documents";
+                                subtitle: "~/Documents";
+                                selected: true;
+
+                                Icon {
+                                    source: Icons.chevron-right;
+                                    color: Theme.text-secondary;
+                                }
+                            }
+                        }
+
+                        Section {
+                            title: "Status";
+
+                            HorizontalLayout {
+                                spacing: Theme.spacing-sm;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                Badge {
+                                    text: "New";
+                                }
+                                Badge {
+                                    text: "3";
+                                    tone: neutral;
+                                }
+                                Badge {
+                                    text: "Online";
+                                    tone: success;
+                                }
+                                Badge {
+                                    text: "Low";
+                                    tone: warning;
+                                }
+                                Badge {
+                                    text: "Failed";
+                                    tone: error;
+                                }
+                                Badge {
+                                }
+                            }
+                            ProgressBar {
+                                progress: 0.62;
+                            }
+                            ProgressBar {
+                                progress: 0.9;
+                                tone: success;
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.spacing-md;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                Spinner { }
+                                Spinner {
+                                    size: 16px;
+                                    color: Theme.accent-text;
+                                }
+                                Caption {
+                                    text: "Loading…";
+                                }
+                            }
+                        }
+
+                        Section {
+                            title: "Type Scale";
+                            spacing: Theme.spacing-xs;
+
+                            Label {
+                                text: "Display 09:41";
+                                style: Theme.display;
+                            }
+                            Label {
+                                text: "Headline";
+                                style: Theme.headline;
+                            }
+                            Label {
+                                text: "Title";
+                                style: Theme.title;
+                            }
+                            Label {
+                                text: "Body strong";
+                                style: Theme.body-strong;
+                            }
+                            Label {
+                                text: "Body text for descriptions and values.";
+                            }
+                            Caption {
+                                text: "Caption in the secondary color";
+                            }
+                            HorizontalLayout {
+                                spacing: Theme.spacing-md;
+                                alignment: start;
+                                cross-axis-alignment: center;
+
+                                Label {
+                                    text: "Accent";
+                                    color: Theme.accent-text;
+                                }
+                                Label {
+                                    text: "Success";
+                                    color: Theme.success;
+                                }
+                                Label {
+                                    text: "Warning";
+                                    color: Theme.warning;
+                                }
+                                Label {
+                                    text: "Error";
+                                    color: Theme.error;
+                                }
+                                Label {
+                                    text: "Disabled";
+                                    color: Theme.text-disabled;
+                                }
+                            }
+                        }
+
+                        Popover {
+                            ListRow {
+                                icon: Icons.lock;
+                                title: "Lock";
+                            }
+                            ListRow {
+                                icon: Icons.logout;
+                                title: "Log Out";
+                            }
+                            ListRow {
+                                icon: Icons.power;
+                                title: "Power Off…";
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    title: "Icons";
+
+                    icon-grid := Rectangle {
+                        height: ceil(GalleryIcons.all.length / root.icon-columns) * root.icon-cell-height;
+
+                        for entry[index] in GalleryIcons.all: VerticalLayout {
+                            x: mod(index, root.icon-columns) * root.icon-cell-width;
+                            y: floor(index / root.icon-columns) * root.icon-cell-height;
+                            width: root.icon-cell-width;
+                            height: root.icon-cell-height;
+                            alignment: center;
+                            spacing: Theme.spacing-xs;
+
+                            Icon {
+                                x: (parent.width - self.width) / 2;
+                                source: entry.icon;
+                            }
+                            Caption {
+                                text: entry.name;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

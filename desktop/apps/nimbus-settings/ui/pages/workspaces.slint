@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Label, Card } from "@nimbus/theme.slint";
+import { Prefs } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow, SliderRow, StepperRow, Pressable } from "../widgets.slint";
+
+component MiniWindow inherits Rectangle {
+    in property <bool> active;
+
+    border-radius: 3px;
+    background: root.active ? Theme.surface-raised : Theme.surface;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.border-strong;
+    drop-shadow-blur: 4px;
+    drop-shadow-color: #00000030;
+
+    Rectangle {
+        y: 0;
+        height: 6px;
+        border-radius: 3px;
+        background: root.active ? Theme.accent.with-alpha(0.5) : Theme.control;
+    }
+}
+
+// A preview of the floating or tiling layout, as a choice.
+component LayoutChoice {
+    in property <string> label;
+    in property <string> description;
+    in property <bool> tiling;
+    in property <bool> selected;
+
+    callback activated();
+
+    private property <length> gap: max(2px, Prefs.gaps * 0.25px);
+
+    preferred-width: 100px;
+    horizontal-stretch: 1;
+
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-description: root.description;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        Pressable {
+            height: 104px;
+            radius: Theme.radius-large + 3px;
+            accessible-label: root.label;
+            activated => {
+                root.activated();
+            }
+
+            Rectangle {
+                border-radius: Theme.radius-large + 3px;
+                border-width: root.selected ? 3px : 1px;
+                border-color: root.selected ? Theme.accent : Theme.border-strong;
+                animate border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+
+                Rectangle {
+                    x: 4px;
+                    y: 4px;
+                    width: parent.width - 8px;
+                    height: parent.height - 8px;
+                    border-radius: Theme.radius-large;
+                    background: Theme.surface-sunken;
+                    clip: true;
+
+                    if !root.tiling: MiniWindow {
+                        x: parent.width * 0.12;
+                        y: parent.height * 0.14;
+                        width: parent.width * 0.5;
+                        height: parent.height * 0.55;
+                    }
+
+                    if !root.tiling: MiniWindow {
+                        x: parent.width * 0.38;
+                        y: parent.height * 0.32;
+                        width: parent.width * 0.5;
+                        height: parent.height * 0.55;
+                        active: true;
+                    }
+
+                    if root.tiling: MiniWindow {
+                        x: root.gap;
+                        y: root.gap;
+                        width: parent.width * 0.55 - 1.5 * root.gap;
+                        height: parent.height - 2 * root.gap;
+                        active: true;
+                    }
+
+                    if root.tiling: MiniWindow {
+                        x: parent.width * 0.55 + 0.5 * root.gap;
+                        y: root.gap;
+                        width: parent.width * 0.45 - 1.5 * root.gap;
+                        height: (parent.height - 3 * root.gap) / 2;
+                    }
+
+                    if root.tiling: MiniWindow {
+                        x: parent.width * 0.55 + 0.5 * root.gap;
+                        y: (parent.height + root.gap) / 2;
+                        width: parent.width * 0.45 - 1.5 * root.gap;
+                        height: (parent.height - 3 * root.gap) / 2;
+                    }
+                }
+            }
+        }
+
+        Label {
+            text: root.label;
+            horizontal-alignment: center;
+            style: root.selected ? Theme.body-strong : Theme.body;
+        }
+
+        Label {
+            text: root.description;
+            style: Theme.caption;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component WorkspacesPage inherits PageScroll {
+    Group {
+        title: "Workspaces";
+
+        StepperRow {
+            title: "Number of workspaces";
+            subtitle: "Switch between them with Super+Ctrl+Left and Right";
+            minimum: 1;
+            maximum: 10;
+            value <=> Prefs.workspace-count;
+            changed(value) => {
+                Prefs.set-int("workspaces.count", value);
+            }
+        }
+    }
+
+    Group {
+        title: "Default Window Layout";
+        description: "New workspaces start with this layout. Toggle it on the current workspace with Super+T.";
+
+        HorizontalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-lg;
+
+            LayoutChoice {
+                label: "Floating";
+                description: "Place and resize windows freely";
+                selected: Prefs.window-layout == 0;
+                activated => {
+                    Prefs.window-layout = 0;
+                    Prefs.set-int("workspaces.layout", 0);
+                }
+            }
+
+            LayoutChoice {
+                label: "Tiling";
+                description: "Arrange windows side by side automatically";
+                tiling: true;
+                selected: Prefs.window-layout == 1;
+                activated => {
+                    Prefs.window-layout = 1;
+                    Prefs.set-int("workspaces.layout", 1);
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Windows";
+
+        SliderRow {
+            title: "Gaps";
+            subtitle: "Space around tiled windows";
+            minimum: 0;
+            maximum: 32;
+            step: 2;
+            value <=> Prefs.gaps;
+            value-text: round(Prefs.gaps) + " px";
+            changed(value) => {
+                Prefs.set-int("workspaces.gaps", round(value / 2) * 2);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Focus follows mouse";
+            subtitle: "Focus windows when the pointer moves over them";
+            checked <=> Prefs.focus-follows-mouse;
+            toggled(checked) => {
+                Prefs.set-bool("workspaces.focus-follows-mouse", checked);
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+#
+# Started by nimbus-session once the compositor is ready, and stopped when the session ends.
+# User services that need the graphical session can use `WantedBy=nimbus-session.target`,
+# or the desktop-neutral `graphical-session.target`.
+[Unit]
+Description=Nimbus desktop session
+Documentation=man:systemd.special(7)
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target

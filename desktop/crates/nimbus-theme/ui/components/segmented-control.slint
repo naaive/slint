@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// A row of mutually exclusive options, for two to five short choices.
+export component SegmentedControl {
+    in property <[string]> model;
+    in property <bool> enabled: true;
+    in-out property <int> current-index: 0;
+    out property <bool> has-focus: focus-scope.has-focus;
+
+    // Emitted after a user action changes `current-index`.
+    callback selected(index: int);
+
+    private property <length> segment-width: root.model.length > 0 ? (root.width - 6px) / root.model.length : 0;
+
+    function select(index: int) {
+        if root.enabled && index >= 0 && index < root.model.length && index != root.current-index {
+            root.current-index = index;
+            root.selected(index);
+        }
+    }
+
+    min-height: Theme.control-height;
+    min-width: layout.min-width;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: tab-list;
+    forward-focus: focus-scope;
+
+    Rectangle {
+        border-radius: Theme.radius-medium;
+        background: Theme.control;
+    }
+
+    if root.current-index >= 0 && root.current-index < root.model.length: Rectangle {
+        x: 3px + root.current-index * root.segment-width;
+        y: 3px;
+        width: root.segment-width;
+        height: root.height - 6px;
+        border-radius: max(0, Theme.radius-medium - 3px);
+        background: Theme.dark ? #ffffff2b : #ffffff;
+        drop-shadow-blur: Theme.dark ? 0 : 3px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #0000001f;
+        animate x { duration: Theme.duration-normal; easing: Motion.standard; }
+    }
+
+    layout := HorizontalLayout {
+        padding: 3px;
+
+        for item[index] in root.model: Rectangle {
+            horizontal-stretch: 1;
+            min-width: label.min-width + 2 * Theme.spacing-md;
+            accessible-role: tab;
+            accessible-label: item;
+            accessible-item-selected: index == root.current-index;
+            accessible-item-index: index;
+            accessible-action-default => {
+                root.select(index);
+            }
+
+            label := Text {
+                text: item;
+                color: index == root.current-index ? Theme.text : Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            TouchArea {
+                enabled: root.enabled;
+                clicked => {
+                    root.select(index);
+                }
+            }
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.RightArrow {
+                root.select(root.current-index + 1);
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                root.select(root.current-index - 1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if focus-scope.keyboard-focus: FocusRing {
+        radius: Theme.radius-medium;
+    }
+}

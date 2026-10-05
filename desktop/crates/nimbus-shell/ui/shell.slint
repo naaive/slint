@@ -1,9 +1,543 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: the nimbus-shell agent replaces this with the shell UI.
-import { Theme } from "@nimbus/theme.slint";
+// The Nimbus shell: one transparent, full-output window per output.
+// Rust feeds data in through properties and models and handles the callbacks; see `src/lib.rs`.
+
+import { Theme, Motion, Icons, Icon, Divider } from "@nimbus/theme.slint";
+import {
+    RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
+    NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
+    NetworkKind, SystemStatus, PanelSettings,
+} from "models.slint";
+import { ShellPopup, MenuItem } from "common.slint";
+import { Panel } from "panel.slint";
+import { Dock, DockMetrics } from "dock.slint";
+import { Launcher } from "launcher.slint";
+import { Overview } from "overview.slint";
+import { QuickSettings } from "quick-settings.slint";
+import { CalendarPopup } from "calendar.slint";
+import { ToastStack } from "toasts.slint";
+import { OsdPill } from "osd.slint";
+import { LockScreen } from "lock-screen.slint";
+import { PowerDialog } from "power-menu.slint";
+
 export { Theme }
+export {
+    RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
+    NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
+    NetworkKind, SystemStatus, PanelSettings,
+}
 
 export component ShellWindow inherits Window {
+    // Drawn behind everything when set. The compositor leaves it empty and composites the shell over windows;
+    // `nimbus-shell-preview` shows a wallpaper.
+    in property <image> wallpaper;
+
+    // Layout.
+    in property <PanelSettings> panel: { top: true, height: 32px, show-dock: true, dock-autohide: false, show-battery-percentage: true };
+    // A fullscreen window is focused on this output, so the panel and dock step aside.
+    in property <bool> fullscreen-active;
+
+    // Windows and workspaces.
+    in property <[WorkspaceItem]> workspaces;
+    in property <[WindowItem]> windows;
+    in property <int> active-workspace;
+    in property <int> active-count;
+    in property <string> focused-title;
+    in property <AppVisual> focused-visual;
+
+    // Clock and calendar.
+    in property <string> clock-text;
+    in property <string> long-time;
+    in property <string> weekday;
+    in property <string> date;
+    in property <string> month-title;
+    in property <[CalendarDay]> days;
+
+    // System state.
+    in property <SystemStatus> status;
+    in-out property <float> volume;
+    in-out property <float> brightness;
+    in-out property <bool> do-not-disturb;
+
+    // Dock.
+    in property <[DockItem]> dock-items;
+    in property <int> dock-menu-index: -1;
+    in property <length> dock-menu-x;
+    in property <string> dock-menu-title;
+    in property <[DockMenuWindow]> dock-menu-windows;
+    in property <bool> dock-menu-favorite;
+    in property <bool> dock-menu-running;
+
+    // Launcher and overview.
+    in property <bool> launcher-open;
+    in property <[AppItem]> launcher-apps;
+    in-out property <string> launcher-query;
+    in-out property <int> launcher-selected;
+    in property <bool> overview-open;
+
+    // Popups.
+    in property <Popup> popup: Popup.none;
+    in-out property <bool> power-menu-open;
+    in property <PowerAction> power-action: PowerAction.none;
+
+    // Notifications.
+    in property <[NotificationItem]> notifications;
+    in property <[NotificationItem]> toasts;
+    in property <bool> has-unread;
+
+    // On-screen display.
+    in property <bool> osd-shown;
+    in property <OsdKind> osd-kind;
+    in property <float> osd-level;
+    in property <bool> osd-muted;
+
+    // Lock screen.
+    in property <bool> locked;
+    in property <bool> lock-busy;
+    in property <string> lock-error;
+    in-out property <string> lock-password;
+    in property <image> lock-backdrop;
+    in property <string> user-name;
+
+    // Geometry for the input region and exclusive zone, in logical pixels.
+    out property <RectData> panel-rect: root.panel-visible
+        ? { x: 0, y: panel-bar.y, width: root.width, height: root.panel.height }
+        : { x: 0, y: 0, width: 0, height: 0 };
+    out property <RectData> dock-rect: !root.dock-enabled ? { x: 0, y: 0, width: 0, height: 0 }
+        : root.dock-revealed ? { x: dock-area.x, y: root.dock-base-y, width: dock-area.width, height: DockMetrics.height }
+        : { x: dock-area.x, y: root.dock-edge-y - 2px, width: dock-area.width, height: 2px };
+    out property <RectData> toast-rect: root.toasts-visible && root.toasts.length > 0
+        ? { x: toast-stack.x, y: toast-stack.y, width: toast-stack.width, height: toast-stack.preferred-height }
+        : { x: 0, y: 0, width: 0, height: 0 };
+    out property <length> dock-exclusive: DockMetrics.height + 2 * DockMetrics.margin;
+
+    callback overview-requested(open: bool);
+    callback launcher-requested(open: bool);
+    callback popup-requested(popup: Popup);
+    callback workspace-clicked(index: int);
+    callback dock-clicked(index: int);
+    callback dock-menu-requested(index: int, center-x: length);
+    callback dock-menu-window(row: int);
+    callback dock-menu-new-window;
+    callback dock-menu-toggle-pin;
+    callback dock-menu-quit;
+    callback launcher-query-edited(text: string);
+    callback launcher-activated(index: int);
+    callback window-activated(row: int);
+    callback window-closed(row: int);
+    callback window-moved(row: int, workspace: int);
+    callback overview-key-typed(text: string) -> bool;
+    callback volume-changed(value: float);
+    callback mute-toggled;
+    callback brightness-changed(value: float);
+    callback wifi-toggled;
+    callback bluetooth-toggled;
+    callback do-not-disturb-toggled(on: bool);
+    callback dark-style-toggled;
+    callback settings-requested(page: string);
+    callback media-previous;
+    callback media-play-pause;
+    callback media-next;
+    callback lock-requested;
+    callback suspend-requested;
+    callback power-requested(action: PowerAction);
+    callback power-confirmed(action: PowerAction);
+    callback month-changed(delta: int);
+    callback notification-activated(id: int);
+    callback notification-dismissed(id: int);
+    callback notification-action(id: int, key: string);
+    callback clear-notifications;
+    callback unlock-requested(password: string);
+
+    public function focus-launcher() {
+        launcher.focus-search();
+    }
+
+    // Focuses the launcher's search with the cursor at `offset` UTF-8 bytes.
+    public function focus-launcher-at(offset: int) {
+        launcher.place-cursor(offset);
+    }
+
+    public function focus-overview() {
+        overview.focus-keys();
+    }
+
+    public function focus-popup() {
+        popup-keys.focus();
+    }
+
+    public function focus-lock() {
+        lock.focus-password();
+    }
+
+    public function focus-power-dialog() {
+        power-dialog.focus-keys();
+    }
+
+    private property <bool> panel-visible: !root.fullscreen-active || root.overview-open || root.launcher-open || root.popup != Popup.none;
+    private property <length> panel-y: root.panel.top ? 0 : root.height - root.panel.height;
+    private property <length> top-inset: root.panel.top ? root.panel.height : 0;
+    private property <length> bottom-inset: root.panel.top ? 0 : root.panel.height;
+    private property <bool> dock-enabled: root.panel.show-dock && !root.launcher-open && !root.locked && (!root.fullscreen-active || root.overview-open);
+    private property <length> dock-edge-y: root.height - root.bottom-inset;
+    private property <length> dock-base-y: root.dock-edge-y - DockMetrics.height - DockMetrics.margin;
+    private property <bool> dock-revealed: root.dock-enabled && (!root.panel.dock-autohide || dock-area.has-hover || hot-zone.has-hover || root.overview-open || root.popup == Popup.dock-menu);
+    private property <bool> toasts-visible: !root.locked && root.popup == Popup.none && root.power-action == PowerAction.none;
+    private property <length> popup-gap: 6px;
+
     background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Shell";
+
+    if root.wallpaper.width > 0: Image {
+        width: 100%;
+        height: 100%;
+        source: root.wallpaper;
+        image-fit: cover;
+    }
+
+    overview := Overview {
+        open: root.overview-open;
+        workspaces: root.workspaces;
+        windows: root.windows;
+        active-workspace: root.active-workspace;
+        active-count: root.active-count;
+        top-inset: root.top-inset;
+        bottom-inset: root.bottom-inset + (root.panel.show-dock ? root.dock-exclusive : 0);
+        window-activated(row) => {
+            root.window-activated(row);
+        }
+        window-closed(row) => {
+            root.window-closed(row);
+        }
+        window-moved(row, workspace) => {
+            root.window-moved(row, workspace);
+        }
+        workspace-clicked(index) => {
+            root.workspace-clicked(index);
+        }
+        search-clicked => {
+            root.launcher-requested(true);
+        }
+        close-requested => {
+            root.overview-requested(false);
+        }
+        key-typed(text) => {
+            root.overview-key-typed(text)
+        }
+    }
+
+    launcher := Launcher {
+        open: root.launcher-open;
+        apps: root.launcher-apps;
+        query <=> root.launcher-query;
+        selected <=> root.launcher-selected;
+        top-inset: root.top-inset;
+        bottom-inset: root.bottom-inset;
+        query-edited(text) => {
+            root.launcher-query-edited(text);
+        }
+        activated(index) => {
+            root.launcher-activated(index);
+        }
+        close-requested => {
+            root.launcher-requested(false);
+        }
+    }
+
+    // Reveals an autohidden dock when the pointer touches the edge.
+    hot-zone := TouchArea {
+        x: dock-area.x;
+        y: root.dock-edge-y - 2px;
+        width: dock-area.width;
+        height: 2px;
+        enabled: root.dock-enabled && root.panel.dock-autohide;
+    }
+
+    dock-area := TouchArea {
+        x: (root.width - self.width) / 2;
+        y: root.dock-revealed ? root.dock-base-y : root.dock-edge-y + DockMetrics.margin;
+        width: dock.width;
+        height: DockMetrics.height;
+        opacity: root.dock-revealed ? 1 : 0;
+        visible: self.opacity > 0;
+        animate y, opacity {
+            duration: Theme.duration-slow;
+            delay: root.dock-revealed ? 0ms : (root.panel.dock-autohide && root.dock-enabled ? 400ms : 0ms);
+            easing: Motion.standard;
+        }
+
+        dock := Dock {
+            items: root.dock-items;
+            menu-index: root.popup == Popup.dock-menu ? root.dock-menu-index : -1;
+            item-clicked(index) => {
+                root.dock-clicked(index);
+            }
+            item-menu-requested(index, center-x) => {
+                root.dock-menu-requested(index, center-x);
+            }
+            show-apps => {
+                root.launcher-requested(!root.launcher-open);
+            }
+        }
+    }
+
+    // Closes the open popup on a click anywhere outside it and the panel.
+    if root.popup != Popup.none: TouchArea {
+        clicked => {
+            root.popup-requested(Popup.none);
+        }
+        scroll-event => {
+            accept
+        }
+    }
+
+    panel-bar := Panel {
+        y: root.panel-visible ? root.panel-y : (root.panel.top ? -root.panel.height : root.height);
+        height: root.panel.height;
+        width: root.width;
+        animate y { duration: Theme.duration-normal; easing: Motion.standard; }
+        workspaces: root.workspaces;
+        focused-title: root.overview-open || root.launcher-open ? "" : root.focused-title;
+        focused-visual: root.focused-visual;
+        clock-text: root.clock-text;
+        status: root.status;
+        volume: root.volume;
+        do-not-disturb: root.do-not-disturb;
+        show-battery-percentage: root.panel.show-battery-percentage;
+        has-unread: root.has-unread;
+        overview-open: root.overview-open;
+        calendar-open: root.popup == Popup.calendar;
+        quick-settings-open: root.popup == Popup.quick-settings;
+        overview-clicked => {
+            root.overview-requested(!root.overview-open);
+        }
+        workspace-clicked(index) => {
+            root.workspace-clicked(index);
+        }
+        clock-clicked => {
+            root.popup-requested(root.popup == Popup.calendar ? Popup.none : Popup.calendar);
+        }
+        status-clicked => {
+            root.popup-requested(root.popup == Popup.quick-settings ? Popup.none : Popup.quick-settings);
+        }
+    }
+
+    popup-keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape && root.popup != Popup.none {
+                root.popup-requested(Popup.none);
+                return accept;
+            }
+            reject
+        }
+
+        calendar := CalendarPopup {
+            open: root.popup == Popup.calendar;
+            from-top: root.panel.top;
+            x: (root.width - self.width) / 2;
+            y: root.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
+            notifications: root.notifications;
+            days: root.days;
+            month-title: root.month-title;
+            weekday: root.weekday;
+            date: root.date;
+            do-not-disturb <=> root.do-not-disturb;
+            previous-month => {
+                root.month-changed(-1);
+            }
+            next-month => {
+                root.month-changed(1);
+            }
+            today-requested => {
+                root.month-changed(0);
+            }
+            notification-activated(id) => {
+                root.notification-activated(id);
+            }
+            notification-dismissed(id) => {
+                root.notification-dismissed(id);
+            }
+            notification-action(id, key) => {
+                root.notification-action(id, key);
+            }
+            clear-all => {
+                root.clear-notifications();
+            }
+            do-not-disturb-toggled(on) => {
+                root.do-not-disturb-toggled(on);
+            }
+        }
+
+        quick-settings := QuickSettings {
+            open: root.popup == Popup.quick-settings;
+            from-top: root.panel.top;
+            x: root.width - self.width - Theme.spacing-sm;
+            y: root.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
+            height: self.preferred-height;
+            status: root.status;
+            dark-style: Theme.dark;
+            do-not-disturb: root.do-not-disturb;
+            volume <=> root.volume;
+            brightness <=> root.brightness;
+            power-menu-open <=> root.power-menu-open;
+            volume-changed(value) => {
+                root.volume-changed(value);
+            }
+            mute-toggled => {
+                root.mute-toggled();
+            }
+            brightness-changed(value) => {
+                root.brightness-changed(value);
+            }
+            wifi-toggled => {
+                root.wifi-toggled();
+            }
+            bluetooth-toggled => {
+                root.bluetooth-toggled();
+            }
+            do-not-disturb-toggled => {
+                root.do-not-disturb-toggled(!root.do-not-disturb);
+            }
+            dark-style-toggled => {
+                root.dark-style-toggled();
+            }
+            settings-requested(page) => {
+                root.settings-requested(page);
+            }
+            media-previous => {
+                root.media-previous();
+            }
+            media-play-pause => {
+                root.media-play-pause();
+            }
+            media-next => {
+                root.media-next();
+            }
+            lock-requested => {
+                root.lock-requested();
+            }
+            suspend-requested => {
+                root.suspend-requested();
+            }
+            power-requested(action) => {
+                root.power-requested(action);
+            }
+        }
+
+        dock-menu := ShellPopup {
+            open: root.popup == Popup.dock-menu;
+            from-top: false;
+            width: 260px;
+            height: self.preferred-height;
+            x: clamp(dock-area.x + root.dock-menu-x - self.width / 2, Theme.spacing-sm, root.width - self.width - Theme.spacing-sm);
+            y: root.dock-base-y - self.height - Theme.spacing-sm;
+            content-padding: Theme.spacing-xs;
+            spacing: 0;
+
+            Text {
+                height: Theme.control-height;
+                text: root.dock-menu-title;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+                x: Theme.spacing-md;
+            }
+            for w[row] in root.dock-menu-windows: MenuItem {
+                icon: Icons.window;
+                text: w.title;
+                checked: w.focused;
+                clicked => {
+                    root.dock-menu-window(row);
+                }
+            }
+            if root.dock-menu-windows.length > 0: Rectangle {
+                height: Theme.spacing-sm + 1px;
+
+                Divider {
+                    width: parent.width - 2 * Theme.spacing-sm;
+                }
+            }
+            MenuItem {
+                icon: Icons.plus;
+                text: "New Window";
+                clicked => {
+                    root.dock-menu-new-window();
+                }
+            }
+            MenuItem {
+                icon: Icons.pin;
+                text: root.dock-menu-favorite ? "Unpin from Dock" : "Pin to Dock";
+                clicked => {
+                    root.dock-menu-toggle-pin();
+                }
+            }
+            if root.dock-menu-running: MenuItem {
+                icon: Icons.close;
+                text: root.dock-menu-windows.length > 1 ? "Quit " + root.dock-menu-windows.length + " Windows" : "Quit";
+                destructive: true;
+                clicked => {
+                    root.dock-menu-quit();
+                }
+            }
+        }
+    }
+
+    toast-stack := ToastStack {
+        x: root.width - self.width - Theme.spacing-md;
+        y: root.panel.top ? root.top-inset + Theme.spacing-md : Theme.spacing-md;
+        width: 380px;
+        height: self.preferred-height;
+        visible: root.toasts-visible;
+        toasts: root.toasts;
+        activated(id) => {
+            root.notification-activated(id);
+        }
+        dismissed(id) => {
+            root.notification-dismissed(id);
+        }
+        action(id, key) => {
+            root.notification-action(id, key);
+        }
+    }
+
+    OsdPill {
+        x: (root.width - self.width) / 2;
+        y: root.height - root.bottom-inset - (root.panel.show-dock ? root.dock-exclusive : 0) - self.height - 48px;
+        shown: root.osd-shown && !root.locked;
+        kind: root.osd-kind;
+        level: root.osd-level;
+        muted: root.osd-muted;
+    }
+
+    power-dialog := PowerDialog {
+        action: root.locked ? PowerAction.none : root.power-action;
+        confirmed(action) => {
+            root.power-confirmed(action);
+        }
+        cancelled => {
+            root.power-confirmed(PowerAction.none);
+        }
+    }
+
+    lock := LockScreen {
+        locked: root.locked;
+        time: root.long-time;
+        date: root.weekday + ", " + root.date;
+        user-name: root.user-name;
+        backdrop: root.lock-backdrop;
+        busy: root.lock-busy;
+        error: root.lock-error;
+        status: root.status;
+        password <=> root.lock-password;
+        unlock-requested(password) => {
+            root.unlock-requested(password);
+        }
+    }
 }

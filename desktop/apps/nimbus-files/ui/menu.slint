@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icon, Icons } from "@nimbus/theme.slint";
+import { MenuRow } from "types.slint";
+
+export global MenuMetrics {
+    out property <length> item-height: 32px;
+    out property <length> separator-height: 9px;
+    out property <length> padding: Theme.spacing-xs;
+    out property <length> width: 290px;
+}
+
+// The rounded, elevated surface of menus and popovers.
+export component MenuSurface inherits Rectangle {
+    border-radius: Theme.radius-large;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-2.blur;
+    drop-shadow-offset-y: Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+}
+
+// One row of a menu.
+export component MenuItemView {
+    in property <string> label;
+    in property <string> shortcut;
+    in property <bool> enabled: true;
+    in property <bool> destructive;
+    in property <bool> checkable;
+    in property <bool> checked;
+    in property <bool> highlighted;
+
+    callback activated();
+
+    height: MenuMetrics.item-height;
+    accessible-role: list-item;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        if root.enabled {
+            root.activated();
+        }
+    }
+
+    Rectangle {
+        border-radius: Theme.radius-medium - MenuMetrics.padding / 2;
+        background: root.enabled && (touch.has-hover || root.highlighted)
+            ? (root.destructive ? Theme.destructive.with-alpha(0.16) : Theme.surface-hover)
+            : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+
+        Rectangle {
+            width: 16px;
+
+            if root.checkable && root.checked: Icon {
+                source: Icons.check;
+                color: Theme.accent-text;
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: !root.enabled ? Theme.text-disabled : root.destructive ? Theme.error : Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.shortcut != "": Text {
+            text: root.shortcut;
+            color: Theme.text-disabled;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.activated();
+        }
+    }
+}
+
+export component MenuSeparator {
+    height: MenuMetrics.separator-height;
+
+    Rectangle {
+        x: Theme.spacing-sm;
+        width: parent.width - 2 * Theme.spacing-sm;
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+// A menu built from a model, with arrow keys, Enter, and Escape.
+export component MenuList inherits MenuSurface {
+    in property <[MenuRow]> rows;
+    in-out property <int> highlighted: -1;
+
+    callback activated(index: int);
+    callback dismissed();
+    // The next enabled row from `current` in direction `delta`, skipping separators.
+    callback step(current: int, delta: int) -> int;
+
+    public function grab-focus() {
+        keys.focus();
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                root.highlighted = root.step(root.highlighted, 1);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.highlighted = root.step(root.highlighted, -1);
+                return accept;
+            }
+            if event.text == Key.Return || event.text == Key.Space {
+                if root.highlighted >= 0 && root.highlighted < root.rows.length && root.rows[root.highlighted].enabled {
+                    root.activated(root.highlighted);
+                }
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.dismissed();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: MenuMetrics.padding;
+            spacing: 0;
+
+            for row[index] in root.rows: VerticalLayout {
+                if row.separator: MenuSeparator { }
+                if !row.separator: MenuItemView {
+                    label: row.label;
+                    shortcut: row.shortcut;
+                    enabled: row.enabled;
+                    destructive: row.destructive;
+                    checkable: row.checkable;
+                    checked: row.checked;
+                    highlighted: index == root.highlighted;
+                    activated => {
+                        root.activated(index);
+                    }
+                }
+            }
+        }
+    }
+}

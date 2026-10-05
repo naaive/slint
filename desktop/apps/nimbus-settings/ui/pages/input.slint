@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Label, ListRow, Button, IconButton, TextField } from "@nimbus/theme.slint";
+import { Prefs } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow, SliderRow, ChoiceRow } from "../widgets.slint";
+
+export component InputPage inherits PageScroll {
+    Group {
+        title: "Input Sources";
+        description: "The first source is the default. Select a source to choose its variant.";
+
+        for source[index] in Prefs.input-sources: VerticalLayout {
+            if index > 0: RowDivider { }
+
+            ListRow {
+                icon: Icons.keyboard;
+                title: source.title;
+                subtitle: source.subtitle;
+                clickable: source.can-choose-variant;
+                clicked => {
+                    Prefs.pick-variant(index);
+                }
+
+                if index > 0: IconButton {
+                    icon: Icons.arrow-up;
+                    accessible-label: "Make " + source.title + " come first";
+                    clicked => {
+                        Prefs.move-source-up(index);
+                    }
+                }
+
+                if Prefs.input-sources.length > 1: IconButton {
+                    icon: Icons.trash;
+                    accessible-label: "Remove " + source.title;
+                    clicked => {
+                        Prefs.remove-source(index);
+                    }
+                }
+            }
+        }
+
+        RowDivider { }
+
+        HorizontalLayout {
+            padding: Theme.spacing-sm;
+            alignment: start;
+
+            Button {
+                text: "Add Input Source…";
+                icon: Icons.plus;
+                variant: flat;
+                enabled: Prefs.can-add-source;
+                clicked => {
+                    Prefs.add-source();
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Keyboard Options";
+
+        for group[index] in Prefs.option-groups: VerticalLayout {
+            if index > 0: RowDivider { }
+
+            ChoiceRow {
+                title: group.title;
+                model: group.choices;
+                current-index: group.current;
+                chosen(choice) => {
+                    Prefs.choose-option(index, choice);
+                }
+            }
+        }
+
+        RowDivider { }
+
+        ListRow {
+            title: "XKB options";
+            subtitle: "All options, comma-separated, such as terminate:ctrl_alt_bksp";
+            clickable: false;
+
+            TextField {
+                width: 220px;
+                text <=> Prefs.keyboard-options;
+                placeholder: "None";
+                accessible-label: "XKB options";
+                accepted(text) => {
+                    Prefs.set-text("input.keyboard-options", text);
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Key Repeat";
+
+        SliderRow {
+            title: "Delay";
+            subtitle: "Before a held key starts repeating";
+            minimum: 150;
+            maximum: 1000;
+            step: 25;
+            value <=> Prefs.repeat-delay;
+            value-text: round(Prefs.repeat-delay) + " ms";
+            changed(value) => {
+                Prefs.set-int("input.repeat-delay", round(value / 25) * 25);
+            }
+        }
+
+        RowDivider { }
+
+        SliderRow {
+            title: "Rate";
+            subtitle: "Characters per second while repeating";
+            minimum: 5;
+            maximum: 80;
+            step: 1;
+            value <=> Prefs.repeat-rate;
+            value-text: round(Prefs.repeat-rate) + " /s";
+            changed(value) => {
+                Prefs.set-int("input.repeat-rate", round(value));
+            }
+        }
+
+        RowDivider { }
+
+        ListRow {
+            title: "Test";
+            clickable: false;
+
+            TextField {
+                width: 220px;
+                placeholder: "Type here to try the settings";
+                accessible-label: "Typing test";
+            }
+        }
+    }
+
+    Group {
+        title: "Mouse & Touchpad";
+
+        SliderRow {
+            title: "Pointer speed";
+            minimum: -1;
+            maximum: 1;
+            step: 0.1;
+            minimum-label: "Slow";
+            maximum-label: "Fast";
+            value <=> Prefs.pointer-speed;
+            changed(value) => {
+                Prefs.set-float("input.pointer-speed", value);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Natural scrolling";
+            subtitle: "Scrolling moves the content, like on a touch screen";
+            checked <=> Prefs.natural-scroll;
+            toggled(checked) => {
+                Prefs.set-bool("input.natural-scroll", checked);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Tap to click";
+            subtitle: "Tap the touchpad instead of pressing it";
+            checked <=> Prefs.tap-to-click;
+            toggled(checked) => {
+                Prefs.set-bool("input.tap-to-click", checked);
+            }
+        }
+    }
+}

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Settings
+GenericName=System Settings
+Comment=Change the appearance, input, shortcuts, and power settings of the Nimbus desktop
+Exec=nimbus-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=preferences;settings;wallpaper;theme;keyboard;mouse;shortcuts;display;
+OnlyShowIn=Nimbus;
+StartupNotify=true
+Actions=Appearance;Shortcuts;About;
+
+[Desktop Action Appearance]
+Name=Appearance
+Exec=nimbus-settings --page appearance
+
+[Desktop Action Shortcuts]
+Name=Keyboard Shortcuts
+Exec=nimbus-settings --page shortcuts
+
+[Desktop Action About]
+Name=About This System
+Exec=nimbus-settings --page about

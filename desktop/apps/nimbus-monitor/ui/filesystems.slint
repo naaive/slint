@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: MIT
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Label, Icon, Icons, ProgressBar, Tone, Badge, Card } from "@nimbus/theme.slint";
+import { FileSystemRow } from "types.slint";
+
+export component FileSystemsPage inherits Rectangle {
+    in property <[FileSystemRow]> rows;
+
+    if root.rows.length == 0: Label {
+        text: "No file systems found";
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    ScrollView {
+        VerticalLayout {
+            padding: Theme.spacing-lg;
+            spacing: Theme.spacing-md;
+            alignment: start;
+
+            for fs in root.rows: Card {
+                accessible-role: list-item;
+                accessible-label: fs.mount-point;
+                spacing: Theme.spacing-sm;
+
+                HorizontalLayout {
+                    spacing: Theme.spacing-md;
+
+                    Icon {
+                        source: fs.removable ? Icons.drive : Icons.disk;
+                        size: Theme.icon-size-large;
+                        color: Theme.accent-text;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Label {
+                            text: fs.mount-point;
+                            style: Theme.body-strong;
+                            overflow: elide;
+                        }
+                        Label {
+                            text: fs.device + " · " + fs.fs-type;
+                            style: Theme.caption;
+                            color: Theme.text-secondary;
+                            overflow: elide;
+                        }
+                    }
+
+                    if fs.read-only: Badge {
+                        text: "Read-only";
+                        tone: Tone.neutral;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Label {
+                        text: fs.used + " of " + fs.total + " used";
+                        color: Theme.text-secondary;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+
+                ProgressBar {
+                    progress: fs.fraction;
+                    tone: fs.fraction > 0.9 ? Tone.error : fs.fraction > 0.75 ? Tone.warning : Tone.accent;
+                }
+            }
+        }
+    }
+}

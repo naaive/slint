@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icon, Icons } from "@nimbus/theme.slint";
+import { TabInfo } from "types.slint";
+
+// One tab: the theme's `TabBar` look, with a close button and a bell indicator.
+component Tab inherits Rectangle {
+    in property <TabInfo> info;
+    in property <bool> current;
+    in property <int> index;
+
+    callback activate();
+    callback close();
+
+    min-width: 88px;
+    min-height: Theme.control-height + 6px;
+    preferred-width: 240px;
+    max-width: 280px;
+    horizontal-stretch: 1;
+    accessible-role: tab;
+    accessible-label: root.info.title;
+    accessible-item-selected: root.current;
+    accessible-action-default => {
+        root.activate();
+    }
+
+    Rectangle {
+        y: 4px;
+        height: parent.height - 8px;
+        border-radius: Theme.radius-medium;
+        background: root.current ? Theme.control : touch.pressed ? Theme.surface-pressed : touch.has-hover ? Theme.surface-hover : transparent;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.button == PointerEventButton.middle && event.kind == PointerEventKind.up {
+                root.close();
+            } else if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.activate();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-xs;
+        spacing: Theme.spacing-xs;
+
+        Rectangle {
+            width: 6px;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.accent;
+                visible: root.info.bell && !root.current;
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.info.title;
+            color: root.info.exited ? Theme.text-disabled : root.current ? Theme.text : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            font-weight: root.current ? Theme.body-strong.font-weight : Theme.body.font-weight;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Rectangle {
+            width: 24px;
+
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close-touch.pressed ? Theme.control-pressed : close-touch.has-hover ? Theme.control-hover : transparent;
+                opacity: root.current || touch.has-hover || close-touch.has-hover ? 1 : 0;
+                accessible-role: button;
+                accessible-label: "Close Tab";
+                accessible-action-default => {
+                    root.close();
+                }
+
+                Icon {
+                    source: Icons.close;
+                    size: 12px;
+                    color: Theme.text-secondary;
+                }
+
+                close-touch := TouchArea {
+                    clicked => {
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The tab strip shown in the header bar when more than one tab is open.
+export component TerminalTabs {
+    in property <[TabInfo]> model;
+    in property <int> current-index;
+
+    callback selected(index: int);
+    callback close(index: int);
+
+    min-width: 120px;
+    horizontal-stretch: 1;
+    accessible-role: tab-list;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-xs;
+
+        for info[index] in root.model: Tab {
+            info: info;
+            index: index;
+            current: index == root.current-index;
+            activate => {
+                root.selected(index);
+            }
+            close => {
+                root.close(index);
+            }
+        }
+    }
+}

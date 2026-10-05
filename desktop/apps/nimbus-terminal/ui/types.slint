@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MIT
+
+export struct TabInfo {
+    title: string,
+    // The tab rang the bell while in the background.
+    bell: bool,
+    // The tab's program has exited.
+    exited: bool,
+}
+
+// A color scheme as previewed in the preferences.
+export struct SchemeInfo {
+    name: string,
+    background: color,
+    foreground: color,
+    colors: [color],
+}
+
+export struct ShortcutInfo {
+    keys: string,
+    action: string,
+}
+
+// The preferences shown in the preferences panel, and the changes made there.
+export global Preferences {
+    in property <[SchemeInfo]> schemes;
+    in-out property <int> scheme-index;
+    in property <[string]> font-families;
+    in-out property <int> font-index;
+    // In points.
+    in property <float> font-size;
+    in-out property <int> cursor-shape;
+    in-out property <bool> cursor-blink;
+    in property <[string]> scrollback-choices;
+    in-out property <int> scrollback-index;
+    in-out property <bool> visual-bell;
+    in-out property <bool> bold-is-bright;
+
+    callback scheme-selected(index: int);
+    callback font-selected(index: int);
+    // Changes the font size by `steps` points; zero resets it.
+    callback font-size-step(steps: int);
+    callback cursor-shape-selected(index: int);
+    callback cursor-blink-toggled(on: bool);
+    callback scrollback-selected(index: int);
+    callback visual-bell-toggled(on: bool);
+    callback bold-is-bright-toggled(on: bool);
+}

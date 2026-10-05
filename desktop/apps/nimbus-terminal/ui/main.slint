@@ -1,7 +1,232 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: replaced by the app's agent.
-import { Theme } from "@nimbus/theme.slint";
-export { Theme }
+import { Theme, HeaderBar, IconButton, Icons } from "@nimbus/theme.slint";
+import { TabInfo, SchemeInfo, ShortcutInfo, Preferences } from "types.slint";
+import { TerminalTabs } from "tabs.slint";
+import { TerminalView } from "terminal-view.slint";
+import { SearchBar } from "search-bar.slint";
+import { PreferencesPanel } from "preferences.slint";
+import { ConfirmDialog, ShortcutsDialog } from "dialogs.slint";
 
-export component AppWindow inherits Window {}
+export { Theme, TabInfo, SchemeInfo, ShortcutInfo, Preferences }
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "Terminal";
+    in property <[TabInfo]> tabs;
+    in property <int> current-tab;
+
+    in property <image> screen;
+    in property <length> screen-width;
+    in property <length> screen-height;
+    in property <color> term-background: Theme.background;
+    in property <bool> pointer-text: true;
+    in property <float> scroll-position;
+    in property <float> scroll-size: 1;
+    in property <bool> bell-flash;
+
+    in-out property <bool> search-open;
+    in-out property <string> search-text;
+    in property <string> search-status;
+    in-out property <bool> preferences-open;
+    in-out property <bool> shortcuts-open;
+    in property <[ShortcutInfo]> shortcuts;
+
+    in property <bool> confirm-open;
+    in property <string> confirm-title;
+    in property <string> confirm-message;
+    in property <string> confirm-action: "Close";
+
+    // The area available to the grid, in logical pixels.
+    out property <length> grid-width: view.grid-width;
+    out property <length> grid-height: view.grid-height;
+    out property <bool> terminal-focused: view.focused;
+
+    callback key(text: string, ctrl: bool, alt: bool, shift: bool, meta: bool) -> bool;
+    callback pointer(kind: int, button: int, x: length, y: length, ctrl: bool, alt: bool, shift: bool);
+    callback scrolled(delta-x: length, delta-y: length, ctrl: bool, shift: bool) -> bool;
+    callback focus-changed(focused: bool);
+    callback scrollbar-moved(position: float);
+    callback geometry-changed();
+    callback menu-action(id: string);
+
+    callback new-tab();
+    callback close-tab(index: int);
+    callback select-tab(index: int);
+
+    callback search-edited(text: string);
+    callback search-older();
+    callback search-newer();
+    callback search-closed();
+
+    callback confirm-accepted();
+    callback confirm-cancelled();
+
+    public function focus-terminal() {
+        view.grab-focus();
+    }
+
+    public function open-search() {
+        root.search-open = true;
+        root.preferences-open = false;
+        search.focus-field();
+    }
+
+    title: root.window-title;
+    min-width: 360px;
+    min-height: 220px;
+    preferred-width: 900px;
+    preferred-height: 600px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+
+    VerticalLayout {
+        header := HeaderBar {
+            title: root.tabs.length > 1 ? "" : root.window-title;
+
+            IconButton {
+                icon: Icons.plus;
+                accessible-label: "New Tab";
+                clicked => {
+                    root.new-tab();
+                }
+            }
+
+            if root.tabs.length > 1: TerminalTabs {
+                model: root.tabs;
+                current-index: root.current-tab;
+                selected(index) => {
+                    root.select-tab(index);
+                    view.grab-focus();
+                }
+                close(index) => {
+                    root.close-tab(index);
+                }
+            }
+
+            if root.tabs.length <= 1: Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            IconButton {
+                icon: Icons.search;
+                checked: root.search-open;
+                accessible-label: "Find";
+                clicked => {
+                    if root.search-open {
+                        root.search-closed();
+                    } else {
+                        root.open-search();
+                    }
+                }
+            }
+
+            IconButton {
+                icon: Icons.menu;
+                checked: root.preferences-open;
+                accessible-label: "Preferences";
+                clicked => {
+                    root.preferences-open = !root.preferences-open;
+                    if !root.preferences-open {
+                        view.grab-focus();
+                    }
+                }
+            }
+        }
+
+        // Kept in the tree while closed, so `open-search` can focus it.
+        search := SearchBar {
+            height: root.search-open ? self.min-height : 0;
+            visible: root.search-open;
+            text <=> root.search-text;
+            status: root.search-status;
+            edited(text) => {
+                root.search-edited(text);
+            }
+            older => {
+                root.search-older();
+            }
+            newer => {
+                root.search-newer();
+            }
+            close => {
+                root.search-closed();
+            }
+        }
+
+        view := TerminalView {
+            vertical-stretch: 1;
+            screen: root.screen;
+            screen-width: root.screen-width;
+            screen-height: root.screen-height;
+            term-background: root.term-background;
+            pointer-text: root.pointer-text;
+            scroll-position: root.scroll-position;
+            scroll-size: root.scroll-size;
+            bell-flash: root.bell-flash;
+            key(text, ctrl, alt, shift, meta) => {
+                root.key(text, ctrl, alt, shift, meta)
+            }
+            pointer(kind, button, x, y, ctrl, alt, shift) => {
+                root.pointer(kind, button, x, y, ctrl, alt, shift);
+            }
+            scrolled(dx, dy, ctrl, shift) => {
+                root.scrolled(dx, dy, ctrl, shift)
+            }
+            focus-changed(focused) => {
+                root.focus-changed(focused);
+            }
+            scrollbar-moved(position) => {
+                root.scrollbar-moved(position);
+            }
+            geometry-changed => {
+                root.geometry-changed();
+            }
+            menu-action(id) => {
+                root.menu-action(id);
+            }
+        }
+    }
+
+    if root.preferences-open: TouchArea {
+        clicked => {
+            root.preferences-open = false;
+            view.grab-focus();
+        }
+        scroll-event => accept;
+    }
+
+    if root.preferences-open: PreferencesPanel {
+        x: root.width - self.width - Theme.spacing-sm;
+        y: header.height + Theme.spacing-xs;
+        height: min(self.preferred-height, root.height - self.y - Theme.spacing-sm);
+        show-shortcuts => {
+            root.preferences-open = false;
+            root.shortcuts-open = true;
+        }
+        close => {
+            root.preferences-open = false;
+            view.grab-focus();
+        }
+    }
+
+    if root.shortcuts-open: ShortcutsDialog {
+        shortcuts: root.shortcuts;
+        close => {
+            root.shortcuts-open = false;
+            view.grab-focus();
+        }
+    }
+
+    if root.confirm-open: ConfirmDialog {
+        title: root.confirm-title;
+        message: root.confirm-message;
+        action: root.confirm-action;
+        accepted => {
+            root.confirm-accepted();
+        }
+        cancelled => {
+            root.confirm-cancelled();
+        }
+    }
+}

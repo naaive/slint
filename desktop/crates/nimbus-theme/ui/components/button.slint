@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, ButtonVariant } from "../tokens.slint";
+import { Icon } from "icon.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// A push button with a label, an icon, or both.
+export component Button {
+    in property <string> text;
+    in property <image> icon;
+    in property <ButtonVariant> variant: ButtonVariant.default;
+    in property <bool> enabled: true;
+    // The shorter `Theme.control-height-small`, for toolbars and dense rows.
+    in property <bool> compact;
+    out property <bool> has-focus: focus-scope.has-focus;
+    out property <bool> pressed: touch.pressed || focus-scope.key-down;
+
+    callback clicked;
+
+    private property <bool> has-icon: root.icon.width > 0;
+    private property <bool> hovered: touch.has-hover && root.enabled;
+    private property <color> fill: {
+        if root.variant == ButtonVariant.primary {
+            return root.pressed ? Theme.accent-pressed : root.hovered ? Theme.accent-hover : Theme.accent;
+        }
+        if root.variant == ButtonVariant.destructive {
+            return root.pressed ? Theme.destructive-pressed : root.hovered ? Theme.destructive-hover : Theme.destructive;
+        }
+        if root.variant == ButtonVariant.flat {
+            return root.pressed ? Theme.surface-pressed : root.hovered ? Theme.surface-hover : transparent;
+        }
+        root.pressed ? Theme.control-pressed : root.hovered ? Theme.control-hover : Theme.control
+    }
+    private property <color> content: {
+        if !root.enabled { return Theme.text-disabled; }
+        if root.variant == ButtonVariant.primary { return Theme.on-accent; }
+        if root.variant == ButtonVariant.destructive { return Theme.on-destructive; }
+        Theme.text
+    }
+
+    min-height: root.compact ? Theme.control-height-small : Theme.control-height;
+    min-width: max(root.min-height, layout.min-width);
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.6;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+    forward-focus: focus-scope;
+
+    background := Rectangle {
+        border-radius: Theme.radius-medium;
+        background: root.fill;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    layout := HorizontalLayout {
+        cross-axis-alignment: center;
+        padding-left: root.text == "" ? 0 : root.has-icon ? Theme.spacing-md : Theme.spacing-lg;
+        padding-right: root.text == "" ? 0 : Theme.spacing-lg;
+        spacing: Theme.spacing-sm;
+        alignment: center;
+
+        if root.has-icon: Icon {
+            source: root.icon;
+            color: root.content;
+        }
+        if root.text != "": Text {
+            text: root.text;
+            color: root.content;
+            font-family: Theme.font-family;
+            font-size: Theme.body-strong.font-size;
+            font-weight: Theme.body-strong.font-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+        property <bool> key-down;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+            self.key-down = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                self.key-down = true;
+                return accept;
+            }
+            reject
+        }
+        key-released(event) => {
+            if (event.text == Key.Space || event.text == Key.Return) && self.key-down {
+                self.key-down = false;
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if focus-scope.keyboard-focus: FocusRing {
+        radius: Theme.radius-medium;
+    }
+}

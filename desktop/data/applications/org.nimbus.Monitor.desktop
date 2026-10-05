@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+GenericName=System Monitor
+Comment=View running processes and resource usage
+Exec=nimbus-monitor
+TryExec=nimbus-monitor
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=Process;Task;CPU;Memory;Network;Resources;
+StartupNotify=true

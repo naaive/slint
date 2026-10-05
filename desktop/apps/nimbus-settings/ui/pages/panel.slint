@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Label, Card, ListRow, TextField } from "@nimbus/theme.slint";
+import { Prefs } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow, SliderRow, SegmentRow, ChoiceRow } from "../widgets.slint";
+
+// A miniature screen showing where the panel and dock sit.
+component PanelPreview inherits Rectangle {
+    private property <length> screen-width: min(self.width - 2 * Theme.spacing-lg, 360px);
+    private property <length> screen-height: self.screen-width * 9 / 16;
+    private property <float> ratio: self.screen-width / 1920px;
+    private property <length> panel-height: max(4px, Prefs.panel-height * 1.5px * root.ratio);
+    private property <bool> bottom: Prefs.panel-position == 1;
+
+    height: self.screen-height + 2 * Theme.spacing-lg;
+    accessible-role: image;
+    accessible-label: "Preview of the panel and dock";
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: Theme.spacing-lg;
+        width: root.screen-width;
+        height: root.screen-height;
+        border-radius: Theme.radius-medium;
+        clip: true;
+        background: @linear-gradient(140deg, Theme.accent.mix(#0e1020, 55%) 0%, #0e1020 100%);
+
+        Rectangle {
+            y: root.bottom ? parent.height - self.height : 0;
+            height: root.panel-height;
+            background: Theme.panel-background;
+            animate y, height { duration: Theme.duration-normal; easing: Motion.standard; }
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                width: 26px;
+                height: max(2px, parent.height * 0.35);
+                border-radius: 2px;
+                background: Theme.text.with-alpha(0.6);
+            }
+        }
+
+        Rectangle {
+            property <bool> hidden: !Prefs.show-dock || Prefs.dock-autohide;
+
+            x: (parent.width - self.width) / 2;
+            y: root.bottom ? parent.height - root.panel-height - self.height - 5px : parent.height - self.height - 5px;
+            width: parent.width * 0.42;
+            height: 16px;
+            border-radius: 6px;
+            background: Theme.panel-background;
+            opacity: self.hidden ? (Prefs.show-dock ? 0.3 : 0) : 1;
+            animate opacity, y { duration: Theme.duration-normal; easing: Motion.standard; }
+
+            HorizontalLayout {
+                alignment: center;
+                padding: 3px;
+                spacing: 3px;
+
+                for color in [#e66100, #3584e4, #2ec27e, #c061cb, #f5c211]: Rectangle {
+                    width: 10px;
+                    border-radius: 3px;
+                    background: color;
+                }
+            }
+        }
+    }
+}
+
+export component PanelPage inherits PageScroll {
+    Card {
+        content-padding: 0;
+
+        PanelPreview { }
+    }
+
+    Group {
+        title: "Panel";
+
+        SegmentRow {
+            title: "Position";
+            model: ["Top", "Bottom"];
+            current-index <=> Prefs.panel-position;
+            chosen(index) => {
+                Prefs.set-int("panel.position", index);
+            }
+        }
+
+        RowDivider { }
+
+        SliderRow {
+            title: "Height";
+            minimum: 24;
+            maximum: 48;
+            step: 1;
+            value <=> Prefs.panel-height;
+            value-text: round(Prefs.panel-height) + " px";
+            changed(value) => {
+                Prefs.set-int("panel.height", round(value));
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Battery percentage";
+            subtitle: "Show the charge next to the battery icon";
+            checked <=> Prefs.battery-percentage;
+            toggled(checked) => {
+                Prefs.set-bool("panel.show-battery-percentage", checked);
+            }
+        }
+    }
+
+    Group {
+        title: "Clock";
+
+        ChoiceRow {
+            title: "Format";
+            subtitle: Prefs.clock-valid ? "Shown in the top panel" : "The custom format isn't valid";
+            control-width: 260px;
+            model: Prefs.clock-presets;
+            current-index <=> Prefs.clock-preset-index;
+            chosen(index) => {
+                Prefs.choose-clock-preset(index);
+            }
+        }
+
+        if Prefs.clock-preset-index == Prefs.clock-presets.length - 1: RowDivider { }
+
+        if Prefs.clock-preset-index == Prefs.clock-presets.length - 1: ListRow {
+            title: "Custom format";
+            subtitle: Prefs.clock-valid ? "Preview: " + Prefs.clock-preview : "Use strftime codes, such as %H:%M or %a %d %b";
+            clickable: false;
+
+            TextField {
+                width: 220px;
+                text <=> Prefs.clock-format;
+                invalid: !Prefs.clock-valid;
+                accessible-label: "Custom clock format";
+                edited(text) => {
+                    Prefs.set-text("panel.clock-format", text);
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Dock";
+
+        SwitchRow {
+            title: "Show the dock";
+            subtitle: "Favorite and running apps at the bottom of the screen";
+            checked <=> Prefs.show-dock;
+            toggled(checked) => {
+                Prefs.set-bool("panel.show-dock", checked);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Hide automatically";
+            subtitle: "Reveal the dock when the pointer reaches the screen edge";
+            enabled: Prefs.show-dock;
+            checked <=> Prefs.dock-autohide;
+            toggled(checked) => {
+                Prefs.set-bool("panel.dock-autohide", checked);
+            }
+        }
+    }
+}

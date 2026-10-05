@@ -1,7 +1,22 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: the nimbus-theme agent replaces this with the full design system.
-export global Theme {
-    in-out property <bool> dark: true;
-    in-out property <color> accent: #3584e4;
-}
+// The Nimbus design system: `import { Theme, Button, Icons } from "@nimbus/theme.slint";`.
+// To call `nimbus_theme::apply_theme!` from Rust, also `export { Theme }` from the main `.slint` file.
+
+export { Theme, Motion, TextStyle, Shadow, ButtonVariant, Tone } from "tokens.slint";
+export { Icons } from "icons.slint";
+export { Icon } from "components/icon.slint";
+export { Label } from "components/label.slint";
+export { FocusRing } from "components/focus-ring.slint";
+export { Button } from "components/button.slint";
+export { IconButton } from "components/icon-button.slint";
+export { ToggleSwitch } from "components/toggle-switch.slint";
+export { CheckBox } from "components/checkbox.slint";
+export { Slider } from "components/slider.slint";
+export { SegmentedControl } from "components/segmented-control.slint";
+export { Dropdown } from "components/dropdown.slint";
+export { Card, Popover } from "components/card.slint";
+export { ListRow } from "components/list-row.slint";
+export { TextField, SearchField } from "components/text-field.slint";
+export { Badge, ProgressBar, Divider, Spinner } from "components/indicators.slint";
+export { NavigationItem, TabBar, HeaderBar } from "components/navigation.slint";

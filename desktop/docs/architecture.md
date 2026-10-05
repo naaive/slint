@@ -54,7 +54,8 @@ Modules in `crates/nimbus-compositor/src`:
 
 - `main.rs`: argument parsing (`--backend winit|udev|headless`), logging, startup.
 - `state.rs`: the `Nimbus` state struct and Smithay handler implementations
-  (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale).
+  (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, ext and wlr data control,
+  output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale).
 - `backend/winit.rs`: nested session in a window, for development.
 - `backend/udev.rs`: DRM/KMS, GBM, libinput, and libseat for a real session, with hotplug.
 - `backend/headless.rs`: no output device; renders with Pixman into memory, for tests and screenshots.
@@ -65,7 +66,10 @@ Modules in `crates/nimbus-compositor/src`:
 - `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform`,
   creates one `MinimalSoftwareWindow` per output, renders damaged regions into a `MemoryRenderBuffer`,
   forwards input inside `Shell::input_region()`, and maps `ShellAction`s to compositor requests, services, and launches.
+- `auth.rs`: checks lock screen passwords through PAM on a worker thread and reports back through a `calloop` channel.
+  It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
+- `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshots.
 
 Command line, which `nimbus-session` relies on:
 
@@ -99,6 +103,9 @@ Surfaces:
 - **Notifications**: toasts with actions and timeouts, and a notification center with history in the calendar popup.
 - **OSD**: volume and brightness feedback.
 - **Lock screen**: clock and password field; authentication goes through PAM in the compositor.
+  The shell hands passwords to the handler registered with `Shell::on_unlock_attempt`,
+  and the compositor answers with `Shell::set_locked(false)` or `Shell::unlock_failed()`.
+  logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
 ## Theming
 
@@ -111,15 +118,28 @@ Every Nimbus UI imports it, so the shell and apps look like one product.
 
 `$XDG_CONFIG_HOME/nimbus/config.toml`; see `nimbus-config` for the schema.
 The compositor watches the file and applies changes live, so the Settings app only writes the file.
+The shell saves its own changes, such as the dark style toggle and dock pins, to the file the compositor was started with.
+
+## Sessions and Logout
+
+`nimbus-session` treats a compositor exit status of 0 as a logout and anything else as a crash to restart.
+Logging out asks logind to end the session.
+Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested` and the compositor exits with status 0.
 
 ## Testing
 
 - Domain crates have unit tests with fixture directories.
 - The shell has tests on Slint's testing backend, and renders reference screenshots with the software renderer.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
+  The shell tests run it with the real shell and check the composited output through `Request::Screenshot`:
+  the panel renders, the launcher and overview toggle over IPC, maximized windows stay below the panel, and notifications show toasts.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running
 
 - Nested, inside an existing Wayland or X11 session: `cargo run -p nimbus-compositor -- --backend winit`.
 - On a TTY: `nimbus-session`, or select "Nimbus" from a display manager using `data/nimbus.desktop`.
+- Headless, for tests and screenshots: `nimbus-compositor --backend headless`, with apps started as `SLINT_BACKEND=winit-software`.
+
+The workspace's `dev` profile keeps only line tables for its own crates and no debug info for dependencies,
+because Slint's generated code makes full debug info several hundred megabytes per binary.

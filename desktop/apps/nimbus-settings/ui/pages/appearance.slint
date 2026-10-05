@@ -1,0 +1,491 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, Label, Card, ListRow, Button, TextField, Spinner } from "@nimbus/theme.slint";
+import { Prefs } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow, SliderRow, SegmentRow, Pressable } from "../widgets.slint";
+
+// A miniature desktop in the light or dark scheme, for the style choices.
+component MiniDesktop inherits Rectangle {
+    in property <bool> dark;
+
+    background: root.dark ? #1c1c20 : #e9e9ee;
+
+    // Panel.
+    Rectangle {
+        y: 0;
+        height: 8px;
+        background: root.dark ? #121215 : #fafafc;
+    }
+
+    // Back window.
+    Rectangle {
+        x: parent.width * 0.42;
+        y: parent.height * 0.22;
+        width: parent.width * 0.48;
+        height: parent.height * 0.52;
+        border-radius: 5px;
+        background: root.dark ? #2f2f34 : #ffffff;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: #00000030;
+    }
+
+    // Front window with a title bar and an accent button.
+    Rectangle {
+        x: parent.width * 0.1;
+        y: parent.height * 0.34;
+        width: parent.width * 0.52;
+        height: parent.height * 0.54;
+        border-radius: 5px;
+        background: root.dark ? #252529 : #ffffff;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000040;
+
+        Rectangle {
+            y: 0;
+            height: 10px;
+            border-radius: 5px;
+            background: root.dark ? #2f2f34 : #f1f1f4;
+        }
+
+        Rectangle {
+            x: 8px;
+            y: 18px;
+            width: parent.width * 0.6;
+            height: 4px;
+            border-radius: 2px;
+            background: root.dark ? #ffffff30 : #00000020;
+        }
+
+        Rectangle {
+            x: 8px;
+            y: 26px;
+            width: parent.width * 0.4;
+            height: 4px;
+            border-radius: 2px;
+            background: root.dark ? #ffffff30 : #00000020;
+        }
+
+        Rectangle {
+            x: parent.width - self.width - 8px;
+            y: parent.height - self.height - 7px;
+            width: 22px;
+            height: 9px;
+            border-radius: 4.5px;
+            background: Theme.accent;
+        }
+    }
+}
+
+component SchemeChoice {
+    in property <string> label;
+    in property <bool> selected;
+    // 0: light, 1: dark, 2: both halves.
+    in property <int> scheme;
+
+    callback activated();
+
+    preferred-width: 100px;
+    horizontal-stretch: 1;
+
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        Pressable {
+            height: 96px;
+            radius: Theme.radius-large + 3px;
+            accessible-label: root.label;
+            activated => {
+                root.activated();
+            }
+
+            Rectangle {
+                border-radius: Theme.radius-large + 3px;
+                border-width: root.selected ? 3px : 1px;
+                border-color: root.selected ? Theme.accent : Theme.border-strong;
+                animate border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+
+                Rectangle {
+                    x: 4px;
+                    y: 4px;
+                    width: parent.width - 8px;
+                    height: parent.height - 8px;
+                    border-radius: Theme.radius-large;
+                    clip: true;
+
+                    MiniDesktop {
+                        dark: root.scheme == 1;
+                    }
+
+                    if root.scheme == 2: Rectangle {
+                        x: parent.width / 2;
+                        width: parent.width / 2;
+                        clip: true;
+
+                        MiniDesktop {
+                            x: -parent.x;
+                            width: parent.width * 2;
+                            dark: true;
+                        }
+                    }
+                }
+            }
+        }
+
+        Label {
+            text: root.label;
+            horizontal-alignment: center;
+            style: root.selected ? Theme.body-strong : Theme.body;
+        }
+    }
+}
+
+component AccentSwatchButton {
+    in property <color> color;
+    in property <string> name;
+    in property <bool> selected;
+
+    callback activated();
+
+    width: 34px;
+    height: 34px;
+
+    Pressable {
+        width: 100%;
+        height: 100%;
+        radius: 17px;
+        accessible-label: root.name;
+        accessible-checked: root.selected;
+        activated => {
+            root.activated();
+        }
+
+        Rectangle {
+            border-radius: self.height / 2;
+            border-width: root.selected ? 2px : 0;
+            border-color: root.color;
+
+            Rectangle {
+                x: root.selected ? 4px : 2px;
+                y: self.x;
+                width: parent.width - 2 * self.x;
+                height: self.width;
+                border-radius: self.height / 2;
+                background: root.color;
+                animate x { duration: Theme.duration-fast; easing: Motion.standard; }
+
+                if root.selected: Icon {
+                    source: Icons.check;
+                    size: 14px;
+                    color: root.color.to-oklch().lightness > 0.75 ? #1c1c21 : #ffffff;
+                }
+            }
+        }
+    }
+}
+
+component WallpaperTile {
+    in property <image> thumbnail;
+    in property <string> name;
+    in property <bool> selected;
+    in property <bool> is-none;
+    in property <length> image-height;
+
+    callback activated();
+
+    VerticalLayout {
+        spacing: Theme.spacing-xs;
+
+        Pressable {
+            height: root.image-height;
+            radius: Theme.radius-large;
+            accessible-label: root.name;
+            accessible-checked: root.selected;
+            activated => {
+                root.activated();
+            }
+
+            Rectangle {
+                border-radius: Theme.radius-large;
+                clip: true;
+                background: Theme.surface-sunken;
+
+                if root.is-none: Rectangle {
+                    background: @linear-gradient(135deg, Theme.accent.mix(#101018, 45%) 0%, #101018 100%);
+
+                    Label {
+                        text: "Default";
+                        color: #ffffffcc;
+                        style: Theme.caption;
+                    }
+                }
+
+                if !root.is-none && root.thumbnail.width > 0: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.thumbnail;
+                    image-fit: cover;
+                }
+
+                if !root.is-none && root.thumbnail.width == 0: Spinner {
+                    size: 20px;
+                }
+            }
+
+            Rectangle {
+                border-radius: Theme.radius-large;
+                border-width: root.selected ? 3px : 1px;
+                border-color: root.selected ? Theme.accent : Theme.border;
+            }
+
+            if root.selected: Rectangle {
+                x: parent.width - self.width - Theme.spacing-sm;
+                y: Theme.spacing-sm;
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.accent;
+
+                Icon {
+                    source: Icons.check;
+                    size: 14px;
+                    color: Theme.on-accent;
+                }
+            }
+        }
+
+        Label {
+            text: root.name;
+            style: Theme.caption;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+component WallpaperGrid {
+    private property <length> gap: Theme.spacing-md;
+    private property <length> label-height: 22px;
+    private property <int> columns: max(2, floor((root.width + root.gap) / (150px + root.gap)));
+    private property <length> tile-width: (root.width - (root.columns - 1) * root.gap) / root.columns;
+    private property <length> tile-height: round(root.tile-width * 10 / 16 / 1px) * 1px;
+    private property <int> count: Prefs.wallpapers.length + 1;
+
+    height: ceil(root.count / root.columns) * (root.tile-height + root.label-height + root.gap) - root.gap;
+
+    WallpaperTile {
+        x: 0;
+        y: 0;
+        width: root.tile-width;
+        image-height: root.tile-height;
+        is-none: true;
+        name: "None";
+        selected: Prefs.wallpaper == "";
+        activated => {
+            Prefs.wallpaper = "";
+            Prefs.set-text("appearance.wallpaper", "");
+        }
+    }
+
+    for item[index] in Prefs.wallpapers: WallpaperTile {
+        x: mod(index + 1, root.columns) * (root.tile-width + root.gap);
+        y: floor((index + 1) / root.columns) * (root.tile-height + root.label-height + root.gap);
+        width: root.tile-width;
+        image-height: root.tile-height;
+        thumbnail: item.thumbnail;
+        name: item.name;
+        selected: Prefs.wallpaper == item.path;
+        activated => {
+            Prefs.wallpaper = item.path;
+            Prefs.set-text("appearance.wallpaper", item.path);
+        }
+    }
+}
+
+export component AppearancePage inherits PageScroll {
+    Group {
+        title: "Style";
+
+        HorizontalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-lg;
+
+            SchemeChoice {
+                label: "Light";
+                scheme: 0;
+                selected: Prefs.color-scheme == 0;
+                activated => {
+                    Prefs.color-scheme = 0;
+                    Prefs.set-int("appearance.color-scheme", 0);
+                }
+            }
+
+            SchemeChoice {
+                label: "Dark";
+                scheme: 1;
+                selected: Prefs.color-scheme == 1;
+                activated => {
+                    Prefs.color-scheme = 1;
+                    Prefs.set-int("appearance.color-scheme", 1);
+                }
+            }
+
+            SchemeChoice {
+                label: "Follow System";
+                scheme: 2;
+                selected: Prefs.color-scheme == 2;
+                activated => {
+                    Prefs.color-scheme = 2;
+                    Prefs.set-int("appearance.color-scheme", 2);
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Accent Color";
+
+        HorizontalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-sm;
+            alignment: start;
+
+            for swatch in Prefs.accents: AccentSwatchButton {
+                color: swatch.color;
+                name: swatch.name;
+                selected: !Prefs.accent-is-custom && Prefs.accent == swatch.hex;
+                activated => {
+                    Prefs.accent = swatch.hex;
+                    Prefs.set-text("appearance.accent", swatch.hex);
+                }
+            }
+        }
+
+        RowDivider { }
+
+        ListRow {
+            title: "Custom color";
+            subtitle: "A hexadecimal color such as #3584e4";
+            clickable: false;
+
+            Rectangle {
+                width: 22px;
+                height: 22px;
+                border-radius: 11px;
+                background: Theme.accent;
+                border-width: Prefs.accent-is-custom ? 2px : 0;
+                border-color: Theme.text;
+            }
+
+            TextField {
+                width: 120px;
+                text <=> Prefs.accent;
+                invalid: !Prefs.is-color(self.text);
+                accessible-label: "Custom accent color";
+                edited(text) => {
+                    if Prefs.is-color(text) {
+                        Prefs.set-text("appearance.accent", text);
+                    }
+                }
+                accepted(text) => {
+                    if Prefs.is-color(text) {
+                        Prefs.set-text("appearance.accent", text);
+                    }
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Background";
+        description: Prefs.wallpapers-loading ? "Looking for wallpapers…"
+            : Prefs.wallpapers.length == 0 ? "No wallpapers found. Add images to your Pictures folder to choose them here."
+            : "Images from your Pictures folder and the system's wallpapers.";
+
+        VerticalLayout {
+            padding: Theme.spacing-md;
+
+            WallpaperGrid { }
+        }
+    }
+
+    Group {
+        title: "Text";
+
+        ListRow {
+            title: "Font";
+            subtitle: "Used by the desktop and Nimbus apps";
+            clickable: false;
+
+            Button {
+                text: Prefs.font-family;
+                icon: Icons.chevron-down;
+                accessible-label: "Choose font";
+                clicked => {
+                    Prefs.pick-font();
+                }
+            }
+        }
+
+        RowDivider { }
+
+        SliderRow {
+            title: "Size";
+            minimum: 8;
+            maximum: 16;
+            step: 0.5;
+            value <=> Prefs.font-size;
+            value-text: Prefs.font-size + " pt";
+            changed(value) => {
+                Prefs.set-float("appearance.font-size", value);
+            }
+        }
+    }
+
+    Group {
+        title: "Interface";
+
+        SegmentRow {
+            title: "Scale";
+            subtitle: "Size of the panel, apps, and text";
+            control-width: 300px;
+            model: ["100%", "125%", "150%", "175%", "200%"];
+            current-index <=> Prefs.scale-index;
+            chosen(index) => {
+                Prefs.set-float("appearance.scale", 1 + index * 0.25);
+            }
+        }
+
+        RowDivider { }
+
+        SliderRow {
+            title: "Corner radius";
+            minimum: 0;
+            maximum: 24;
+            step: 1;
+            value <=> Prefs.corner-radius;
+            value-text: round(Prefs.corner-radius) + " px";
+            changed(value) => {
+                Prefs.set-float("appearance.corner-radius", value);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Animations";
+            subtitle: "Motion when windows and menus open and close";
+            checked <=> Prefs.animations;
+            toggled(checked) => {
+                Prefs.set-bool("appearance.animations", checked);
+            }
+        }
+    }
+}

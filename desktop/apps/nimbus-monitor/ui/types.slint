@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: MIT
+
+export enum ProcessIcon {
+    application,
+    kernel,
+    terminal,
+    service,
+}
+
+export struct ProcessRow {
+    pid: int,
+    name: string,
+    command: string,
+    user: string,
+    cpu: string,
+    // CPU share from 0 to 1, for the inline bar.
+    cpu-fraction: float,
+    memory: string,
+    disk: string,
+    state: string,
+    depth: int,
+    icon: ProcessIcon,
+}
+
+export struct CoreItem {
+    label: string,
+    usage: float,
+    text: string,
+}
+
+export struct FileSystemRow {
+    device: string,
+    mount-point: string,
+    fs-type: string,
+    used: string,
+    total: string,
+    fraction: float,
+    removable: bool,
+    read-only: bool,
+}
+
+export struct Graph {
+    // SVG path commands in a view box 59 wide and 100 tall; see `core::graph`.
+    area: string,
+    line: string,
+    secondary-line: string,
+    value: string,
+    secondary-value: string,
+    scale: string,
+}
+
+export enum PendingSignal {
+    none,
+    end,
+    kill,
+}

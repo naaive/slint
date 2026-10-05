@@ -115,7 +115,8 @@ impl FileArg {
             std::env::current_dir().map(|cwd| cwd.join(file)).unwrap_or_else(|_| file.to_path_buf())
         };
         let path = absolute.to_string_lossy().into_owned();
-        let url = format!("file://{}", percent_encode_path(absolute.as_os_str().as_encoded_bytes()));
+        let url =
+            format!("file://{}", percent_encode_path(absolute.as_os_str().as_encoded_bytes()));
         Self { path: Some(path), url }
     }
 }
@@ -284,7 +285,11 @@ mod tests {
     use super::*;
 
     fn ctx() -> ExpandContext<'static> {
-        ExpandContext { name: "My App", icon: Some("my-icon"), desktop_file: Some(Path::new("/apps/my.desktop")) }
+        ExpandContext {
+            name: "My App",
+            icon: Some("my-icon"),
+            desktop_file: Some(Path::new("/apps/my.desktop")),
+        }
     }
 
     fn expand(exec: &str, files: &[&str]) -> Vec<String> {
@@ -298,7 +303,10 @@ mod tests {
         assert_eq!(expand(r#"app "a b" c"#, &[]), vec!["app", "a b", "c"]);
         assert_eq!(expand(r#"app "q\"x\`y\$z\\w""#, &[]), vec!["app", "q\"x`y$z\\w"]);
         assert_eq!(expand(r#"app "" pre"mid"post"#, &[]), vec!["app", "", "premidpost"]);
-        assert_eq!(expand("app 'single quoted'  tab\targ", &[]), vec!["app", "single quoted", "tab", "arg"]);
+        assert_eq!(
+            expand("app 'single quoted'  tab\targ", &[]),
+            vec!["app", "single quoted", "tab", "arg"]
+        );
         assert_eq!(expand(r"app a\ b", &[]), vec!["app", "a b"]);
         assert_eq!(ExecLine::parse(r#"app "open"#).err(), Some(ExecError::UnterminatedQuote));
         assert_eq!(ExecLine::parse("   ").err(), Some(ExecError::Empty));
@@ -312,7 +320,10 @@ mod tests {
         assert_eq!(expand("app %f", &["file:///tmp/x%20y"]), vec!["app", "/tmp/x y"]);
         assert_eq!(expand("app %F", &["https://x.org/p"]), vec!["app"]);
         assert_eq!(expand("app %f", &[]), vec!["app"]);
-        assert_eq!(expand("app %i %c %k", &[]), vec!["app", "--icon", "my-icon", "My App", "/apps/my.desktop"]);
+        assert_eq!(
+            expand("app %i %c %k", &[]),
+            vec!["app", "--icon", "my-icon", "My App", "/apps/my.desktop"]
+        );
         assert_eq!(expand("app 100%% %d %D %n %N %v %m", &[]), vec!["app", "100%"]);
         assert_eq!(expand("app --file=%f", &["/x"]), vec!["app", "--file=/x"]);
         assert_eq!(expand(r#"app "%c""#, &[]), vec!["app", "My App"]);
@@ -332,7 +343,10 @@ mod tests {
     fn single_file_codes_start_one_instance_per_file() {
         let line = ExecLine::parse("app %f").expect("valid");
         let all = line.expand_all(&ctx(), &[PathBuf::from("/a"), PathBuf::from("/b")]);
-        assert_eq!(all, vec![vec!["app".to_owned(), "/a".to_owned()], vec!["app".to_owned(), "/b".to_owned()]]);
+        assert_eq!(
+            all,
+            vec![vec!["app".to_owned(), "/a".to_owned()], vec!["app".to_owned(), "/b".to_owned()]]
+        );
         let multi = ExecLine::parse("app %F").expect("valid");
         assert_eq!(multi.expand_all(&ctx(), &[PathBuf::from("/a"), PathBuf::from("/b")]).len(), 1);
     }

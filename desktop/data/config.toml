@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: MIT
+#
+# Nimbus configuration, with every setting at its default value.
+# Copy it to ~/.config/nimbus/config.toml and keep only the settings you change;
+# missing settings fall back to these defaults.
+# The compositor applies changes as soon as you save the file.
+
+# Command lines run through `sh -c` once the session starts,
+# before the entries in ~/.config/autostart and /etc/xdg/autostart.
+# Example: autostart = ["nm-applet --indicator", "syncthing serve --no-browser"]
+autostart = []
+
+# Desktop entry ids pinned to the dock, in order, without the `.desktop` suffix.
+# Example: favorites = ["org.nimbus.Files", "org.nimbus.Terminal", "firefox"]
+favorites = ["org.nimbus.Files", "org.nimbus.Terminal", "org.nimbus.Monitor", "org.nimbus.Settings"]
+
+[appearance]
+# "light", "dark", or "system".
+color_scheme = "system"
+accent = "#3584e4"
+# Image shown behind the desktop; a built-in gradient is used when unset.
+# wallpaper = "/usr/share/backgrounds/nimbus/default.png"
+icon_theme = "Adwaita"
+font_family = "Inter"
+# Point size of the interface font.
+font_size = 11.0
+# Output scale factor, such as 1.25 or 2.0.
+scale = 1.0
+animations = true
+# Window and surface corner radius, in logical pixels.
+corner_radius = 12.0
+
+[panel]
+# "top" or "bottom".
+position = "top"
+height = 32
+show_dock = true
+dock_autohide = false
+# A strftime-style format; see `man strftime`.
+clock_format = "%a %d %b  %H:%M"
+show_battery_percentage = true
+
+[workspaces]
+count = 4
+# Layout for new workspaces: "floating" or "tiling".
+layout = "floating"
+# Gap between tiled windows, in logical pixels.
+gaps = 8
+focus_follows_mouse = false
+
+[input]
+# XKB settings; see `man xkeyboard-config`. Example: keyboard_layout = "de,us"
+keyboard_layout = "us"
+keyboard_variant = ""
+keyboard_options = ""
+repeat_delay_ms = 300
+# Repeated key presses per second.
+repeat_rate = 30
+natural_scroll = true
+tap_to_click = true
+# Pointer acceleration from -1.0 (slowest) to 1.0 (fastest).
+pointer_speed = 0.0
+
+[power]
+# Minutes of inactivity before the screen locks; 0 never locks.
+lock_after_minutes = 10
+# Minutes of inactivity before the screens turn off; 0 keeps them on.
+blank_after_minutes = 5
+suspend_on_lid_close = true
+
+# Key chords, written as modifiers (Super, Ctrl, Alt, Shift) and an XKB keysym name.
+# Setting this table replaces all default bindings, so keep the ones you still want.
+# Actions without a value are strings such as "lock";
+# actions with a value are tables such as { spawn = "foot" } or { workspace = 0 }.
+# Workspaces are numbered from 0.
+[keybindings]
+"Super+Return" = { spawn = "nimbus-terminal" }
+"Super+E" = { spawn = "nimbus-files" }
+"Super+Space" = "toggle-launcher"
+"Super+Tab" = "toggle-overview"
+"Super+Q" = "close-window"
+"Super+Up" = "toggle-maximize"
+"Super+F" = "toggle-fullscreen"
+"Super+H" = "minimize"
+"Super+T" = "toggle-layout"
+"Super+Left" = "focus-left"
+"Super+Right" = "focus-right"
+"Super+Ctrl+Left" = "previous-workspace"
+"Super+Ctrl+Right" = "next-workspace"
+"Super+L" = "lock"
+"Super+Shift+E" = "quit"
+"Print" = "screenshot"
+"XF86AudioRaiseVolume" = "volume-up"
+"XF86AudioLowerVolume" = "volume-down"
+"XF86AudioMute" = "toggle-mute"
+"XF86MonBrightnessUp" = "brightness-up"
+"XF86MonBrightnessDown" = "brightness-down"
+"Super+1" = { workspace = 0 }
+"Super+2" = { workspace = 1 }
+"Super+3" = { workspace = 2 }
+"Super+4" = { workspace = 3 }
+"Super+5" = { workspace = 4 }
+"Super+6" = { workspace = 5 }
+"Super+7" = { workspace = 6 }
+"Super+8" = { workspace = 7 }
+"Super+9" = { workspace = 8 }
+"Super+Shift+1" = { move-to-workspace = 0 }
+"Super+Shift+2" = { move-to-workspace = 1 }
+"Super+Shift+3" = { move-to-workspace = 2 }
+"Super+Shift+4" = { move-to-workspace = 3 }
+"Super+Shift+5" = { move-to-workspace = 4 }
+"Super+Shift+6" = { move-to-workspace = 5 }
+"Super+Shift+7" = { move-to-workspace = 6 }
+"Super+Shift+8" = { move-to-workspace = 7 }
+"Super+Shift+9" = { move-to-workspace = 8 }

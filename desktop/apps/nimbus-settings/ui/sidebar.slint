@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: MIT
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Icons, Label, NavigationItem, SearchField, HeaderBar } from "@nimbus/theme.slint";
+import { Nav } from "globals.slint";
+
+// The pages in sidebar order, matching `Page::ALL` in Rust.
+export global PageList {
+    out property <[{title: string, icon: image}]> pages: [
+        { title: "Appearance", icon: Icons.palette },
+        { title: "Panel & Dock", icon: Icons.desktop },
+        { title: "Workspaces & Windows", icon: Icons.workspaces },
+        { title: "Keyboard & Mouse", icon: Icons.mouse },
+        { title: "Shortcuts", icon: Icons.keyboard },
+        { title: "Power", icon: Icons.battery-3 },
+        { title: "Displays", icon: Icons.monitor },
+        { title: "Notifications", icon: Icons.bell },
+        { title: "About", icon: Icons.info },
+    ];
+}
+
+export component Sidebar inherits Rectangle {
+    public function focus-search() {
+        search.focus();
+        search.select-all();
+    }
+
+    function open(page: int) {
+        Nav.page = page;
+        if Nav.search != "" {
+            search.clear();
+        }
+    }
+
+    background: Theme.surface-sunken;
+
+    VerticalLayout {
+        HeaderBar {
+            title: "Settings";
+            background: Theme.surface-sunken;
+        }
+
+        VerticalLayout {
+            padding: Theme.spacing-sm;
+            padding-bottom: Theme.spacing-xs;
+
+            search := SearchField {
+                placeholder: "Search settings";
+                text <=> Nav.search;
+                edited(text) => {
+                    Nav.search-edited(text);
+                }
+                accepted => {
+                    if Nav.search-results.length > 0 {
+                        root.open(Nav.search-results[0].page);
+                    }
+                }
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: Theme.spacing-sm;
+                padding-top: Theme.spacing-xs;
+                spacing: Theme.spacing-xxs;
+                alignment: start;
+
+                if Nav.search == "": VerticalLayout {
+                    spacing: Theme.spacing-xxs;
+
+                    for page[index] in PageList.pages: NavigationItem {
+                        icon: page.icon;
+                        text: page.title;
+                        selected: Nav.page == index;
+                        clicked => {
+                            root.open(index);
+                        }
+                    }
+                }
+
+                if Nav.search != "": VerticalLayout {
+                    spacing: Theme.spacing-xxs;
+
+                    for hit in Nav.search-results: NavigationItem {
+                        icon: PageList.pages[hit.page].icon;
+                        text: hit.title;
+                        badge: hit.page-title;
+                        selected: Nav.page == hit.page;
+                        clicked => {
+                            root.open(hit.page);
+                        }
+                    }
+
+                    if Nav.search-results.length == 0: Label {
+                        text: "No matching settings";
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        height: 48px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,250 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "icon.slint";
+
+// The input box shared by `TextField` and `SearchField`.
+component FieldFrame inherits Rectangle {
+    in property <bool> focused;
+    in property <bool> hovered;
+    in property <bool> invalid;
+
+    min-height: Theme.control-height;
+    border-radius: Theme.radius-medium;
+    background: root.focused ? Theme.surface-sunken : root.hovered ? Theme.control-hover : Theme.control;
+    border-width: root.focused || root.invalid ? 2px : 0;
+    border-color: root.invalid ? Theme.error : Theme.focus-ring;
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+}
+
+// A single-line text input.
+export component TextField {
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <bool> read-only;
+    // Masks the text, for passwords.
+    in property <bool> password;
+    // Draws the frame in `Theme.error`, for input that fails validation.
+    in property <bool> invalid;
+    in property <image> icon;
+    in-out property <string> text;
+    out property <bool> has-focus: input.has-focus;
+
+    // Emitted on Enter.
+    callback accepted(text: string);
+    // Emitted on every change by the user.
+    callback edited(text: string);
+
+    public function select-all() {
+        input.select-all();
+    }
+
+    min-height: Theme.control-height;
+    min-width: 160px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-value: root.password ? "" : root.text;
+    accessible-placeholder-text: root.placeholder;
+    accessible-enabled: root.enabled;
+    accessible-read-only: root.read-only;
+
+    frame := FieldFrame {
+        focused: input.has-focus;
+        hovered: touch.has-hover;
+        invalid: root.invalid;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+
+        if root.icon.width > 0: Icon {
+            cross-axis-self-alignment: center;
+            source: root.icon;
+            color: Theme.text-secondary;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            if root.text == "": Text {
+                width: 100%;
+                text: root.placeholder;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+
+            input := TextInput {
+                width: 100%;
+                text <=> root.text;
+                enabled: root.enabled;
+                read-only: root.read-only;
+                single-line: true;
+                input-type: root.password ? InputType.password : InputType.text;
+                color: Theme.text;
+                selection-background-color: Theme.accent.with-alpha(0.4);
+                selection-foreground-color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+                accepted => {
+                    root.accepted(self.text);
+                }
+                edited => {
+                    root.edited(self.text);
+                }
+            }
+        }
+    }
+}
+
+// A text field for filtering, with a search icon and a clear button. Escape clears the text.
+export component SearchField {
+    in property <string> placeholder: "Search";
+    in property <bool> enabled: true;
+    in-out property <string> text;
+    out property <bool> has-focus: input.has-focus;
+
+    // Emitted on Enter.
+    callback accepted(text: string);
+    // Emitted on every change by the user, including the clear button and Escape.
+    callback edited(text: string);
+
+    public function select-all() {
+        input.select-all();
+    }
+
+    public function clear() {
+        if root.text != "" {
+            root.text = "";
+            root.edited("");
+        }
+    }
+
+    min-height: Theme.control-height;
+    min-width: 160px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-value: root.text;
+    accessible-placeholder-text: root.placeholder;
+    accessible-enabled: root.enabled;
+
+    FieldFrame {
+        border-radius: Theme.radius-pill;
+        focused: input.has-focus;
+        hovered: touch.has-hover;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-xs;
+        spacing: Theme.spacing-sm;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            source: Icons.search;
+            color: Theme.text-secondary;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            if root.text == "": Text {
+                width: 100%;
+                text: root.placeholder;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                overflow: elide;
+                accessible-role: none;
+            }
+
+            input := TextInput {
+                width: 100%;
+                text <=> root.text;
+                enabled: root.enabled;
+                single-line: true;
+                color: Theme.text;
+                selection-background-color: Theme.accent.with-alpha(0.4);
+                selection-foreground-color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+                accepted => {
+                    root.accepted(self.text);
+                }
+                edited => {
+                    root.edited(self.text);
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape && root.text != "" {
+                        root.clear();
+                        return accept;
+                    }
+                    reject
+                }
+            }
+        }
+
+        Rectangle {
+            cross-axis-self-alignment: center;
+            width: Theme.control-height - 2 * Theme.spacing-xs;
+            height: self.width;
+            border-radius: self.height / 2;
+            visible: root.text != "";
+            background: clear-touch.has-hover ? Theme.control-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Clear";
+            accessible-action-default => {
+                root.clear();
+            }
+
+            Icon {
+                source: Icons.close;
+                size: 14px;
+                color: Theme.text-secondary;
+            }
+
+            clear-touch := TouchArea {
+                enabled: root.enabled && root.text != "";
+                clicked => {
+                    root.clear();
+                    input.focus();
+                }
+            }
+        }
+    }
+}

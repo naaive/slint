@@ -1,0 +1,140 @@
+// SPDX-License-Identifier: MIT
+
+// Data the Rust side feeds into the shell.
+
+export struct RectData {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+// How to draw an application: its themed icon, or a tinted tile with its initial.
+export struct AppVisual {
+    icon: image,
+    has-icon: bool,
+    initial: string,
+    tint: color,
+}
+
+export struct WorkspaceItem {
+    index: int,
+    active: bool,
+    occupied: bool,
+}
+
+export struct WindowItem {
+    title: string,
+    app-name: string,
+    visual: AppVisual,
+    workspace: int,
+    focused: bool,
+    minimized: bool,
+    // Position among the windows shown on the same workspace of this output, and their count.
+    slot: int,
+    slot-count: int,
+    // Whether the window is on this shell's output.
+    on-output: bool,
+}
+
+export struct DockItem {
+    id: string,
+    name: string,
+    visual: AppVisual,
+    favorite: bool,
+    windows: int,
+    focused: bool,
+}
+
+export struct DockMenuWindow {
+    title: string,
+    focused: bool,
+}
+
+export struct AppItem {
+    id: string,
+    name: string,
+    description: string,
+    visual: AppVisual,
+}
+
+export struct NotificationAction {
+    key: string,
+    label: string,
+}
+
+export struct NotificationItem {
+    id: int,
+    app-name: string,
+    summary: string,
+    body: string,
+    visual: AppVisual,
+    time: string,
+    critical: bool,
+    actions: [NotificationAction],
+    // Fading out before removal.
+    closing: bool,
+}
+
+export struct CalendarDay {
+    day: int,
+    in-month: bool,
+    today: bool,
+    weekend: bool,
+}
+
+export enum Popup {
+    none,
+    calendar,
+    quick-settings,
+    dock-menu,
+}
+
+export enum OsdKind {
+    volume,
+    brightness,
+}
+
+export enum PowerAction {
+    none,
+    restart,
+    power-off,
+    log-out,
+}
+
+export enum NetworkKind {
+    none,
+    ethernet,
+    wifi,
+}
+
+export struct SystemStatus {
+    has-battery: bool,
+    battery-level: float,
+    charging: bool,
+    battery-detail: string,
+    network: NetworkKind,
+    network-name: string,
+    wifi-strength: float,
+    wifi-enabled: bool,
+    online: bool,
+    has-audio: bool,
+    muted: bool,
+    has-brightness: bool,
+    has-bluetooth: bool,
+    bluetooth-powered: bool,
+    bluetooth-detail: string,
+    has-media: bool,
+    media-title: string,
+    media-artist: string,
+    media-player: string,
+    media-playing: bool,
+}
+
+export struct PanelSettings {
+    top: bool,
+    height: length,
+    show-dock: bool,
+    dock-autohide: bool,
+    show-battery-percentage: bool,
+}

@@ -1,0 +1,315 @@
+// SPDX-License-Identifier: MIT
+
+import { ListView } from "std-widgets.slint";
+import { Theme, Icon, Icons, FocusRing } from "@nimbus/theme.slint";
+import { FileItem, ViewKind } from "types.slint";
+import { FileIcon } from "file-icon.slint";
+
+// Sort keys, matching `SortKey` in Rust.
+export global SortKeys {
+    out property <int> name: 0;
+    out property <int> size: 1;
+    out property <int> modified: 2;
+    out property <int> type: 3;
+}
+
+component ColumnText inherits Text {
+    color: Theme.text-secondary;
+    font-family: Theme.font-family;
+    font-size: Theme.body.font-size;
+    vertical-alignment: center;
+    overflow: elide;
+}
+
+component HeaderCell {
+    in property <string> text;
+    in property <bool> sorted;
+    in property <bool> descending;
+    in property <bool> sortable: true;
+    in property <TextHorizontalAlignment> alignment: left;
+
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.text;
+
+    Rectangle {
+        x: -Theme.spacing-sm;
+        width: parent.width + 2 * Theme.spacing-sm;
+        border-radius: Theme.radius-small;
+        background: root.sortable && touch.has-hover ? Theme.surface-hover : transparent;
+    }
+
+    HorizontalLayout {
+        spacing: Theme.spacing-xs;
+        alignment: root.alignment == TextHorizontalAlignment.right ? end : start;
+
+        Text {
+            text: root.text;
+            color: root.sorted ? Theme.text : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.sorted: Icon {
+            y: (parent.height - self.height) / 2;
+            source: root.descending ? Icons.chevron-down : Icons.chevron-up;
+            size: 12px;
+            color: Theme.text;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.sortable;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A detailed list with sortable columns. Rows are virtualized; a last filler row catches clicks below the items.
+export component DetailsView {
+    in property <[FileItem]> files;
+    in property <ViewKind> kind: ViewKind.folder;
+    in property <int> cursor: -1;
+    in property <bool> show-cursor;
+    in property <int> sort-key;
+    in property <bool> sort-descending;
+    out property <int> page-rows: max(1, floor(list.visible-height / root.row-height));
+
+    callback item-pressed(index: int, ctrl: bool, shift: bool);
+    callback item-activated(index: int);
+    callback item-context(index: int, x: length, y: length);
+    callback background-pressed(ctrl: bool);
+    callback background-context(x: length, y: length);
+    callback band(ax: length, ay: length, bx: length, by: length, columns: int, cell-width: length, cell-height: length, origin-x: length);
+    callback request-thumbnail(index: int);
+    callback column-clicked(key: int);
+
+    public function scroll-to(index: int) {
+        if index < 0 {
+            return;
+        }
+        let top = index * root.row-height;
+        if top < -list.content-y {
+            list.content-y = -top;
+        } else if top + root.row-height > -list.content-y + list.visible-height {
+            list.content-y = -(top + root.row-height - list.visible-height);
+        }
+    }
+
+    private property <length> row-height: 36px;
+    private property <length> column-gap: Theme.spacing-lg;
+    private property <length> side-padding: Theme.spacing-md;
+    private property <length> location-width: root.kind == ViewKind.folder ? 0 : 220px;
+    private property <length> size-width: 96px;
+    private property <length> type-width: root.kind == ViewKind.folder ? 170px : 0;
+    private property <length> date-width: 150px;
+    private property <bool> banding;
+    private property <length> band-ax;
+    private property <length> band-ay;
+    private property <length> band-bx;
+    private property <length> band-by;
+
+    VerticalLayout {
+        header := Rectangle {
+            height: 32px;
+
+            HorizontalLayout {
+                padding-left: root.side-padding + 28px;
+                padding-right: root.side-padding;
+                spacing: root.column-gap;
+
+                HeaderCell {
+                    horizontal-stretch: 1;
+                    text: "Name";
+                    sorted: root.sort-key == SortKeys.name;
+                    descending: root.sort-descending;
+                    clicked => {
+                        root.column-clicked(SortKeys.name);
+                    }
+                }
+
+                if root.location-width > 0: HeaderCell {
+                    width: root.location-width;
+                    text: root.kind == ViewKind.trash ? "Original Location" : "Location";
+                    sortable: false;
+                }
+
+                HeaderCell {
+                    width: root.size-width;
+                    text: "Size";
+                    alignment: right;
+                    sorted: root.sort-key == SortKeys.size;
+                    descending: root.sort-descending;
+                    clicked => {
+                        root.column-clicked(SortKeys.size);
+                    }
+                }
+
+                if root.type-width > 0: HeaderCell {
+                    width: root.type-width;
+                    text: "Type";
+                    sorted: root.sort-key == SortKeys.type;
+                    descending: root.sort-descending;
+                    clicked => {
+                        root.column-clicked(SortKeys.type);
+                    }
+                }
+
+                HeaderCell {
+                    width: root.date-width;
+                    text: root.kind == ViewKind.trash ? "Deleted" : "Modified";
+                    sorted: root.sort-key == SortKeys.modified;
+                    descending: root.sort-descending;
+                    clicked => {
+                        root.column-clicked(SortKeys.modified);
+                    }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: Theme.border;
+            }
+        }
+
+        list := ListView {
+            for index in root.files.length + 1: Rectangle {
+                property <FileItem> item: root.files[index];
+                property <bool> is-row: index < root.files.length;
+
+                height: self.is-row ? root.row-height : max(Theme.spacing-xl, list.visible-height - root.files.length * root.row-height);
+
+                init => {
+                    if self.is-row && self.item.wants-thumbnail {
+                        root.request-thumbnail(index);
+                    }
+                }
+                changed item => {
+                    if self.is-row && self.item.wants-thumbnail {
+                        root.request-thumbnail(index);
+                    }
+                }
+
+                row-touch := TouchArea {
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            if parent.is-row {
+                                root.item-pressed(index, event.modifiers.control, event.modifiers.shift);
+                            } else {
+                                root.background-pressed(event.modifiers.control);
+                                root.banding = true;
+                                root.band-ax = self.mouse-x;
+                                root.band-ay = index * root.row-height + self.mouse-y;
+                                root.band-bx = root.band-ax;
+                                root.band-by = root.band-ay;
+                            }
+                        } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                            root.banding = false;
+                        } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                            if parent.is-row {
+                                root.item-context(index, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            } else {
+                                root.background-context(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                    }
+                    moved => {
+                        if root.banding {
+                            root.band-bx = self.mouse-x;
+                            root.band-by = index * root.row-height + self.mouse-y;
+                            root.band(root.band-ax, root.band-ay, root.band-bx, root.band-by, 1, list.visible-width, root.row-height, 0);
+                        }
+                    }
+                    double-clicked => {
+                        if parent.is-row {
+                            root.item-activated(index);
+                        }
+                    }
+                }
+
+                if self.is-row: Rectangle {
+                    x: Theme.spacing-xs;
+                    width: parent.width - 2 * Theme.spacing-xs;
+                    border-radius: Theme.radius-small;
+                    background: item.selected ? Theme.surface-selected : row-touch.has-hover ? Theme.surface-hover : transparent;
+                    accessible-role: list-item;
+                    accessible-label: item.name;
+                    accessible-item-selected: item.selected;
+
+                    HorizontalLayout {
+                        padding-left: root.side-padding - Theme.spacing-xs;
+                        padding-right: root.side-padding - Theme.spacing-xs;
+                        spacing: root.column-gap;
+                        opacity: item.cut ? 0.45 : item.hidden ? 0.7 : 1;
+
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 8px;
+
+                            FileIcon {
+                                y: (parent.height - self.height) / 2;
+                                size: 20px;
+                                kind: item.kind;
+                                thumbnail: item.thumbnail;
+                                has-thumbnail: item.has-thumbnail;
+                                is-link: item.is-link;
+                            }
+
+                            Text {
+                                horizontal-stretch: 1;
+                                text: item.name;
+                                color: Theme.text;
+                                font-family: Theme.font-family;
+                                font-size: Theme.body.font-size;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        if root.location-width > 0: ColumnText {
+                            width: root.location-width;
+                            text: item.location-label;
+                        }
+
+                        ColumnText {
+                            width: root.size-width;
+                            text: item.size-label;
+                            horizontal-alignment: right;
+                        }
+
+                        if root.type-width > 0: ColumnText {
+                            width: root.type-width;
+                            text: item.type-label;
+                        }
+
+                        ColumnText {
+                            width: root.date-width;
+                            text: item.modified-label;
+                        }
+                    }
+
+                    if root.show-cursor && index == root.cursor: FocusRing {
+                        radius: Theme.radius-small;
+                        offset: 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.banding: Rectangle {
+        x: min(root.band-ax, root.band-bx) + list.content-x;
+        y: header.height + min(root.band-ay, root.band-by) + list.content-y;
+        width: abs(root.band-bx - root.band-ax);
+        height: abs(root.band-by - root.band-ay);
+        background: Theme.accent.with-alpha(0.15);
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.7);
+    }
+}

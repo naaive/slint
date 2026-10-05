@@ -7,7 +7,25 @@
 //! and to PipeWire or PulseAudio through `wpctl`/`pactl`.
 //! Every service degrades gracefully: a missing bus or daemon leaves its part of [`SystemState`] at `None` or default.
 
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
+
+use tokio::sync::{mpsc, oneshot};
+
+mod audio;
+mod backlight;
+mod bluetooth;
+mod bus;
+mod hub;
+mod logind;
+mod mpris;
+mod network;
+mod notifications;
+mod upower;
+
+pub use notifications::DEFAULT_TIMEOUT as DEFAULT_NOTIFICATION_TIMEOUT;
+
+/// How long dropping [`Services`] waits for the background thread to finish.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemState {
@@ -25,6 +43,7 @@ pub struct SystemState {
 pub struct Battery {
     /// Charge in `0.0..=1.0`.
     pub level: f32,
+    /// On external power: charging, fully charged, or about to charge.
     pub charging: bool,
     pub time_to_empty: Option<std::time::Duration>,
 }
@@ -39,11 +58,13 @@ pub enum ConnectionKind {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Network {
+    /// The primary connection; anything that isn't Wi-Fi, such as a VPN or modem, reports [`ConnectionKind::Ethernet`].
     pub kind: ConnectionKind,
     pub ssid: Option<String>,
     /// Wi-Fi signal strength in `0.0..=1.0`.
     pub strength: f32,
     pub wifi_enabled: bool,
+    /// Whether the internet is reachable, as far as NetworkManager knows.
     pub available: bool,
 }
 
@@ -93,6 +114,10 @@ pub struct Notification {
     /// `None` means the server decides; `Some(Duration::ZERO)` means never expire.
     pub expire_timeout: Option<std::time::Duration>,
     pub received: SystemTime,
+    /// The sender asked to skip the notification history (the `transient` hint).
+    pub transient: bool,
+    /// The notification stays open after one of its actions runs (the `resident` hint).
+    pub resident: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,12 +130,22 @@ pub enum CloseReason {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServiceEvent {
     State(SystemState),
+    /// A new notification, or one that replaces the notification with the same `id`.
+    /// It arrives even with [`SystemState::do_not_disturb`] set; the shell decides whether to show a toast.
     Notification(Notification),
-    NotificationClosed { id: u32, reason: CloseReason },
+    /// The notification closed; [`CloseReason::Expired`] means its timeout elapsed,
+    /// so the shell may keep it in its history.
+    NotificationClosed {
+        id: u32,
+        reason: CloseReason,
+    },
     /// logind asked the session to lock, for example before suspend or from `loginctl lock-session`.
     LockRequested,
     /// logind asked the session to unlock, from `loginctl unlock-session`.
     UnlockRequested,
+    /// [`ServiceCommand::Logout`] couldn't end the session through logind,
+    /// for example in a nested session; the compositor should exit on its own.
+    LogoutRequested,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,22 +196,124 @@ impl Default for ServicesConfig {
     }
 }
 
+/// Where to find a message bus.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum BusAddress {
+    /// The standard session or system bus.
+    #[default]
+    Default,
+    /// A D-Bus address, such as `unix:path=/run/user/1000/bus`.
+    Address(String),
+    /// Don't connect; the services on this bus stay disabled.
+    Disabled,
+}
+
+/// Configures [`Services`] beyond [`ServicesConfig`], for tests and nested sessions.
+#[derive(Clone, Debug)]
+pub struct ServicesBuilder {
+    options: hub::Options,
+}
+
+impl ServicesBuilder {
+    /// Starts from `config`, with the standard session and system buses.
+    pub fn new(config: ServicesConfig) -> Self {
+        Self {
+            options: hub::Options {
+                config,
+                session_bus: BusAddress::Default,
+                system_bus: BusAddress::Default,
+            },
+        }
+    }
+
+    /// Sets the bus for the notification server and MPRIS.
+    #[must_use]
+    pub fn session_bus(mut self, address: BusAddress) -> Self {
+        self.options.session_bus = address;
+        self
+    }
+
+    /// Sets the bus for UPower, NetworkManager, BlueZ, logind, and logind's brightness control.
+    #[must_use]
+    pub fn system_bus(mut self, address: BusAddress) -> Self {
+        self.options.system_bus = address;
+        self
+    }
+
+    /// Starts the services; see [`Services::spawn`].
+    pub fn spawn(self, on_event: impl Fn(ServiceEvent) + Send + 'static) -> Services {
+        let (commands, command_receiver) = mpsc::unbounded_channel();
+        let (shutdown, shutdown_receiver) = oneshot::channel();
+        let options = self.options;
+        let spawned = std::thread::Builder::new().name("nimbus-services".into()).spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    tracing::error!("Can't start the services runtime: {err}");
+                    on_event(ServiceEvent::State(SystemState::default()));
+                    return;
+                }
+            };
+            runtime.block_on(hub::run(options, command_receiver, shutdown_receiver, &on_event));
+            runtime.shutdown_timeout(SHUTDOWN_TIMEOUT / 4);
+        });
+        let thread = match spawned {
+            Ok(thread) => Some(thread),
+            Err(err) => {
+                tracing::error!("Can't start the services thread: {err}");
+                None
+            }
+        };
+        Services { commands, shutdown: Some(shutdown), thread }
+    }
+}
+
 /// A handle to the running services; dropping it shuts them down.
 pub struct Services {
-    _private: (),
+    commands: mpsc::UnboundedSender<ServiceCommand>,
+    shutdown: Option<oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Services {
     /// Starts the services on a background thread and calls `on_event` from that thread for every event.
     /// The first event is always a [`ServiceEvent::State`].
     pub fn spawn(config: ServicesConfig, on_event: impl Fn(ServiceEvent) + Send + 'static) -> Self {
-        let _ = (config, on_event);
-        todo!()
+        ServicesBuilder::new(config).spawn(on_event)
     }
 
     /// Queues `command`; it never blocks, and failures are logged.
     pub fn send(&self, command: ServiceCommand) {
-        let _ = command;
-        todo!()
+        if let Err(err) = self.commands.send(command) {
+            tracing::debug!("Services stopped; dropping {:?}", err.0);
+        }
+    }
+}
+
+impl Drop for Services {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // Dropped from inside `on_event`: the thread finishes once the callback returns.
+        if thread.thread().id() == std::thread::current().id() {
+            return;
+        }
+        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        while !thread.is_finished() {
+            if Instant::now() >= deadline {
+                tracing::warn!(
+                    "Services didn't stop within {SHUTDOWN_TIMEOUT:?}; detaching their thread"
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.join().is_err() {
+            tracing::warn!("The services thread panicked");
+        }
     }
 }

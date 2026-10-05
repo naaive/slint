@@ -53,6 +53,12 @@ dirs = "6"
 calloop = "0.14"
 tempfile = "3"
 
+# Slint's generated code makes full debug info several hundred megabytes per binary.
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 panic = "abort"
 [profile.dev.package.resvg]

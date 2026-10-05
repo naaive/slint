@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon } from "@nimbus/theme.slint";
+import { DockItem, AppVisual } from "models.slint";
+import { AppIcon } from "common.slint";
+
+export global DockMetrics {
+    out property <length> icon-size: 44px;
+    out property <length> cell-size: 56px;
+    out property <length> padding: 6px;
+    // The gap between the dock and the output edge or panel.
+    out property <length> margin: 8px;
+    out property <length> height: self.cell-size + 2 * self.padding;
+}
+
+component Tooltip inherits Rectangle {
+    in property <string> text;
+    in property <bool> shown;
+
+    width: label.preferred-width + 2 * Theme.spacing-md;
+    height: 28px;
+    border-radius: Theme.radius-medium;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-2.blur;
+    drop-shadow-offset-y: Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+    opacity: root.shown ? 1 : 0;
+    animate opacity {
+        duration: Theme.duration-fast;
+        delay: root.shown ? 350ms : 0ms;
+        easing: Motion.standard;
+    }
+
+    label := Text {
+        text: root.text;
+        color: Theme.text;
+        font-family: Theme.font-family;
+        font-size: Theme.body.font-size;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+component DockButton inherits Rectangle {
+    in property <AppVisual> visual;
+    in property <string> name;
+    in property <int> windows;
+    in property <bool> focused;
+    in property <bool> menu-open;
+
+    callback clicked;
+    callback menu-requested;
+
+    width: DockMetrics.cell-size;
+    height: DockMetrics.cell-size;
+    border-radius: Theme.radius-large;
+    background: root.menu-open || touch.pressed ? Theme.control-pressed : touch.has-hover ? Theme.control-hover : transparent;
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-description: root.windows == 0 ? "" : root.windows == 1 ? "1 window" : root.windows + " windows";
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    AppIcon {
+        size: DockMetrics.icon-size;
+        y: (parent.height - self.height) / 2 - 2px;
+        visual: root.visual;
+        transform-scale: touch.pressed ? 0.9 : 1;
+        animate transform-scale { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    // One dot per window, up to three; the focused application's dots are wider and use the accent.
+    HorizontalLayout {
+        y: parent.height - 5px;
+        height: 4px;
+        alignment: center;
+        spacing: 3px;
+
+        for i in min(root.windows, 3): Rectangle {
+            width: root.focused ? 10px : 4px;
+            height: 4px;
+            border-radius: 2px;
+            background: root.focused ? Theme.accent-text : Theme.text.with-alpha(0.7);
+            animate width { duration: Theme.duration-normal; easing: Motion.standard; }
+        }
+    }
+
+    Tooltip {
+        x: (parent.width - self.width) / 2;
+        y: -self.height - DockMetrics.padding - Theme.spacing-sm;
+        text: root.name;
+        shown: touch.has-hover && !touch.pressed && !root.menu-open;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                root.menu-requested();
+            }
+        }
+    }
+}
+
+// The bar of favorite and running applications, centered on the bottom edge.
+export component Dock inherits Rectangle {
+    in property <[DockItem]> items;
+    // The item whose menu is open, or -1.
+    in property <int> menu-index: -1;
+
+    callback item-clicked(index: int);
+    // `center-x` is the item's center relative to the dock.
+    callback item-menu-requested(index: int, center-x: length);
+    callback show-apps;
+
+    width: layout.preferred-width;
+    height: DockMetrics.height;
+    border-radius: Theme.radius-xlarge * 1.5;
+    background: Theme.panel-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-2.blur;
+    drop-shadow-offset-y: Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+
+    // Swallows clicks between the buttons.
+    TouchArea { }
+
+    layout := HorizontalLayout {
+        padding: DockMetrics.padding;
+        spacing: Theme.spacing-xxs;
+
+        for item[index] in root.items: HorizontalLayout {
+            spacing: Theme.spacing-xxs;
+
+            // Separates the favorites from the other running applications.
+            if index > 0 && !item.favorite && root.items[index - 1].favorite: Rectangle {
+                width: 1px + 2 * Theme.spacing-sm;
+
+                Rectangle {
+                    width: 1px;
+                    height: DockMetrics.cell-size - 2 * Theme.spacing-md;
+                    background: Theme.border-strong;
+                }
+            }
+            button := DockButton {
+                visual: item.visual;
+                name: item.name;
+                windows: item.windows;
+                focused: item.focused;
+                menu-open: root.menu-index == index;
+                clicked => {
+                    root.item-clicked(index);
+                }
+                menu-requested => {
+                    root.item-menu-requested(index, self.absolute-position.x - root.absolute-position.x + self.width / 2);
+                }
+            }
+        }
+
+        if root.items.length > 0: Rectangle {
+            width: 1px + 2 * Theme.spacing-sm;
+
+            Rectangle {
+                width: 1px;
+                height: DockMetrics.cell-size - 2 * Theme.spacing-md;
+                background: Theme.border-strong;
+            }
+        }
+
+        show-apps := Rectangle {
+            width: DockMetrics.cell-size;
+            height: DockMetrics.cell-size;
+            border-radius: Theme.radius-large;
+            background: apps-touch.pressed ? Theme.control-pressed : apps-touch.has-hover ? Theme.control-hover : transparent;
+            animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+            accessible-role: button;
+            accessible-label: "Show Applications";
+            accessible-action-default => {
+                root.show-apps();
+            }
+
+            Rectangle {
+                width: DockMetrics.icon-size - 4px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: Theme.control;
+
+                Icon {
+                    source: Icons.apps-grid;
+                    size: 20px;
+                }
+            }
+
+            Tooltip {
+                x: (parent.width - self.width) / 2;
+                y: -self.height - DockMetrics.padding - Theme.spacing-sm;
+                text: "Show Applications";
+                shown: apps-touch.has-hover && !apps-touch.pressed;
+            }
+
+            apps-touch := TouchArea {
+                clicked => {
+                    root.show-apps();
+                }
+            }
+        }
+    }
+}

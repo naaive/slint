@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon } from "@nimbus/theme.slint";
+import { OsdKind } from "models.slint";
+import { StatusIcons } from "common.slint";
+
+// The on-screen display for volume and brightness keys. It doesn't take input.
+export component OsdPill inherits Rectangle {
+    in property <bool> shown;
+    in property <OsdKind> kind;
+    // From 0 to 1; volume may exceed 1 when amplified.
+    in property <float> level;
+    in property <bool> muted;
+
+    private property <float> progress: root.shown ? 1 : 0;
+
+    width: 300px;
+    height: 56px;
+    visible: self.progress > 0;
+    opacity: root.progress;
+    transform-scale: 0.92 + 0.08 * root.progress;
+    border-radius: self.height / 2;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-3.blur;
+    drop-shadow-offset-y: Theme.elevation-3.offset-y;
+    drop-shadow-color: Theme.elevation-3.color;
+    animate progress { duration: Theme.duration-normal; easing: root.shown ? Motion.enter : Motion.exit; }
+    accessible-role: progress-indicator;
+    accessible-label: root.kind == OsdKind.volume ? "Volume" : "Brightness";
+    accessible-value: round(root.level * 100) + " %";
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        padding-right: Theme.spacing-lg;
+        spacing: Theme.spacing-md;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            size: 20px;
+            source: root.kind == OsdKind.volume ? StatusIcons.volume(root.level, root.muted) : Icons.brightness;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 6px;
+            cross-axis-self-alignment: center;
+            border-radius: 3px;
+            background: Theme.control-hover;
+
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.muted ? 0 : root.level, 0, 1);
+                border-radius: 3px;
+                background: Theme.dark ? Theme.text : Theme.accent;
+                animate width { duration: Theme.duration-fast; easing: Motion.standard; }
+            }
+        }
+        Text {
+            min-width: 36px;
+            text: root.muted ? "0" : round(root.level * 100);
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body-strong.font-size;
+            font-weight: Theme.body-strong.font-weight;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+    }
+}

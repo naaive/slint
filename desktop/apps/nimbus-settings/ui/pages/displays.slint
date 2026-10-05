@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Icon, Label, Card, ListRow, Button, Spinner } from "@nimbus/theme.slint";
+import { DisplaysModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, EmptyState } from "../widgets.slint";
+
+// The outputs side by side at their relative logical sizes.
+component Arrangement inherits Rectangle {
+    private property <length> area-height: 150px;
+    private property <float> aspect: max(0.1, DisplaysModel.arrangement-aspect);
+    private property <length> box-width: min(self.width - 2 * Theme.spacing-xl, root.area-height * root.aspect);
+
+    height: root.area-height + 2 * Theme.spacing-xl;
+    accessible-role: image;
+    accessible-label: "Display arrangement";
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.box-width;
+        height: root.box-width / root.aspect;
+
+        for item[index] in DisplaysModel.items: Rectangle {
+            x: item.frac-x * parent.width;
+            y: item.frac-y * parent.height;
+            width: item.frac-width * parent.width;
+            height: item.frac-height * parent.height;
+            border-radius: Theme.radius-medium;
+            background: index == 0 ? Theme.accent : Theme.control-pressed;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.spacing-xxs;
+
+                Label {
+                    text: index + 1;
+                    style: Theme.headline;
+                    color: index == 0 ? Theme.on-accent : Theme.text;
+                    horizontal-alignment: center;
+                }
+
+                Label {
+                    text: item.name;
+                    style: Theme.caption;
+                    color: index == 0 ? Theme.on-accent : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+export component DisplaysPage inherits PageScroll {
+    if DisplaysModel.state == 0: HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xxl;
+
+        Spinner {
+            size: 20px;
+        }
+
+        Label {
+            text: "Looking for displays…";
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    if DisplaysModel.state == 2: VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        EmptyState {
+            icon: Icons.monitor;
+            title: "Displays Aren't Available";
+            description: DisplaysModel.message;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+
+            Button {
+                text: "Try Again";
+                icon: Icons.refresh;
+                clicked => {
+                    DisplaysModel.refresh();
+                }
+            }
+        }
+    }
+
+    if DisplaysModel.state == 1: Card {
+        content-padding: 0;
+
+        Arrangement { }
+    }
+
+    if DisplaysModel.state == 1: VerticalLayout {
+        spacing: Theme.spacing-xl;
+
+        for item[index] in DisplaysModel.items: Group {
+            title: (index + 1) + "  " + item.name;
+
+            ListRow {
+                title: "Resolution";
+                clickable: false;
+
+                Label {
+                    text: item.resolution;
+                    color: Theme.text-secondary;
+                }
+            }
+
+            RowDivider { }
+
+            ListRow {
+                title: "Refresh rate";
+                clickable: false;
+
+                Label {
+                    text: item.refresh != "" ? item.refresh : "Unknown";
+                    color: Theme.text-secondary;
+                }
+            }
+
+            RowDivider { }
+
+            ListRow {
+                title: "Scale";
+                clickable: false;
+
+                Label {
+                    text: item.scale;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+    }
+
+    if DisplaysModel.state == 1: Label {
+        text: "Displays are reported by the Nimbus compositor. Set the interface scale on the Appearance page.";
+        style: Theme.caption;
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+}

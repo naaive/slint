@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icon } from "icon.slint";
+
+// A row with an optional icon, a title, an optional subtitle, and trailing children such as a `ToggleSwitch`.
+// Rows are transparent, so place them in a `Card` to group them.
+export component ListRow {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> clickable: true;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    out property <bool> has-hover: touch.has-hover;
+
+    callback clicked;
+
+    private property <bool> has-icon: root.icon.width > 0;
+
+    min-height: root.subtitle == "" ? Theme.row-height - 8px : Theme.row-height;
+    min-width: layout.min-width;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: list-item;
+    accessible-label: root.title;
+    accessible-description: root.subtitle;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        if root.clickable && root.enabled {
+            root.clicked();
+        }
+    }
+
+    Rectangle {
+        border-radius: Theme.radius-medium;
+        background: root.selected ? Theme.surface-selected
+            : root.clickable && touch.pressed ? Theme.surface-pressed
+            : root.clickable && touch.has-hover ? Theme.surface-hover
+            : transparent;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    touch := TouchArea {
+        enabled: root.clickable && root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    layout := HorizontalLayout {
+        cross-axis-alignment: center;
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-md;
+
+        if root.has-icon: Icon {
+            source: root.icon;
+            size: root.subtitle == "" ? Theme.icon-size : Theme.icon-size-large;
+            color: root.selected ? Theme.accent-text : Theme.text;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: Theme.spacing-xxs;
+
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                font-weight: root.subtitle == "" ? Theme.body.font-weight : Theme.body-strong.font-weight;
+                overflow: elide;
+            }
+
+            if root.subtitle != "": Text {
+                text: root.subtitle;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            cross-axis-alignment: center;
+            alignment: end;
+            spacing: Theme.spacing-sm;
+            horizontal-stretch: 0;
+
+            @children
+        }
+    }
+}

@@ -1,0 +1,336 @@
+// SPDX-License-Identifier: MIT
+
+// Modal dialogs drawn over the window: the searchable picker and the shortcut capture.
+
+import { ListView } from "std-widgets.slint";
+import {
+    Theme, Motion, Icons, Icon, Label, Button, IconButton, Popover, SearchField, TextField, Dropdown,
+} from "@nimbus/theme.slint";
+import { Picker, ShortcutsModel } from "globals.slint";
+import { Keycap } from "widgets.slint";
+
+// Dims the window and swallows clicks outside the dialog.
+component Scrim inherits Rectangle {
+    callback dismissed();
+
+    background: Theme.overlay;
+
+    TouchArea {
+        clicked => {
+            root.dismissed();
+        }
+    }
+}
+
+export component PickerDialog {
+    private property <length> row-height: 44px;
+    private property <int> highlighted: Picker.current-index;
+
+    function move-highlight(delta: int) {
+        if Picker.items.length == 0 {
+            return;
+        }
+        root.highlighted = clamp(root.highlighted + delta, 0, Picker.items.length - 1);
+        let top = root.highlighted * root.row-height;
+        if top + list.content-y < 0 {
+            list.content-y = -top;
+        } else if top + root.row-height + list.content-y > list.visible-height {
+            list.content-y = list.visible-height - top - root.row-height;
+        }
+    }
+
+    function choose-highlighted() {
+        if root.highlighted >= 0 && root.highlighted < Picker.items.length {
+            Picker.chosen(Picker.items[root.highlighted].id);
+        } else if Picker.items.length > 0 {
+            Picker.chosen(Picker.items[0].id);
+        }
+    }
+
+    init => {
+        search.focus();
+        root.move-highlight(0);
+    }
+
+    Scrim {
+        dismissed => {
+            Picker.close();
+        }
+    }
+
+    FocusScope {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.spacing-xl, (parent.height - self.height) / 3);
+        width: min(480px, parent.width - 2 * Theme.spacing-xl);
+        height: min(560px, parent.height - 2 * Theme.spacing-xl);
+        capture-key-pressed(event) => {
+            if event.text == Key.DownArrow {
+                root.move-highlight(1);
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                root.move-highlight(-1);
+                return accept;
+            }
+            if event.text == Key.PageDown {
+                root.move-highlight(8);
+                return accept;
+            }
+            if event.text == Key.PageUp {
+                root.move-highlight(-8);
+                return accept;
+            }
+            if event.text == Key.Escape && Picker.query == "" {
+                Picker.close();
+                return accept;
+            }
+            reject
+        }
+
+        Popover {
+            content-padding: Theme.spacing-md;
+            spacing: Theme.spacing-sm;
+            accessible-role: groupbox;
+            accessible-label: Picker.title;
+
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+
+                Label {
+                    horizontal-stretch: 1;
+                    text: Picker.title;
+                    style: Theme.title;
+                    vertical-alignment: center;
+                }
+
+                IconButton {
+                    icon: Icons.close;
+                    accessible-label: "Close";
+                    clicked => {
+                        Picker.close();
+                    }
+                }
+            }
+
+            search := SearchField {
+                placeholder: Picker.placeholder;
+                text <=> Picker.query;
+                edited(text) => {
+                    root.highlighted = 0;
+                    list.content-y = 0;
+                    Picker.query-edited(text);
+                }
+                accepted => {
+                    root.choose-highlighted();
+                }
+            }
+
+            list := ListView {
+                vertical-stretch: 1;
+
+                for item[index] in Picker.items: Rectangle {
+                    height: root.row-height;
+                    border-radius: Theme.radius-medium;
+                    background: index == root.highlighted ? Theme.surface-selected
+                        : touch.has-hover ? Theme.surface-hover : transparent;
+                    accessible-role: list-item;
+                    accessible-label: item.title;
+                    accessible-item-selected: item.id == Picker.current;
+
+                    touch := TouchArea {
+                        clicked => {
+                            Picker.chosen(item.id);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: Theme.spacing-md;
+                        padding-right: Theme.spacing-md;
+                        spacing: Theme.spacing-sm;
+
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            alignment: center;
+
+                            Label {
+                                text: item.title;
+                                overflow: elide;
+                            }
+
+                            if item.subtitle != "": Label {
+                                text: item.subtitle;
+                                style: Theme.caption;
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                            }
+                        }
+
+                        if item.id == Picker.current: Icon {
+                            y: (parent.height - self.height) / 2;
+                            source: Icons.check;
+                            color: Theme.accent-text;
+                        }
+                    }
+                }
+            }
+
+            if Picker.items.length == 0: Label {
+                text: "Nothing matches “" + Picker.query + "”";
+                color: Theme.text-secondary;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+export component CaptureDialog {
+    init => {
+        capture.focus();
+    }
+
+    Scrim {
+        dismissed => {
+            ShortcutsModel.capture-cancel();
+        }
+    }
+
+    Popover {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.spacing-xl, (parent.height - self.height) / 3);
+        width: min(460px, parent.width - 2 * Theme.spacing-xl);
+        content-padding: Theme.spacing-lg;
+        spacing: Theme.spacing-md;
+        accessible-role: groupbox;
+        accessible-label: ShortcutsModel.capture-adding ? "Add Shortcut" : "Change Shortcut";
+
+        Label {
+            text: ShortcutsModel.capture-adding ? "Add Shortcut" : "Change Shortcut";
+            style: Theme.title;
+        }
+
+        if !ShortcutsModel.capture-adding: Label {
+            text: "Press the new keys for “" + ShortcutsModel.capture-action + "”.";
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        if ShortcutsModel.capture-adding: Dropdown {
+            model: ShortcutsModel.action-kinds;
+            current-index <=> ShortcutsModel.capture-kind;
+            accessible-label: "Action";
+            selected(index) => {
+                ShortcutsModel.capture-kind-chosen(index);
+            }
+        }
+
+        if ShortcutsModel.capture-adding && ShortcutsModel.capture-parameter == 1: TextField {
+            placeholder: "Command, such as firefox";
+            icon: Icons.terminal;
+            text <=> ShortcutsModel.capture-argument;
+            accessible-label: "Command";
+            edited(text) => {
+                ShortcutsModel.capture-argument-edited(text);
+            }
+        }
+
+        if ShortcutsModel.capture-adding && ShortcutsModel.capture-parameter == 2: TextField {
+            placeholder: "Workspace number, from 1";
+            icon: Icons.workspaces;
+            text <=> ShortcutsModel.capture-argument;
+            accessible-label: "Workspace number";
+            edited(text) => {
+                ShortcutsModel.capture-argument-edited(text);
+            }
+        }
+
+        capture := FocusScope {
+            height: 96px;
+            accessible-role: text-input;
+            accessible-label: "Shortcut keys";
+            key-pressed(event) => {
+                let plain = !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta;
+                if plain && event.text == Key.Escape {
+                    ShortcutsModel.capture-cancel();
+                    return accept;
+                }
+                if plain && (event.text == Key.Tab || event.text == Key.Backtab) {
+                    return reject;
+                }
+                if plain && event.text == Key.Return && ShortcutsModel.capture-can-apply {
+                    ShortcutsModel.capture-apply();
+                    return accept;
+                }
+                ShortcutsModel.key-captured(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta);
+                accept
+            }
+
+            Rectangle {
+                border-radius: Theme.radius-large;
+                background: Theme.surface-sunken;
+                border-width: capture.has-focus ? 2px : 1px;
+                border-color: capture.has-focus ? Theme.accent : Theme.border-strong;
+                animate border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+
+                TouchArea {
+                    clicked => {
+                        capture.focus();
+                    }
+                }
+
+                if ShortcutsModel.captured-keys.length == 0: Label {
+                    text: capture.has-focus ? "Press a key combination, or Escape to cancel" : "Click here, then press the keys";
+                    color: Theme.text-secondary;
+                }
+
+                if ShortcutsModel.captured-keys.length > 0: HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.spacing-sm;
+                    padding: Theme.spacing-lg;
+
+                    for key in ShortcutsModel.captured-keys: Keycap {
+                        text: key;
+                        large: true;
+                    }
+                }
+            }
+        }
+
+        if ShortcutsModel.capture-conflict != "": HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            Icon {
+                source: Icons.warning;
+                color: Theme.warning;
+            }
+
+            Label {
+                horizontal-stretch: 1;
+                text: ShortcutsModel.capture-conflict;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+            alignment: end;
+
+            Button {
+                text: "Cancel";
+                variant: flat;
+                clicked => {
+                    ShortcutsModel.capture-cancel();
+                }
+            }
+
+            Button {
+                text: ShortcutsModel.capture-conflict != "" ? "Replace" : ShortcutsModel.capture-adding ? "Add" : "Set";
+                variant: ShortcutsModel.capture-conflict != "" ? destructive : primary;
+                enabled: ShortcutsModel.capture-can-apply;
+                clicked => {
+                    ShortcutsModel.capture-apply();
+                }
+            }
+        }
+    }
+}

@@ -6,13 +6,31 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nimbus-monitor"
+path = "src/main.rs"
+
 [dependencies]
 nimbus-theme = { workspace = true }
 nimbus-config = { workspace = true }
-slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software"] }
+slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "software-renderer-path"] }
+# Decodes the embedded SVG icons when rendering with the software renderer, as in `--screenshot`.
+i-slint-core = { path = "../../../internal/core", default-features = false, features = ["image-decoders", "svg"] }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+futures-channel = "0.3"
+futures-util = { workspace = true }
+sysinfo = "0.39"
+rustix = { version = "1", features = ["process"] }
+png = "0.18"
 
 [build-dependencies]
 slint-build = { workspace = true }
@@ -20,3 +38,4 @@ nimbus-theme = { workspace = true }
 
 [dev-dependencies]
 i-slint-backend-testing = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, TextStyle } from "../tokens.slint";
+
+// Text in the Nimbus type scale, for example `Label { text: "Wi-Fi"; style: Theme.title; }`.
+export component Label inherits Text {
+    in property <TextStyle> style: Theme.body;
+
+    color: Theme.text;
+    font-family: Theme.font-family;
+    font-size: root.style.font-size;
+    font-weight: root.style.font-weight;
+    vertical-alignment: center;
+}

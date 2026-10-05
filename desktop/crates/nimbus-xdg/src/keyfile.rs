@@ -10,7 +10,7 @@ pub(crate) struct KeyFile {
 
 #[derive(Debug, Default)]
 pub(crate) struct Group {
-    pub name: String,
+    name: String,
     entries: Vec<Entry>,
 }
 
@@ -73,10 +73,6 @@ impl KeyFile {
     pub fn group(&self, name: &str) -> Option<&Group> {
         self.groups.iter().find(|g| g.name == name)
     }
-
-    pub fn groups(&self) -> impl Iterator<Item = &Group> {
-        self.groups.iter()
-    }
 }
 
 impl Group {
@@ -128,7 +124,10 @@ impl Group {
     }
 
     pub fn keys(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.entries.iter().filter(|e| e.locale.is_none()).map(|e| (e.key.as_str(), e.value.as_str()))
+        self.entries
+            .iter()
+            .filter(|e| e.locale.is_none())
+            .map(|e| (e.key.as_str(), e.value.as_str()))
     }
 }
 
@@ -214,7 +213,11 @@ impl Locale {
             return None;
         }
         let non_empty = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_owned);
-        Some(Self { lang: lang.to_owned(), country: non_empty(country), modifier: non_empty(modifier) })
+        Some(Self {
+            lang: lang.to_owned(),
+            country: non_empty(country),
+            modifier: non_empty(modifier),
+        })
     }
 
     /// The localized key suffixes to try, in the Desktop Entry Specification's order.
@@ -262,7 +265,7 @@ mod tests {
         assert_eq!(a.raw("Key"), Some("value "));
         assert_eq!(a.raw_localized("Name", &["de".into()]), Some("Wert"));
         assert_eq!(kf.group("B").and_then(|g| g.raw("Key")), Some("b"));
-        assert_eq!(kf.groups().count(), 2);
+        assert_eq!(kf.groups.len(), 2);
     }
 
     #[test]
@@ -273,7 +276,7 @@ mod tests {
 
     #[test]
     fn lists() {
-        assert_eq!(split_list(r"a;b\;c;;d\s e;"), vec!["a", "b;c", "d e"]);
+        assert_eq!(split_list(r"a;b\;c;;d\se;"), vec!["a", "b;c", "d e"]);
         assert_eq!(split_list(r"x\\;y"), vec!["x\\", "y"]);
         assert!(split_list("").is_empty());
     }

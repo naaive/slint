@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icon } from "icon.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// A round, flat button showing only an icon, such as a window control or a toolbar action.
+// Set `accessible-label` to describe it, since there's no visible text.
+export component IconButton {
+    in property <image> icon;
+    in property <bool> enabled: true;
+    // Draws the button filled, like a toggle in its on state.
+    in property <bool> checked;
+    // Draws the resting button with a subtle fill instead of none.
+    in property <bool> filled;
+    in property <length> size: Theme.control-height;
+    in property <length> icon-size: Theme.icon-size;
+    out property <bool> has-focus: focus-scope.has-focus;
+    out property <bool> has-hover: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+
+    callback clicked;
+
+    private property <bool> hovered: touch.has-hover && root.enabled;
+
+    width: root.size;
+    height: root.size;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checked;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+    forward-focus: focus-scope;
+
+    Rectangle {
+        border-radius: root.size / 2;
+        background: root.checked
+            ? (root.pressed ? Theme.accent-pressed : root.hovered ? Theme.accent-hover : Theme.accent)
+            : root.pressed ? Theme.control-pressed
+            : root.hovered ? Theme.control-hover
+            : root.filled ? Theme.control : transparent;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    Icon {
+        source: root.icon;
+        size: root.icon-size;
+        color: !root.enabled ? Theme.text-disabled : root.checked ? Theme.on-accent : Theme.text;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if focus-scope.keyboard-focus: FocusRing {
+        radius: root.size / 2;
+    }
+}

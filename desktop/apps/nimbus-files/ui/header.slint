@@ -1,0 +1,493 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icon, Icons, IconButton, TextField, SearchField, Spinner } from "@nimbus/theme.slint";
+import { Crumb, IconKind } from "types.slint";
+import { FileStyle } from "style.slint";
+import { MenuList, MenuItemView, MenuSeparator, MenuSurface, MenuMetrics } from "menu.slint";
+import { SortKeys } from "list-view.slint";
+
+component CrumbButton {
+    in property <Crumb> crumb;
+    in property <bool> current;
+
+    callback clicked();
+
+    min-width: layout.min-width;
+    accessible-role: button;
+    accessible-label: root.crumb.label;
+
+    Rectangle {
+        border-radius: Theme.radius-small;
+        background: touch.pressed ? Theme.surface-pressed : touch.has-hover ? Theme.surface-hover : transparent;
+    }
+
+    layout := HorizontalLayout {
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-xs;
+
+        if root.crumb.kind != IconKind.folder: Icon {
+            y: (parent.height - self.height) / 2;
+            source: FileStyle.icon(root.crumb.kind);
+            color: root.current ? Theme.text : Theme.text-secondary;
+        }
+
+        Text {
+            text: root.crumb.label;
+            color: root.current ? Theme.text : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            font-weight: root.current ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The breadcrumb path bar; clicking its empty space or pressing Ctrl+L switches to a text field.
+export component PathBar {
+    in property <[Crumb]> crumbs;
+    in property <bool> editing;
+    in-out property <string> location-text;
+
+    callback crumb-clicked(index: int);
+    callback edit-requested();
+    callback location-accepted(text: string);
+    callback edit-cancelled();
+
+    public function focus-editor() {
+        if root.editing {
+            field.focus();
+            field.select-all();
+        }
+    }
+
+    min-height: Theme.control-height;
+    min-width: 160px;
+    horizontal-stretch: 1;
+    accessible-role: groupbox;
+    accessible-label: "Location";
+
+    if !root.editing: Rectangle {
+        border-radius: Theme.radius-medium;
+        background: Theme.control;
+        clip: true;
+
+        TouchArea {
+            mouse-cursor: text;
+            clicked => {
+                root.edit-requested();
+            }
+        }
+
+        crumbs-layout := HorizontalLayout {
+            x: min(Theme.spacing-xxs, parent.width - self.preferred-width - Theme.spacing-xxs);
+            width: max(self.preferred-width, parent.width);
+            padding: 3px;
+            spacing: 0;
+            alignment: start;
+
+            for crumb[index] in root.crumbs: HorizontalLayout {
+                spacing: 0;
+
+                if index > 0: Icon {
+                    y: (parent.height - self.height) / 2;
+                    source: Icons.chevron-right;
+                    size: 12px;
+                    color: Theme.text-disabled;
+                }
+
+                CrumbButton {
+                    crumb: crumb;
+                    current: index == root.crumbs.length - 1;
+                    clicked => {
+                        root.crumb-clicked(index);
+                    }
+                }
+            }
+        }
+    }
+
+    field := TextField {
+        visible: root.editing;
+        text <=> root.location-text;
+        placeholder: "Type a path, such as ~/Documents";
+        icon: Icons.folder-open;
+        accepted(text) => {
+            root.location-accepted(text);
+        }
+        changed has-focus => {
+            if !self.has-focus && root.editing {
+                root.edit-cancelled();
+            }
+        }
+    }
+}
+
+// A pill toggle with a label, for search scope.
+component ToggleChip {
+    in property <string> text;
+    in property <bool> checked;
+
+    callback toggled();
+
+    min-width: layout.min-width;
+    height: Theme.control-height-small;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.toggled();
+    }
+
+    Rectangle {
+        border-radius: self.height / 2;
+        background: root.checked ? Theme.surface-selected : touch.has-hover ? Theme.control-hover : Theme.control;
+        border-width: root.checked ? 1px : 0;
+        border-color: Theme.accent.with-alpha(0.5);
+    }
+
+    layout := HorizontalLayout {
+        padding-left: Theme.spacing-sm + 2px;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-xs;
+
+        Icon {
+            y: (parent.height - self.height) / 2;
+            source: root.checked ? Icons.check : Icons.folder;
+            size: 14px;
+            color: root.checked ? Theme.accent-text : Theme.text-secondary;
+        }
+
+        Text {
+            text: root.text;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// The window's header bar: navigation, location or search, and view controls.
+// It's laid out like the theme's `HeaderBar`, but its middle stretches to hold the path bar.
+export component Header inherits Rectangle {
+    in property <[Crumb]> crumbs;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in property <bool> can-go-up;
+    in property <bool> editing-location;
+    in-out property <string> location-text;
+    in property <bool> search-active;
+    in-out property <string> search-text;
+    in property <bool> search-recursive;
+    in property <bool> searching;
+    in property <bool> list-mode;
+    in property <int> sort-key;
+    in property <bool> sort-descending;
+    in property <bool> folders-first;
+    in property <bool> show-hidden;
+    in property <bool> view-controls-enabled: true;
+
+    callback back();
+    callback forward();
+    callback up();
+    callback crumb-clicked(index: int);
+    callback edit-location();
+    callback location-accepted(text: string);
+    callback location-cancelled();
+    callback toggle-search();
+    callback search-edited(text: string);
+    callback search-accepted();
+    callback toggle-recursive();
+    callback set-list-mode(list: bool);
+    callback set-sort-key(key: int);
+    callback set-sort-descending(descending: bool);
+    callback toggle-folders-first();
+    callback toggle-hidden();
+    callback open-main-menu(x: length, y: length);
+
+    public function focus-location() {
+        path-bar.focus-editor();
+    }
+
+    public function focus-search() {
+        if root.search-active {
+            search.focus();
+        }
+    }
+
+    min-height: Theme.header-bar-height;
+    vertical-stretch: 0;
+    background: Theme.surface;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-xs;
+        cross-axis-alignment: center;
+
+        IconButton {
+            icon: Icons.arrow-left;
+            enabled: root.can-go-back;
+            accessible-label: "Back";
+            clicked => {
+                root.back();
+            }
+        }
+
+        IconButton {
+            icon: Icons.arrow-right;
+            enabled: root.can-go-forward;
+            accessible-label: "Forward";
+            clicked => {
+                root.forward();
+            }
+        }
+
+        IconButton {
+            icon: Icons.arrow-up;
+            enabled: root.can-go-up;
+            accessible-label: "Parent Folder";
+            clicked => {
+                root.up();
+            }
+        }
+
+        Rectangle {
+            width: Theme.spacing-xs;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            min-width: 160px;
+            max-width: 100000px;
+            height: Theme.control-height;
+
+            path-bar := PathBar {
+                width: parent.width;
+                height: parent.height;
+                visible: !root.search-active;
+                crumbs: root.crumbs;
+                editing: root.editing-location;
+                location-text <=> root.location-text;
+                crumb-clicked(index) => {
+                    root.crumb-clicked(index);
+                }
+                edit-requested => {
+                    root.edit-location();
+                }
+                location-accepted(text) => {
+                    root.location-accepted(text);
+                }
+                edit-cancelled => {
+                    root.location-cancelled();
+                }
+            }
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                visible: root.search-active;
+                spacing: Theme.spacing-sm;
+
+                search := SearchField {
+                    enabled: root.search-active;
+                    placeholder: root.search-recursive ? "Search this folder and its subfolders" : "Filter this folder";
+                    text <=> root.search-text;
+                    edited(text) => {
+                        root.search-edited(text);
+                    }
+                    accepted => {
+                        root.search-accepted();
+                    }
+                }
+
+                ToggleChip {
+                    y: (parent.height - self.height) / 2;
+                    text: "Subfolders";
+                    checked: root.search-recursive;
+                    toggled => {
+                        root.toggle-recursive();
+                    }
+                }
+
+                Spinner {
+                    y: (parent.height - self.height) / 2;
+                    size: 18px;
+                    running: root.searching;
+                }
+            }
+        }
+
+        Rectangle {
+            width: Theme.spacing-xs;
+        }
+
+        IconButton {
+            icon: Icons.search;
+            checked: root.search-active;
+            accessible-label: "Search";
+            clicked => {
+                root.toggle-search();
+            }
+        }
+
+        Rectangle {
+            width: view-toggle.preferred-width;
+            height: Theme.control-height;
+            border-radius: self.height / 2;
+            background: Theme.control;
+
+            view-toggle := HorizontalLayout {
+                padding: 2px;
+                spacing: 0;
+
+                IconButton {
+                    size: Theme.control-height - 4px;
+                    icon: Icons.grid-view;
+                    checked: !root.list-mode;
+                    enabled: root.view-controls-enabled;
+                    accessible-label: "Grid View";
+                    clicked => {
+                        root.set-list-mode(false);
+                    }
+                }
+
+                IconButton {
+                    size: Theme.control-height - 4px;
+                    icon: Icons.list-view;
+                    checked: root.list-mode;
+                    enabled: root.view-controls-enabled;
+                    accessible-label: "List View";
+                    clicked => {
+                        root.set-list-mode(true);
+                    }
+                }
+            }
+        }
+
+        sort-button := IconButton {
+            icon: Icons.sort;
+            accessible-label: "Sort";
+            clicked => {
+                sort-popup.show();
+            }
+        }
+
+        menu-button := IconButton {
+            icon: Icons.more-vertical;
+            accessible-label: "Menu";
+            clicked => {
+                root.open-main-menu(self.absolute-position.x + self.width, self.absolute-position.y + self.height + Theme.spacing-xs);
+            }
+        }
+    }
+
+    sort-popup := PopupWindow {
+        x: root.width - MenuMetrics.width - Theme.spacing-sm;
+        y: root.height;
+        width: MenuMetrics.width;
+
+        MenuSurface {
+            VerticalLayout {
+                padding: MenuMetrics.padding;
+
+                MenuItemView {
+                    label: "Name";
+                    checkable: true;
+                    checked: root.sort-key == SortKeys.name;
+                    activated => {
+                        root.set-sort-key(SortKeys.name);
+                    }
+                }
+
+                MenuItemView {
+                    label: "Size";
+                    checkable: true;
+                    checked: root.sort-key == SortKeys.size;
+                    activated => {
+                        root.set-sort-key(SortKeys.size);
+                    }
+                }
+
+                MenuItemView {
+                    label: "Modified";
+                    checkable: true;
+                    checked: root.sort-key == SortKeys.modified;
+                    activated => {
+                        root.set-sort-key(SortKeys.modified);
+                    }
+                }
+
+                MenuItemView {
+                    label: "Type";
+                    checkable: true;
+                    checked: root.sort-key == SortKeys.type;
+                    activated => {
+                        root.set-sort-key(SortKeys.type);
+                    }
+                }
+
+                MenuSeparator { }
+
+                MenuItemView {
+                    label: "Ascending";
+                    checkable: true;
+                    checked: !root.sort-descending;
+                    activated => {
+                        root.set-sort-descending(false);
+                    }
+                }
+
+                MenuItemView {
+                    label: "Descending";
+                    checkable: true;
+                    checked: root.sort-descending;
+                    activated => {
+                        root.set-sort-descending(true);
+                    }
+                }
+
+                MenuSeparator { }
+
+                MenuItemView {
+                    label: "Folders Before Files";
+                    checkable: true;
+                    checked: root.folders-first;
+                    activated => {
+                        root.toggle-folders-first();
+                    }
+                }
+
+                MenuItemView {
+                    label: "Show Hidden Files";
+                    shortcut: "Ctrl+H";
+                    checkable: true;
+                    checked: root.show-hidden;
+                    activated => {
+                        root.toggle-hidden();
+                    }
+                }
+            }
+        }
+    }
+}

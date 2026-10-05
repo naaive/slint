@@ -1,0 +1,280 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Popover, Label, Dropdown, SegmentedControl, ToggleSwitch, IconButton, Button, Icons, Divider, FocusRing } from "@nimbus/theme.slint";
+import { Preferences, SchemeInfo } from "types.slint";
+
+component SchemeSwatch {
+    in property <SchemeInfo> scheme;
+    in property <bool> selected;
+
+    callback clicked();
+
+    min-width: 64px;
+    horizontal-stretch: 1;
+    accessible-role: radio-button;
+    accessible-label: root.scheme.name;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    VerticalLayout {
+        spacing: Theme.spacing-xs;
+
+        Rectangle {
+            height: 44px;
+            border-radius: Theme.radius-medium;
+            background: root.scheme.background;
+            border-width: root.selected ? 2px : 1px;
+            border-color: root.selected ? Theme.accent : touch.has-hover ? Theme.border-strong : Theme.border;
+            animate border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+
+            Text {
+                x: 8px;
+                y: 5px;
+                text: "Aa";
+                color: root.scheme.foreground;
+                font-size: 14px;
+                font-weight: 700;
+            }
+
+            HorizontalLayout {
+                x: 8px;
+                y: parent.height - 13px;
+                height: 7px;
+                spacing: 3px;
+                alignment: start;
+
+                for c in root.scheme.colors: Rectangle {
+                    width: 7px;
+                    border-radius: 3.5px;
+                    background: c;
+                }
+            }
+        }
+
+        Text {
+            text: root.scheme.name;
+            color: root.selected ? Theme.text : Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Row inherits HorizontalLayout {
+    in property <string> label;
+
+    spacing: Theme.spacing-md;
+    alignment: space-between;
+
+    Text {
+        text: root.label;
+        color: Theme.text;
+        font-family: Theme.font-family;
+        font-size: Theme.body.font-size;
+        vertical-alignment: center;
+    }
+
+    @children
+}
+
+component SectionTitle inherits Text {
+    color: Theme.text-secondary;
+    font-family: Theme.font-family;
+    font-size: Theme.caption.font-size;
+    font-weight: 600;
+}
+
+// The preferences popover under the menu button.
+export component PreferencesPanel inherits Popover {
+    callback show-shortcuts();
+    callback close();
+
+    width: 420px;
+    content-padding: Theme.spacing-lg;
+    spacing: Theme.spacing-sm;
+
+    FocusScope {
+        height: 0;
+        init => {
+            self.focus();
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Label {
+        text: "Preferences";
+        style: Theme.title;
+    }
+
+    SectionTitle {
+        text: "COLOR SCHEME";
+    }
+
+    // A grid of four swatches per row.
+    Rectangle {
+        property <length> gap: Theme.spacing-sm;
+        property <length> cell-width: (self.width - 3 * self.gap) / 4;
+        property <length> cell-height: 62px;
+
+        height: ceil(Preferences.schemes.length / 4) * (self.cell-height + self.gap) - self.gap;
+
+        for scheme[i] in Preferences.schemes: SchemeSwatch {
+            x: mod(i, 4) * (parent.cell-width + parent.gap);
+            y: floor(i / 4) * (parent.cell-height + parent.gap);
+            width: parent.cell-width;
+            height: parent.cell-height;
+            scheme: scheme;
+            selected: i == Preferences.scheme-index;
+            clicked => {
+                Preferences.scheme-index = i;
+                Preferences.scheme-selected(i);
+            }
+        }
+    }
+
+    Divider { }
+
+    SectionTitle {
+        text: "TEXT";
+    }
+
+    Row {
+        label: "Font";
+
+        Dropdown {
+            max-width: 200px;
+            model: Preferences.font-families;
+            current-index <=> Preferences.font-index;
+            placeholder: "Monospace";
+            selected(index) => {
+                Preferences.font-selected(index);
+            }
+        }
+    }
+
+    Row {
+        label: "Size";
+
+        HorizontalLayout {
+            spacing: Theme.spacing-xs;
+            alignment: end;
+
+            IconButton {
+                icon: Icons.minus;
+                filled: true;
+                size: Theme.control-height-small;
+                accessible-label: "Smaller Text";
+                clicked => {
+                    Preferences.font-size-step(-1);
+                }
+            }
+
+            Text {
+                min-width: 52px;
+                text: round(Preferences.font-size * 10) / 10 + " pt";
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                icon: Icons.plus;
+                filled: true;
+                size: Theme.control-height-small;
+                accessible-label: "Larger Text";
+                clicked => {
+                    Preferences.font-size-step(1);
+                }
+            }
+        }
+    }
+
+    Row {
+        label: "Bright bold text";
+
+        ToggleSwitch {
+            checked <=> Preferences.bold-is-bright;
+            toggled(on) => {
+                Preferences.bold-is-bright-toggled(on);
+            }
+        }
+    }
+
+    Divider { }
+
+    SectionTitle {
+        text: "CURSOR";
+    }
+
+    SegmentedControl {
+        model: ["Block", "Beam", "Underline"];
+        current-index <=> Preferences.cursor-shape;
+        selected(index) => {
+            Preferences.cursor-shape-selected(index);
+        }
+    }
+
+    Row {
+        label: "Blink";
+
+        ToggleSwitch {
+            checked <=> Preferences.cursor-blink;
+            toggled(on) => {
+                Preferences.cursor-blink-toggled(on);
+            }
+        }
+    }
+
+    Divider { }
+
+    SectionTitle {
+        text: "SCROLLBACK";
+    }
+
+    SegmentedControl {
+        model: Preferences.scrollback-choices;
+        current-index <=> Preferences.scrollback-index;
+        selected(index) => {
+            Preferences.scrollback-selected(index);
+        }
+    }
+
+    Row {
+        label: "Flash on bell";
+
+        ToggleSwitch {
+            checked <=> Preferences.visual-bell;
+            toggled(on) => {
+                Preferences.visual-bell-toggled(on);
+            }
+        }
+    }
+
+    Button {
+        text: "Keyboard Shortcuts";
+        icon: Icons.keyboard;
+        variant: flat;
+        compact: true;
+        clicked => {
+            root.show-shortcuts();
+        }
+    }
+}

@@ -1,0 +1,282 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, IconButton, Button, ToggleSwitch, Divider } from "@nimbus/theme.slint";
+import { NotificationItem, CalendarDay } from "models.slint";
+import { ShellPopup } from "common.slint";
+import { NotificationCard } from "toasts.slint";
+
+component MonthGrid {
+    in property <[CalendarDay]> days;
+    in property <string> month-title;
+
+    callback previous-month;
+    callback next-month;
+    callback today-requested;
+
+    private property <length> cell: 38px;
+    private property <[string]> weekdays: ["M", "T", "W", "T", "F", "S", "S"];
+
+    VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-xs;
+
+            IconButton {
+                icon: Icons.chevron-left;
+                accessible-label: "Previous month";
+                clicked => {
+                    root.previous-month();
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: Theme.radius-medium;
+                background: title-touch.has-hover ? Theme.control-hover : transparent;
+                accessible-role: button;
+                accessible-label: root.month-title;
+                accessible-action-default => {
+                    root.today-requested();
+                }
+
+                Text {
+                    text: root.month-title;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body-strong.font-size;
+                    font-weight: Theme.body-strong.font-weight;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                title-touch := TouchArea {
+                    clicked => {
+                        root.today-requested();
+                    }
+                }
+            }
+            IconButton {
+                icon: Icons.chevron-right;
+                accessible-label: "Next month";
+                clicked => {
+                    root.next-month();
+                }
+            }
+        }
+
+        Rectangle {
+            height: root.cell * 0.75;
+
+            for name[index] in root.weekdays: Text {
+                x: index * root.cell;
+                width: root.cell;
+                text: name;
+                color: Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: 7 * root.cell;
+            height: 6 * root.cell;
+
+            for day[index] in root.days: Rectangle {
+                x: mod(index, 7) * root.cell;
+                y: floor(index / 7) * root.cell;
+                width: root.cell;
+                height: root.cell;
+
+                Rectangle {
+                    width: root.cell - 4px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: day.today ? Theme.accent : transparent;
+                }
+                Text {
+                    text: day.day;
+                    color: day.today ? Theme.on-accent : !day.in-month ? Theme.text-disabled : day.weekend ? Theme.text-secondary : Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    font-weight: day.today ? 700 : 400;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+// The clock's popup: the notification center next to today's date and a month calendar.
+export component CalendarPopup inherits ShellPopup {
+    in property <[NotificationItem]> notifications;
+    in property <[CalendarDay]> days;
+    in property <string> month-title;
+    in property <string> weekday;
+    in property <string> date;
+    in-out property <bool> do-not-disturb;
+
+    callback previous-month;
+    callback next-month;
+    callback today-requested;
+    callback notification-activated(id: int);
+    callback notification-dismissed(id: int);
+    callback notification-action(id: int, key: string);
+    callback clear-all;
+    callback do-not-disturb-toggled(on: bool);
+
+    width: 760px;
+    height: 460px;
+    content-padding: Theme.spacing-lg;
+
+    HorizontalLayout {
+        spacing: Theme.spacing-lg;
+
+        // The notification center.
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Theme.spacing-md;
+
+            HorizontalLayout {
+                min-height: Theme.control-height;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Notifications";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.title.font-size;
+                    font-weight: Theme.title.font-weight;
+                    vertical-alignment: center;
+                }
+                if root.notifications.length > 0: Button {
+                    text: "Clear All";
+                    compact: true;
+                    clicked => {
+                        root.clear-all();
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                Flickable {
+                    content-height: max(self.height, list.preferred-height);
+
+                    list := VerticalLayout {
+                        alignment: start;
+                        spacing: Theme.spacing-sm;
+
+                        for item in root.notifications: NotificationCard {
+                            item: item;
+                            activated => {
+                                root.notification-activated(item.id);
+                            }
+                            dismissed => {
+                                root.notification-dismissed(item.id);
+                            }
+                            action(key) => {
+                                root.notification-action(item.id, key);
+                            }
+                        }
+                    }
+                }
+
+                if root.notifications.length == 0: VerticalLayout {
+                    alignment: center;
+                    spacing: Theme.spacing-sm;
+
+                    Rectangle {
+                        width: 72px;
+                        height: 72px;
+                        border-radius: 36px;
+                        background: Theme.control;
+
+                        Icon {
+                            source: Icons.bell-off;
+                            size: 32px;
+                            color: Theme.text-secondary;
+                        }
+                    }
+                    Text {
+                        text: "No Notifications";
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: Theme.body-strong.font-size;
+                        font-weight: Theme.body-strong.font-weight;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            Divider { }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-md;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Do Not Disturb";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    vertical-alignment: center;
+                }
+                ToggleSwitch {
+                    cross-axis-self-alignment: center;
+                    checked <=> root.do-not-disturb;
+                    accessible-label: "Do Not Disturb";
+                    toggled(on) => {
+                        root.do-not-disturb-toggled(on);
+                    }
+                }
+            }
+        }
+
+        Divider {
+            vertical: true;
+        }
+
+        // Today and the month grid.
+        VerticalLayout {
+            spacing: Theme.spacing-lg;
+            alignment: start;
+
+            VerticalLayout {
+                spacing: Theme.spacing-xxs;
+                padding-left: Theme.spacing-xs;
+
+                Text {
+                    text: root.weekday;
+                    color: Theme.accent-text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body-strong.font-size;
+                    font-weight: Theme.body-strong.font-weight;
+                }
+                Text {
+                    text: root.date;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.headline.font-size;
+                    font-weight: Theme.headline.font-weight;
+                }
+            }
+            MonthGrid {
+                days: root.days;
+                month-title: root.month-title;
+                previous-month => {
+                    root.previous-month();
+                }
+                next-month => {
+                    root.next-month();
+                }
+                today-requested => {
+                    root.today-requested();
+                }
+            }
+        }
+    }
+}

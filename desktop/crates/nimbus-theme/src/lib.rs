@@ -60,7 +60,10 @@ impl ThemeSettings {
     /// Like [`ThemeSettings::from_config`], with `system_dark` answering for `ColorScheme::System`.
     ///
     /// `system_dark` runs only when the scheme is `System`.
-    pub fn from_config_with_system(appearance: &Appearance, system_dark: impl FnOnce() -> bool) -> Self {
+    pub fn from_config_with_system(
+        appearance: &Appearance,
+        system_dark: impl FnOnce() -> bool,
+    ) -> Self {
         let dark = match appearance.color_scheme {
             ColorScheme::Dark => true,
             ColorScheme::Light => false,
@@ -87,7 +90,8 @@ fn sanitize(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
 pub fn parse_hex_color(text: &str) -> Option<(u8, u8, u8)> {
     let hex = text.trim();
     let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if !hex.is_ascii() {
+    // `from_str_radix` alone would accept a sign, such as `+1`.
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let channel = |range: std::ops::Range<usize>| u8::from_str_radix(hex.get(range)?, 16).ok();
@@ -117,8 +121,22 @@ pub fn system_prefers_dark() -> Option<bool> {
     };
     let gdbus = |method: &str| {
         let mut command = Command::new("gdbus");
-        command.args(["call", "--session", "--timeout", "1", "--dest", PORTAL, "--object-path", PATH]);
-        command.args(["--method", &format!("org.freedesktop.portal.Settings.{method}"), NAMESPACE, KEY]);
+        command.args([
+            "call",
+            "--session",
+            "--timeout",
+            "1",
+            "--dest",
+            PORTAL,
+            "--object-path",
+            PATH,
+        ]);
+        command.args([
+            "--method",
+            &format!("org.freedesktop.portal.Settings.{method}"),
+            NAMESPACE,
+            KEY,
+        ]);
         command
     };
     // `ReadOne` needs portal version 2; `Read` wraps the value in an extra variant but parses the same.
@@ -212,7 +230,7 @@ mod tests {
             panic!("queried the system")
         });
         assert!(dark.dark);
-        assert_eq!(ThemeSettings::from_config(&appearance(ColorScheme::Light)).dark, false);
+        assert!(!ThemeSettings::from_config(&appearance(ColorScheme::Light)).dark);
     }
 
     #[test]
@@ -276,6 +294,13 @@ mod tests {
         assert_eq!(parse_portal_color_scheme("(<<uint32 0>>,)"), Some(0));
         assert_eq!(parse_portal_color_scheme(""), None);
         assert_eq!(parse_portal_color_scheme("Call failed: no such method"), None);
+    }
+
+    #[test]
+    fn portal_query_is_bounded() {
+        let start = Instant::now();
+        let _ = system_prefers_dark();
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

@@ -1,7 +1,518 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: replaced by the app's agent.
-import { Theme } from "@nimbus/theme.slint";
-export { Theme }
+import { Theme, Spinner, Icons } from "@nimbus/theme.slint";
+import { FileItem, PlaceItem, Crumb, MenuRow, JobItem, AppChoice, PropertyRow, IconKind, ViewKind } from "types.slint";
+import { Sidebar } from "sidebar.slint";
+import { Header } from "header.slint";
+import { GridView } from "grid-view.slint";
+import { DetailsView } from "list-view.slint";
+import { MenuList, MenuMetrics } from "menu.slint";
+import { NameDialog, ConfirmDialog, ConflictDialog, PropertiesDialog, OpenWithDialog } from "dialogs.slint";
+import { JobsPanel, Toast, EmptyState, StatusBar, TrashBanner } from "overlays.slint";
 
-export component AppWindow inherits Window {}
+export { Theme }
+export { FileItem, PlaceItem, Crumb, MenuRow, JobItem, AppChoice, PropertyRow, IconKind, ViewKind }
+
+export enum DialogKind {
+    none,
+    name,
+    confirm,
+    conflict,
+    properties,
+    open-with,
+}
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "Files";
+
+    // Navigation.
+    in property <[PlaceItem]> places;
+    in property <int> current-place: -1;
+    in property <[Crumb]> crumbs;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in property <bool> can-go-up;
+    in-out property <bool> editing-location;
+    in-out property <string> location-text;
+
+    // Search.
+    in-out property <bool> search-active;
+    in-out property <string> search-text;
+    in property <bool> search-recursive;
+    in property <bool> searching;
+
+    // The view.
+    in property <[FileItem]> files;
+    in property <ViewKind> view-kind: ViewKind.folder;
+    in property <bool> list-mode;
+    in property <int> zoom: 1;
+    in property <int> sort-key;
+    in property <bool> sort-descending;
+    in property <bool> folders-first: true;
+    in property <bool> show-hidden;
+    in property <int> cursor: -1;
+    // The cursor is drawn only after keyboard navigation, as in other file managers.
+    in property <bool> keyboard-cursor;
+    in property <bool> loading;
+    in property <string> empty-title;
+    in property <string> empty-subtitle;
+    in property <IconKind> empty-kind: IconKind.folder;
+    in property <string> status-text;
+    in property <string> status-detail;
+    in property <bool> trash-empty: true;
+    in property <bool> has-selection;
+    out property <int> grid-columns: root.list-mode ? 1 : grid.columns;
+    out property <int> page-rows: root.list-mode ? details.page-rows : grid.page-rows;
+    // The top-left corner of the file view in window coordinates, for menus opened from the keyboard.
+    out property <length> view-origin-x: view-scope.absolute-position.x;
+    out property <length> view-origin-y: view-scope.absolute-position.y;
+
+    // Operations and notifications.
+    in property <[JobItem]> jobs;
+    in property <string> toast-text;
+    in property <string> toast-action;
+    in property <bool> toast-visible;
+
+    // The context menu.
+    in property <[MenuRow]> menu-rows;
+    in property <int> menu-item-count;
+    in property <int> menu-separator-count;
+
+    // Dialogs.
+    in property <DialogKind> dialog: DialogKind.none;
+    in property <string> dialog-title;
+    in property <string> dialog-message;
+    in property <string> dialog-accept-label;
+    in property <bool> dialog-destructive: true;
+    in property <string> dialog-initial-text;
+    in property <int> dialog-select-length;
+    in property <string> dialog-error;
+    in property <string> conflict-existing;
+    in property <string> conflict-incoming;
+    in property <bool> conflict-merge;
+    in property <string> props-name;
+    in property <IconKind> props-kind;
+    in property <string> props-badge;
+    in property <image> props-thumbnail;
+    in property <bool> props-has-thumbnail;
+    in property <[PropertyRow]> props-rows;
+    in property <bool> props-computing;
+    in property <[AppChoice]> apps;
+    in property <bool> apps-loading;
+
+    callback go-back();
+    callback go-forward();
+    callback go-up();
+    callback crumb-clicked(index: int);
+    callback edit-location();
+    callback location-accepted(text: string);
+    callback location-cancelled();
+    callback place-clicked(index: int);
+    callback toggle-search();
+    callback search-edited(text: string);
+    callback search-accepted();
+    callback toggle-recursive();
+    callback set-list-mode(list: bool);
+    callback set-sort-key(key: int);
+    callback set-sort-descending(descending: bool);
+    callback toggle-folders-first();
+    callback toggle-hidden();
+    callback main-menu-requested(x: length, y: length);
+    callback item-pressed(index: int, ctrl: bool, shift: bool);
+    callback item-activated(index: int);
+    callback item-context(index: int, x: length, y: length);
+    callback background-pressed(ctrl: bool);
+    callback background-context(x: length, y: length);
+    callback band(ax: length, ay: length, bx: length, by: length, columns: int, cell-width: length, cell-height: length, origin-x: length);
+    callback request-thumbnail(index: int);
+    callback column-clicked(key: int);
+    callback view-key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    callback window-key(text: string, ctrl: bool, shift: bool, alt: bool) -> bool;
+    callback menu-activated(index: int);
+    callback menu-step(current: int, delta: int) -> int;
+    callback cancel-job(id: int);
+    callback toast-action-clicked();
+    callback toast-dismissed();
+    callback restore-clicked();
+    callback empty-trash-clicked();
+    callback name-edited(text: string);
+    callback name-accepted(text: string);
+    callback confirm-accepted();
+    callback conflict-resolved(choice: int, apply-to-all: bool);
+    callback app-chosen(index: int);
+    callback open-default-chosen();
+    callback dialog-cancelled();
+
+    public function focus-view() {
+        view-scope.focus();
+    }
+
+    public function focus-location() {
+        header.focus-location();
+    }
+
+    public function focus-search() {
+        header.focus-search();
+    }
+
+    public function scroll-to(index: int) {
+        if root.list-mode {
+            details.scroll-to(index);
+        } else {
+            grid.scroll-to(index);
+        }
+    }
+
+    public function show-menu(x: length, y: length) {
+        root.menu-x = max(Theme.spacing-xs, min(x, root.width - MenuMetrics.width - Theme.spacing-xs));
+        root.menu-y = max(Theme.spacing-xs, min(y, root.height - root.menu-height - Theme.spacing-xs));
+        menu-popup.show();
+    }
+
+    private property <length> menu-x;
+    private property <length> menu-y;
+    private property <length> menu-height: 2 * MenuMetrics.padding + root.menu-item-count * MenuMetrics.item-height + root.menu-separator-count * MenuMetrics.separator-height;
+
+    title: root.window-title;
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    icon: Icons.folder;
+
+    init => {
+        view-scope.focus();
+    }
+
+    window-keys := FocusScope {
+        key-pressed(event) => {
+            if root.window-key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) {
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            Sidebar {
+                width: 232px;
+                places: root.places;
+                current: root.current-place;
+                place-clicked(index) => {
+                    root.place-clicked(index);
+                    view-scope.focus();
+                }
+            }
+
+            VerticalLayout {
+                header := Header {
+                    crumbs: root.crumbs;
+                    can-go-back: root.can-go-back;
+                    can-go-forward: root.can-go-forward;
+                    can-go-up: root.can-go-up;
+                    editing-location: root.editing-location;
+                    location-text <=> root.location-text;
+                    search-active: root.search-active;
+                    search-text <=> root.search-text;
+                    search-recursive: root.search-recursive;
+                    searching: root.searching;
+                    list-mode: root.list-mode;
+                    sort-key: root.sort-key;
+                    sort-descending: root.sort-descending;
+                    folders-first: root.folders-first;
+                    show-hidden: root.show-hidden;
+                    back => {
+                        root.go-back();
+                    }
+                    forward => {
+                        root.go-forward();
+                    }
+                    up => {
+                        root.go-up();
+                    }
+                    crumb-clicked(index) => {
+                        root.crumb-clicked(index);
+                        view-scope.focus();
+                    }
+                    edit-location => {
+                        root.edit-location();
+                    }
+                    location-accepted(text) => {
+                        root.location-accepted(text);
+                    }
+                    location-cancelled => {
+                        root.location-cancelled();
+                    }
+                    toggle-search => {
+                        root.toggle-search();
+                    }
+                    search-edited(text) => {
+                        root.search-edited(text);
+                    }
+                    search-accepted => {
+                        root.search-accepted();
+                    }
+                    toggle-recursive => {
+                        root.toggle-recursive();
+                    }
+                    set-list-mode(list) => {
+                        root.set-list-mode(list);
+                    }
+                    set-sort-key(key) => {
+                        root.set-sort-key(key);
+                    }
+                    set-sort-descending(descending) => {
+                        root.set-sort-descending(descending);
+                    }
+                    toggle-folders-first => {
+                        root.toggle-folders-first();
+                    }
+                    toggle-hidden => {
+                        root.toggle-hidden();
+                    }
+                    open-main-menu(x, y) => {
+                        root.main-menu-requested(x - MenuMetrics.width, y);
+                    }
+                }
+
+                if root.view-kind == ViewKind.trash: TrashBanner {
+                    empty: root.trash-empty;
+                    has-selection: root.has-selection;
+                    restore => {
+                        root.restore-clicked();
+                    }
+                    empty-trash => {
+                        root.empty-trash-clicked();
+                    }
+                }
+
+                view-scope := FocusScope {
+                    vertical-stretch: 1;
+                    key-pressed(event) => {
+                        if root.view-key(event.text, event.modifiers.control, event.modifiers.shift, event.modifiers.alt) {
+                            return accept;
+                        }
+                        reject
+                    }
+
+                    Rectangle {
+                        background: Theme.surface;
+
+                        grid := GridView {
+                            width: 100%;
+                            height: 100%;
+                            visible: !root.list-mode;
+                            files: root.files;
+                            zoom: root.zoom;
+                            cursor: root.cursor;
+                            show-cursor: root.keyboard-cursor && view-scope.has-focus;
+                            item-pressed(index, ctrl, shift) => {
+                                view-scope.focus();
+                                root.item-pressed(index, ctrl, shift);
+                            }
+                            item-activated(index) => {
+                                root.item-activated(index);
+                            }
+                            item-context(index, x, y) => {
+                                view-scope.focus();
+                                root.item-context(index, x, y);
+                            }
+                            background-pressed(ctrl) => {
+                                view-scope.focus();
+                                root.background-pressed(ctrl);
+                            }
+                            background-context(x, y) => {
+                                view-scope.focus();
+                                root.background-context(x, y);
+                            }
+                            band(ax, ay, bx, by, columns, cell-width, cell-height, origin-x) => {
+                                root.band(ax, ay, bx, by, columns, cell-width, cell-height, origin-x);
+                            }
+                            request-thumbnail(index) => {
+                                root.request-thumbnail(index);
+                            }
+                        }
+
+                        details := DetailsView {
+                            width: 100%;
+                            height: 100%;
+                            visible: root.list-mode;
+                            files: root.files;
+                            kind: root.view-kind;
+                            cursor: root.cursor;
+                            show-cursor: root.keyboard-cursor && view-scope.has-focus;
+                            sort-key: root.sort-key;
+                            sort-descending: root.sort-descending;
+                            item-pressed(index, ctrl, shift) => {
+                                view-scope.focus();
+                                root.item-pressed(index, ctrl, shift);
+                            }
+                            item-activated(index) => {
+                                root.item-activated(index);
+                            }
+                            item-context(index, x, y) => {
+                                view-scope.focus();
+                                root.item-context(index, x, y);
+                            }
+                            background-pressed(ctrl) => {
+                                view-scope.focus();
+                                root.background-pressed(ctrl);
+                            }
+                            background-context(x, y) => {
+                                view-scope.focus();
+                                root.background-context(x, y);
+                            }
+                            band(ax, ay, bx, by, columns, cell-width, cell-height, origin-x) => {
+                                root.band(ax, ay, bx, by, columns, cell-width, cell-height, origin-x);
+                            }
+                            request-thumbnail(index) => {
+                                root.request-thumbnail(index);
+                            }
+                            column-clicked(key) => {
+                                root.column-clicked(key);
+                            }
+                        }
+
+                        if root.empty-title != "" && !root.loading: EmptyState {
+                            width: min(parent.width - 2 * Theme.spacing-xl, 420px);
+                            kind: root.empty-kind;
+                            title: root.empty-title;
+                            subtitle: root.empty-subtitle;
+                        }
+
+                        if root.loading && root.files.length == 0: Spinner {
+                            size: 32px;
+                        }
+                    }
+                }
+
+                StatusBar {
+                    text: root.status-text;
+                    detail: root.status-detail;
+                }
+            }
+        }
+
+        if root.jobs.length > 0: JobsPanel {
+            x: parent.width - self.width - Theme.spacing-lg;
+            // Stays clear of the toast, which sits at the bottom center.
+            y: parent.height - self.height - 30px - Theme.spacing-lg - (root.toast-visible ? Theme.control-height + 2 * Theme.spacing-sm + Theme.spacing-sm : 0);
+            jobs: root.jobs;
+            cancel(id) => {
+                root.cancel-job(id);
+            }
+        }
+
+        if root.toast-visible: Toast {
+            x: 232px + (parent.width - 232px - self.width) / 2;
+            y: parent.height - self.height - 30px - Theme.spacing-lg;
+            text: root.toast-text;
+            action: root.toast-action;
+            action-clicked => {
+                root.toast-action-clicked();
+            }
+            dismissed => {
+                root.toast-dismissed();
+            }
+        }
+
+        if root.dialog == DialogKind.name: NameDialog {
+            title: root.dialog-title;
+            accept-label: root.dialog-accept-label;
+            initial-text: root.dialog-initial-text;
+            select-length: root.dialog-select-length;
+            error: root.dialog-error;
+            edited(text) => {
+                root.name-edited(text);
+            }
+            accepted(text) => {
+                root.name-accepted(text);
+            }
+            cancelled => {
+                root.dialog-cancelled();
+            }
+        }
+
+        if root.dialog == DialogKind.confirm: ConfirmDialog {
+            title: root.dialog-title;
+            message: root.dialog-message;
+            accept-label: root.dialog-accept-label;
+            destructive: root.dialog-destructive;
+            accepted => {
+                root.confirm-accepted();
+            }
+            cancelled => {
+                root.dialog-cancelled();
+            }
+        }
+
+        if root.dialog == DialogKind.conflict: ConflictDialog {
+            title: root.dialog-title;
+            message: root.dialog-message;
+            existing-detail: root.conflict-existing;
+            incoming-detail: root.conflict-incoming;
+            merge: root.conflict-merge;
+            resolved(choice, apply-to-all) => {
+                root.conflict-resolved(choice, apply-to-all);
+            }
+            cancelled => {
+                root.dialog-cancelled();
+            }
+        }
+
+        if root.dialog == DialogKind.properties: PropertiesDialog {
+            title: "";
+            name: root.props-name;
+            kind: root.props-kind;
+            badge: root.props-badge;
+            thumbnail: root.props-thumbnail;
+            has-thumbnail: root.props-has-thumbnail;
+            rows: root.props-rows;
+            computing: root.props-computing;
+            cancelled => {
+                root.dialog-cancelled();
+            }
+        }
+
+        if root.dialog == DialogKind.open-with: OpenWithDialog {
+            title: root.dialog-title;
+            apps: root.apps;
+            loading: root.apps-loading;
+            chosen(index) => {
+                root.app-chosen(index);
+            }
+            open-default => {
+                root.open-default-chosen();
+            }
+            cancelled => {
+                root.dialog-cancelled();
+            }
+        }
+    }
+
+    menu-popup := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: MenuMetrics.width;
+
+        MenuList {
+            rows: root.menu-rows;
+            init => {
+                self.highlighted = -1;
+                self.grab-focus();
+            }
+            activated(index) => {
+                menu-popup.close();
+                root.menu-activated(index);
+            }
+            dismissed => {
+                menu-popup.close();
+            }
+            step(current, delta) => {
+                root.menu-step(current, delta)
+            }
+        }
+    }
+}

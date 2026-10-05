@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: MIT
+
+import { ListView } from "std-widgets.slint";
+import { Theme, FocusRing } from "@nimbus/theme.slint";
+import { FileItem } from "types.slint";
+import { FileIcon } from "file-icon.slint";
+
+component Tile inherits Rectangle {
+    in property <FileItem> item;
+    in property <length> icon-size;
+    in property <bool> is-cursor;
+
+    callback pressed(ctrl: bool, shift: bool);
+    callback activated();
+    callback context(x: length, y: length);
+    callback thumbnail-wanted();
+
+    init => {
+        if root.item.wants-thumbnail {
+            root.thumbnail-wanted();
+        }
+    }
+    changed item => {
+        if root.item.wants-thumbnail {
+            root.thumbnail-wanted();
+        }
+    }
+
+    border-radius: Theme.radius-medium;
+    background: root.item.selected ? Theme.surface-selected : touch.has-hover ? Theme.surface-hover : transparent;
+    border-width: root.item.selected ? 1px : 0;
+    border-color: Theme.accent.with-alpha(0.35);
+    accessible-role: list-item;
+    accessible-label: root.item.name;
+    accessible-description: root.item.type-label;
+    accessible-item-selected: root.item.selected;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    FileIcon {
+        x: (parent.width - self.width) / 2;
+        y: Theme.spacing-sm;
+        size: root.icon-size;
+        kind: root.item.kind;
+        badge: root.item.badge;
+        thumbnail: root.item.thumbnail;
+        has-thumbnail: root.item.has-thumbnail;
+        is-link: root.item.is-link;
+        max-thumbnail-width: root.width - 2 * Theme.spacing-sm;
+        opacity: root.item.cut ? 0.45 : root.item.hidden ? 0.7 : 1;
+    }
+
+    Text {
+        x: Theme.spacing-xs;
+        y: root.icon-size + Theme.spacing-sm + Theme.spacing-xs;
+        width: parent.width - 2 * Theme.spacing-xs;
+        height: parent.height - self.y - Theme.spacing-xs;
+        text: root.item.name;
+        color: root.item.cut ? Theme.text-secondary : Theme.text;
+        font-family: Theme.font-family;
+        font-size: Theme.caption.font-size + 1px;
+        wrap: word-wrap;
+        overflow: elide;
+        horizontal-alignment: center;
+        vertical-alignment: top;
+    }
+
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                if event.button == PointerEventButton.left {
+                    root.pressed(event.modifiers.control, event.modifiers.shift);
+                } else if event.button == PointerEventButton.right {
+                    root.context(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        double-clicked => {
+            root.activated();
+        }
+    }
+
+    if root.is-cursor: FocusRing {
+        radius: Theme.radius-medium;
+        offset: 0;
+    }
+}
+
+// An icon grid. Rows are virtualized; a last filler row catches clicks below the items.
+export component GridView {
+    in property <[FileItem]> files;
+    in property <int> zoom: 1;
+    in property <int> cursor: -1;
+    in property <bool> show-cursor;
+    out property <int> columns: max(1, floor((list.visible-width - 2 * root.inset) / root.min-cell-width));
+    out property <int> page-rows: max(1, floor(list.visible-height / root.cell-height));
+
+    callback item-pressed(index: int, ctrl: bool, shift: bool);
+    callback item-activated(index: int);
+    callback item-context(index: int, x: length, y: length);
+    callback background-pressed(ctrl: bool);
+    callback background-context(x: length, y: length);
+    // A rubber band from (ax, ay) to (bx, by) in content coordinates.
+    callback band(ax: length, ay: length, bx: length, by: length, columns: int, cell-width: length, cell-height: length, origin-x: length);
+    callback request-thumbnail(index: int);
+
+    public function scroll-to(index: int) {
+        if index < 0 {
+            return;
+        }
+        let top = floor(index / root.columns) * root.cell-height;
+        if top < -list.content-y {
+            list.content-y = -top;
+        } else if top + root.cell-height > -list.content-y + list.visible-height {
+            list.content-y = -(top + root.cell-height - list.visible-height);
+        }
+    }
+
+    private property <length> inset: Theme.spacing-md;
+    private property <length> icon-size: root.zoom <= 0 ? 48px : root.zoom == 1 ? 64px : 96px;
+    private property <length> min-cell-width: root.icon-size + (root.zoom <= 0 ? 44px : 56px);
+    private property <length> cell-width: (list.visible-width - 2 * root.inset) / root.columns;
+    private property <length> cell-height: root.icon-size + 3 * Theme.spacing-sm + 2.6 * (Theme.caption.font-size + 1px);
+    private property <int> rows: ceil(root.files.length / root.columns);
+    private property <bool> banding;
+    private property <length> band-ax;
+    private property <length> band-ay;
+    private property <length> band-bx;
+    private property <length> band-by;
+
+    list := ListView {
+        y: Theme.spacing-sm;
+        height: root.height - self.y;
+
+        for row in root.rows + 1: Rectangle {
+            height: row < root.rows ? root.cell-height : max(Theme.spacing-xl, list.visible-height - root.rows * root.cell-height);
+
+            background-touch := TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.background-pressed(event.modifiers.control);
+                        root.banding = true;
+                        root.band-ax = self.mouse-x;
+                        root.band-ay = row * root.cell-height + self.mouse-y;
+                        root.band-bx = root.band-ax;
+                        root.band-by = root.band-ay;
+                    } else if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                        root.banding = false;
+                    } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                        root.background-context(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+                moved => {
+                    if root.banding {
+                        root.band-bx = self.mouse-x;
+                        root.band-by = row * root.cell-height + self.mouse-y;
+                        root.band(root.band-ax, root.band-ay, root.band-bx, root.band-by, root.columns, root.cell-width, root.cell-height, root.inset);
+                    }
+                }
+            }
+
+            for column in root.columns: Tile {
+                property <int> index: row * root.columns + column;
+
+                visible: row < root.rows && self.index < root.files.length;
+                x: root.inset + column * root.cell-width + 2px;
+                y: 2px;
+                width: root.cell-width - 4px;
+                height: root.cell-height - 4px;
+                item: root.files[self.index];
+                icon-size: root.icon-size;
+                is-cursor: root.show-cursor && self.index == root.cursor;
+                pressed(ctrl, shift) => {
+                    root.item-pressed(self.index, ctrl, shift);
+                }
+                activated => {
+                    root.item-activated(self.index);
+                }
+                context(x, y) => {
+                    root.item-context(self.index, x, y);
+                }
+                thumbnail-wanted => {
+                    if self.visible {
+                        root.request-thumbnail(self.index);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.banding: Rectangle {
+        x: list.x + min(root.band-ax, root.band-bx) + list.content-x;
+        y: list.y + min(root.band-ay, root.band-by) + list.content-y;
+        width: abs(root.band-bx - root.band-ax);
+        height: abs(root.band-by - root.band-ay);
+        background: Theme.accent.with-alpha(0.15);
+        border-width: 1px;
+        border-color: Theme.accent.with-alpha(0.7);
+    }
+}

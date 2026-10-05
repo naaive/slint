@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Terminal
+GenericName=Terminal Emulator
+Comment=Use the command line
+Exec=nimbus-terminal
+TryExec=nimbus-terminal
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=Shell;Prompt;Command;Commandline;Console;
+StartupNotify=true

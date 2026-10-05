@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icon, Icons } from "@nimbus/theme.slint";
+import { IconKind } from "types.slint";
+import { FileStyle } from "style.slint";
+
+// A folder drawn as a tab and a body, with the symbol of special folders on its front.
+component FolderShape {
+    in property <IconKind> kind;
+    in property <length> size;
+
+    width: root.size;
+    height: root.size;
+
+    Rectangle {
+        x: root.size * 0.06;
+        y: root.size * 0.14;
+        width: root.size * 0.42;
+        height: root.size * 0.2;
+        border-radius: root.size * 0.06;
+        background: Theme.accent.darker(0.25);
+    }
+
+    Rectangle {
+        x: root.size * 0.06;
+        y: root.size * 0.22;
+        width: root.size * 0.88;
+        height: root.size * 0.62;
+        border-radius: root.size * 0.08;
+        background: Theme.accent.darker(0.15);
+    }
+
+    Rectangle {
+        x: root.size * 0.04;
+        y: root.size * 0.3;
+        width: root.size * 0.92;
+        height: root.size * 0.56;
+        border-radius: root.size * 0.08;
+        background: @linear-gradient(180deg, Theme.accent.brighter(0.15) 0%, Theme.accent 100%);
+
+        if root.kind != IconKind.folder: Icon {
+            source: FileStyle.icon(root.kind);
+            size: root.size * 0.28;
+            color: Theme.on-accent.with-alpha(0.85);
+        }
+    }
+}
+
+// A page with the file type's symbol and an extension badge.
+component PageShape {
+    in property <IconKind> kind;
+    in property <length> size;
+    in property <string> badge;
+
+    width: root.size;
+    height: root.size;
+
+    page := Rectangle {
+        width: root.size * 0.74;
+        height: root.size * 0.92;
+        border-radius: root.size * 0.08;
+        background: Theme.surface-raised;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: Theme.elevation-1.blur;
+        drop-shadow-offset-y: Theme.elevation-1.offset-y;
+        drop-shadow-color: Theme.elevation-1.color;
+
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            border-radius: parent.border-radius - 1px;
+            background: FileStyle.plate(root.kind);
+        }
+
+        Icon {
+            y: root.badge != "" ? parent.height * 0.24 : (parent.height - self.height) / 2;
+            source: FileStyle.icon(root.kind);
+            size: root.size * 0.34;
+            color: FileStyle.tint(root.kind);
+        }
+
+        if root.badge != "": Rectangle {
+            y: parent.height * 0.66;
+            height: root.size * 0.17;
+            width: min(parent.width - root.size * 0.1, badge-text.preferred-width + root.size * 0.12);
+            border-radius: root.size * 0.04;
+            background: FileStyle.tint(root.kind);
+
+            badge-text := Text {
+                text: root.badge;
+                color: Theme.dark ? #1c1c21 : #ffffff;
+                font-family: Theme.font-family;
+                font-size: max(8px, root.size * 0.12);
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// The icon of a file: a thumbnail when there is one, a drawn folder or page when large,
+// and a tinted symbolic icon when small.
+export component FileIcon {
+    in property <IconKind> kind;
+    in property <length> size: 64px;
+    in property <string> badge;
+    in property <image> thumbnail;
+    in property <bool> has-thumbnail;
+    in property <bool> is-link;
+    // Thumbnails may be wider than `size`, up to this width, so landscape pictures aren't tiny.
+    in property <length> max-thumbnail-width: root.size;
+
+    private property <bool> large: root.size >= 40px;
+    private property <float> aspect: root.thumbnail.height > 0 ? root.thumbnail.width / root.thumbnail.height : 1;
+    private property <length> thumbnail-width: min(root.max-thumbnail-width, root.size * root.aspect);
+
+    width: root.size;
+    height: root.size;
+    accessible-role: none;
+
+    if root.has-thumbnail: Rectangle {
+        width: root.thumbnail-width;
+        height: root.thumbnail-width / root.aspect;
+        background: Theme.surface-raised;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: root.large ? Theme.elevation-1.blur : 0;
+        drop-shadow-offset-y: root.large ? Theme.elevation-1.offset-y : 0;
+        drop-shadow-color: Theme.elevation-1.color;
+
+        Image {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            source: root.thumbnail;
+            image-fit: contain;
+        }
+    }
+
+    if !root.has-thumbnail && root.large && FileStyle.is-folder(root.kind): FolderShape {
+        kind: root.kind;
+        size: root.size;
+    }
+
+    if !root.has-thumbnail && root.large && !FileStyle.is-folder(root.kind): PageShape {
+        kind: root.kind;
+        size: root.size;
+        badge: root.badge;
+    }
+
+    if !root.has-thumbnail && !root.large: Icon {
+        source: FileStyle.icon(root.kind);
+        size: root.size;
+        color: FileStyle.tint(root.kind);
+    }
+
+    if root.is-link: Rectangle {
+        x: root.size - self.width;
+        y: root.size - self.height;
+        width: max(12px, root.size * 0.3);
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.surface-raised;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+
+        Icon {
+            source: Icons.arrow-right;
+            size: parent.width * 0.62;
+            color: Theme.text;
+            transform-rotation: -45deg;
+        }
+    }
+}

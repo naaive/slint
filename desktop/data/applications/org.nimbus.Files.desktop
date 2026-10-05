@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Files
+GenericName=File Manager
+Comment=Browse and organize your files
+Exec=nimbus-files
+TryExec=nimbus-files
+Icon=system-file-manager
+Terminal=false
+Categories=Utility;Core;FileManager;FileTools;
+Keywords=Folder;Explorer;Directory;Browser;
+StartupNotify=true

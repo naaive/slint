@@ -1,0 +1,409 @@
+// SPDX-License-Identifier: MIT
+
+// Building blocks shared by the pages: scrolling page bodies, titled groups, and preference rows.
+
+import { ScrollView } from "std-widgets.slint";
+import {
+    Theme, Motion, Icons, Icon, Label, Card, ListRow, ToggleSwitch, Slider, Dropdown, SegmentedControl, Divider,
+    IconButton, FocusRing,
+} from "@nimbus/theme.slint";
+
+// A page body: a vertically scrolling column, centered and limited to a readable width.
+export component PageScroll inherits ScrollView {
+    in property <length> max-content-width: 760px;
+
+    content-width: self.visible-width;
+    content-height: max(self.visible-height, column.preferred-height);
+
+    column := VerticalLayout {
+        width: root.visible-width;
+        alignment: start;
+        padding-top: Theme.spacing-xl;
+        padding-bottom: Theme.spacing-xxl;
+        padding-left: max(Theme.spacing-xl, (root.visible-width - root.max-content-width) / 2);
+        padding-right: self.padding-left;
+        spacing: Theme.spacing-xl;
+
+        @children
+    }
+}
+
+// A titled section holding rows in a card.
+export component Group {
+    in property <string> title;
+    in property <string> description;
+
+    VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        if root.title != "": Label {
+            text: root.title;
+            style: Theme.body-strong;
+            accessible-role: none;
+        }
+
+        if root.description != "": Label {
+            text: root.description;
+            style: Theme.caption;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        Card {
+            content-padding: Theme.spacing-xs;
+            spacing: 0;
+
+            @children
+        }
+    }
+}
+
+// A separator between rows in a `Group`.
+export component RowDivider {
+    height: 1px;
+
+    Divider {
+        x: Theme.spacing-md;
+        width: parent.width - 2 * Theme.spacing-md;
+    }
+}
+
+// A row with a switch; activating the row toggles it.
+export component SwitchRow inherits ListRow {
+    in-out property <bool> checked;
+
+    callback toggled(checked: bool);
+
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    clicked => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+
+    ToggleSwitch {
+        checked <=> root.checked;
+        enabled: root.enabled;
+        accessible-label: root.title;
+        toggled(checked) => {
+            root.toggled(checked);
+        }
+    }
+}
+
+// A row with a slider and its current value.
+export component SliderRow inherits ListRow {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <string> value-text;
+    in property <string> minimum-label;
+    in property <string> maximum-label;
+    in-out property <float> value;
+
+    callback changed(value: float);
+
+    clickable: false;
+
+    if root.minimum-label != "": Label {
+        text: root.minimum-label;
+        style: Theme.caption;
+        color: Theme.text-secondary;
+    }
+
+    Slider {
+        width: 220px;
+        minimum: root.minimum;
+        maximum: root.maximum;
+        step: root.step;
+        enabled: root.enabled;
+        value <=> root.value;
+        accessible-label: root.title;
+        changed(value) => {
+            root.changed(value);
+        }
+        released(value) => {
+            root.changed(value);
+        }
+    }
+
+    if root.maximum-label != "": Label {
+        text: root.maximum-label;
+        style: Theme.caption;
+        color: Theme.text-secondary;
+    }
+
+    if root.value-text != "": Label {
+        min-width: 64px;
+        text: root.value-text;
+        color: Theme.text-secondary;
+        horizontal-alignment: right;
+    }
+}
+
+// A row with a drop-down list.
+export component ChoiceRow inherits ListRow {
+    in property <[string]> model;
+    in property <length> control-width: 220px;
+    in-out property <int> current-index;
+
+    callback chosen(index: int);
+
+    clickable: false;
+
+    Dropdown {
+        width: root.control-width;
+        model: root.model;
+        enabled: root.enabled;
+        current-index <=> root.current-index;
+        accessible-label: root.title;
+        selected(index) => {
+            root.chosen(index);
+        }
+    }
+}
+
+// A row with a segmented control.
+export component SegmentRow inherits ListRow {
+    in property <[string]> model;
+    in property <length> control-width: 220px;
+    in-out property <int> current-index;
+
+    callback chosen(index: int);
+
+    clickable: false;
+
+    SegmentedControl {
+        width: root.control-width;
+        model: root.model;
+        enabled: root.enabled;
+        current-index <=> root.current-index;
+        accessible-label: root.title;
+        selected(index) => {
+            root.chosen(index);
+        }
+    }
+}
+
+// A row with minus and plus buttons around an integer.
+export component StepperRow inherits ListRow {
+    in property <int> minimum: 0;
+    in property <int> maximum: 10;
+    in-out property <int> value;
+
+    callback changed(value: int);
+
+    function step(delta: int) {
+        let next = clamp(root.value + delta, root.minimum, root.maximum);
+        if next != root.value {
+            root.value = next;
+            root.changed(next);
+        }
+    }
+
+    clickable: false;
+    accessible-role: spinbox;
+    accessible-value: root.value;
+    accessible-action-increment => {
+        root.step(1);
+    }
+    accessible-action-decrement => {
+        root.step(-1);
+    }
+
+    IconButton {
+        icon: Icons.minus;
+        filled: true;
+        size: Theme.control-height-small + 4px;
+        enabled: root.value > root.minimum;
+        accessible-label: "Fewer";
+        clicked => {
+            root.step(-1);
+        }
+    }
+
+    Label {
+        min-width: 32px;
+        text: root.value;
+        style: Theme.body-strong;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    IconButton {
+        icon: Icons.plus;
+        filled: true;
+        size: Theme.control-height-small + 4px;
+        enabled: root.value < root.maximum;
+        accessible-label: "More";
+        clicked => {
+            root.step(1);
+        }
+    }
+}
+
+// A focusable, clickable area for custom choices such as swatches and preview cards.
+// Place the visuals as children; Space and Enter activate it.
+export component Pressable {
+    in property <length> radius: Theme.radius-large;
+    in property <bool> enabled: true;
+    out property <bool> has-hover: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+
+    callback activated();
+
+    forward-focus: focus;
+    accessible-role: button;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.activated();
+        }
+    }
+
+    focus := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    @children
+
+    if focus.keyboard-focus: FocusRing {
+        radius: root.radius;
+    }
+}
+
+// One key of a shortcut, drawn as a key cap.
+export component Keycap inherits Rectangle {
+    in property <string> text;
+    in property <bool> large;
+
+    min-width: max(self.min-height, label.preferred-width + 2 * Theme.spacing-sm);
+    min-height: root.large ? 40px : 26px;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius-small + 1px;
+    background: Theme.control;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+
+    label := Text {
+        text: root.text;
+        color: Theme.text;
+        font-family: Theme.font-family;
+        font-size: root.large ? Theme.title.font-size : Theme.caption.font-size;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A message bar above the page content.
+export component Banner inherits Rectangle {
+    in property <string> text;
+    in property <bool> error;
+    in property <bool> dismissible: true;
+
+    callback dismissed();
+
+    background: root.error ? Theme.error.with-alpha(0.14) : Theme.surface-selected;
+    border-radius: Theme.radius-large;
+    border-width: 1px;
+    border-color: root.error ? Theme.error.with-alpha(0.4) : Theme.accent.with-alpha(0.35);
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-md;
+        padding-right: root.dismissible ? Theme.spacing-xs : Theme.spacing-md;
+        padding-top: Theme.spacing-xs;
+        padding-bottom: Theme.spacing-xs;
+        spacing: Theme.spacing-sm;
+
+        Icon {
+            y: (parent.height - self.height) / 2;
+            source: root.error ? Icons.warning : Icons.info;
+            color: root.error ? Theme.error : Theme.accent-text;
+        }
+
+        Label {
+            horizontal-stretch: 1;
+            text: root.text;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+
+        if root.dismissible: IconButton {
+            icon: Icons.close;
+            size: Theme.control-height-small;
+            accessible-label: "Dismiss";
+            clicked => {
+                root.dismissed();
+            }
+        }
+    }
+}
+
+// A large, centered placeholder for empty or unavailable content.
+export component EmptyState {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> description;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xl;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 64px;
+                height: 64px;
+                border-radius: 32px;
+                background: Theme.control;
+
+                Icon {
+                    source: root.icon;
+                    size: Theme.icon-size-large;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+
+        Label {
+            text: root.title;
+            style: Theme.title;
+            horizontal-alignment: center;
+        }
+
+        Label {
+            text: root.description;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

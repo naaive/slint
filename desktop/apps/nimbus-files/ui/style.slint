@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons } from "@nimbus/theme.slint";
+import { IconKind } from "types.slint";
+
+// Icons and tints for file types.
+export global FileStyle {
+    pure public function icon(kind: IconKind) -> image {
+        if kind == IconKind.folder { return Icons.folder; }
+        if kind == IconKind.folder-home { return Icons.home; }
+        if kind == IconKind.folder-desktop { return Icons.desktop; }
+        if kind == IconKind.folder-documents { return Icons.documents; }
+        if kind == IconKind.folder-downloads { return Icons.downloads; }
+        if kind == IconKind.folder-music { return Icons.music; }
+        if kind == IconKind.folder-pictures { return Icons.pictures; }
+        if kind == IconKind.folder-videos { return Icons.videos; }
+        if kind == IconKind.text { return Icons.file-text; }
+        if kind == IconKind.document { return Icons.file-text; }
+        if kind == IconKind.image { return Icons.file-image; }
+        if kind == IconKind.audio { return Icons.file-audio; }
+        if kind == IconKind.video { return Icons.file-video; }
+        if kind == IconKind.archive { return Icons.file-archive; }
+        if kind == IconKind.executable { return Icons.application; }
+        if kind == IconKind.script { return Icons.terminal; }
+        if kind == IconKind.broken-link { return Icons.warning; }
+        if kind == IconKind.trash { return Icons.trash; }
+        if kind == IconKind.computer { return Icons.monitor; }
+        if kind == IconKind.drive { return Icons.drive; }
+        if kind == IconKind.bookmark { return Icons.star; }
+        Icons.file
+    }
+
+    pure public function is-folder(kind: IconKind) -> bool {
+        kind == IconKind.folder || kind == IconKind.folder-home || kind == IconKind.folder-desktop
+            || kind == IconKind.folder-documents || kind == IconKind.folder-downloads || kind == IconKind.folder-music
+            || kind == IconKind.folder-pictures || kind == IconKind.folder-videos
+    }
+
+    // The tint of a file type's icon, chosen to stay legible on both schemes.
+    pure public function tint(kind: IconKind) -> color {
+        if is-folder(kind) { return Theme.accent-text; }
+        if kind == IconKind.image { return Theme.dark ? #c18cf2 : #8a3fd1; }
+        if kind == IconKind.audio { return Theme.dark ? #f7a65b : #c05f00; }
+        if kind == IconKind.video { return Theme.dark ? #ff8a8a : #c42b2b; }
+        if kind == IconKind.archive { return Theme.dark ? #e3c26a : #93700f; }
+        if kind == IconKind.document { return Theme.dark ? #7fb2ff : #2a62c9; }
+        if kind == IconKind.executable || kind == IconKind.script { return Theme.dark ? #6fd3a8 : #1f8a5c; }
+        if kind == IconKind.broken-link { return Theme.error; }
+        Theme.text-secondary
+    }
+
+    // The soft plate drawn behind large file icons.
+    pure public function plate(kind: IconKind) -> color {
+        tint(kind).with-alpha(Theme.dark ? 0.14 : 0.10)
+    }
+}

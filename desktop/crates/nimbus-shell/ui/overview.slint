@@ -1,0 +1,380 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, IconButton } from "@nimbus/theme.slint";
+import { WindowItem, WorkspaceItem } from "models.slint";
+import { AppIcon } from "common.slint";
+
+component WorkspaceThumbnail inherits Rectangle {
+    in property <WorkspaceItem> workspace;
+    in property <[WindowItem]> windows;
+    in property <bool> drop-target;
+
+    callback clicked;
+
+    private property <length> pad: 8px;
+    private property <length> gap: 6px;
+
+    border-radius: Theme.radius-large;
+    background: touch.has-hover || root.drop-target ? Theme.surface-raised : Theme.surface;
+    border-width: root.workspace.active || root.drop-target ? 2px : 1px;
+    border-color: root.workspace.active || root.drop-target ? Theme.accent : Theme.border;
+    drop-shadow-blur: Theme.elevation-1.blur;
+    drop-shadow-offset-y: Theme.elevation-1.offset-y;
+    drop-shadow-color: Theme.elevation-1.color;
+    animate background, border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: button;
+    accessible-label: "Workspace " + (root.workspace.index + 1);
+    accessible-checked: root.workspace.active;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    for w in root.windows: Rectangle {
+        private property <int> cols: ceil(sqrt(max(1, w.slot-count)));
+        private property <int> rows: ceil(max(1, w.slot-count) / self.cols);
+        private property <length> cell-width: (root.width - 2 * root.pad - (self.cols - 1) * root.gap) / self.cols;
+        private property <length> cell-height: (root.height - 2 * root.pad - (self.rows - 1) * root.gap) / self.rows;
+
+        visible: w.on-output && w.workspace == root.workspace.index;
+        x: root.pad + mod(w.slot, self.cols) * (self.cell-width + root.gap);
+        y: root.pad + floor(w.slot / self.cols) * (self.cell-height + root.gap);
+        width: self.cell-width;
+        height: self.cell-height;
+        border-radius: Theme.radius-small;
+        background: w.focused ? Theme.surface-selected : Theme.control;
+        opacity: w.minimized ? 0.5 : 1;
+
+        AppIcon {
+            size: min(28px, parent.height * 0.6, parent.width * 0.6);
+            visual: w.visual;
+        }
+    }
+
+    Text {
+        x: Theme.spacing-sm;
+        y: parent.height + Theme.spacing-xs;
+        text: root.workspace.index + 1;
+        color: root.workspace.active ? Theme.text : Theme.text-secondary;
+        font-family: Theme.font-family;
+        font-size: Theme.caption.font-size;
+        font-weight: root.workspace.active ? 700 : 400;
+        width: parent.width - 2 * Theme.spacing-sm;
+        horizontal-alignment: center;
+    }
+}
+
+component WindowTile inherits Rectangle {
+    in property <WindowItem> window;
+    in property <length> drag-x;
+    in property <length> drag-y;
+    in property <bool> dragging;
+    in property <bool> hovered;
+
+    callback close-clicked;
+
+    border-radius: Theme.radius-xlarge;
+    background: Theme.surface;
+    border-width: root.window.focused ? 2px : 1px;
+    border-color: root.window.focused ? Theme.accent : root.hovered ? Theme.border-strong : Theme.border;
+    drop-shadow-blur: root.dragging ? Theme.elevation-3.blur : Theme.elevation-2.blur;
+    drop-shadow-offset-y: root.dragging ? Theme.elevation-3.offset-y : Theme.elevation-2.offset-y;
+    drop-shadow-color: Theme.elevation-2.color;
+    opacity: root.window.minimized && !root.dragging ? 0.7 : 1;
+    transform-scale: root.dragging ? 0.6 : root.hovered ? 1.02 : 1;
+    animate transform-scale { duration: Theme.duration-fast; easing: Motion.standard; }
+    clip: false;
+    accessible-role: button;
+    accessible-label: root.window.title;
+    accessible-description: root.window.app-name;
+
+    VerticalLayout {
+        padding: Theme.spacing-sm;
+        padding-left: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+            min-height: Theme.control-height-small;
+
+            AppIcon {
+                cross-axis-self-alignment: center;
+                size: 20px;
+                visual: root.window.visual;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.window.title;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            IconButton {
+                cross-axis-self-alignment: center;
+                icon: Icons.close;
+                size: Theme.control-height-small;
+                filled: true;
+                opacity: root.hovered && !root.dragging ? 1 : 0;
+                accessible-label: "Close " + root.window.title;
+                animate opacity { duration: Theme.duration-fast; easing: Motion.standard; }
+                clicked => {
+                    root.close-clicked();
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: Theme.radius-medium;
+            background: Theme.surface-sunken;
+            clip: true;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: Theme.spacing-sm;
+
+                AppIcon {
+                    cross-axis-self-alignment: center;
+                    size: max(24px, min(72px, (root.height - 64px) * 0.45));
+                    visual: root.window.visual;
+                }
+                Text {
+                    text: root.window.minimized ? root.window.app-name + " · Minimized" : root.window.app-name;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                    horizontal-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// The overview: a strip of workspaces above the windows of the active workspace.
+// Windows can be dragged onto another workspace in the strip.
+export component Overview inherits Rectangle {
+    in property <bool> open;
+    in property <[WorkspaceItem]> workspaces;
+    in property <[WindowItem]> windows;
+    in property <int> active-workspace;
+    in property <int> active-count;
+    in property <length> top-inset;
+    in property <length> bottom-inset;
+
+    callback window-activated(row: int);
+    callback window-closed(row: int);
+    callback window-moved(row: int, workspace: int);
+    callback workspace-clicked(index: int);
+    callback search-clicked;
+    callback close-requested;
+    // A key that should start a search; returns whether it was handled.
+    callback key-typed(text: string) -> bool;
+
+    public function focus-keys() {
+        keys.focus();
+    }
+
+    private property <float> progress: root.open ? 1 : 0;
+    private property <int> count: max(1, root.workspaces.length);
+    private property <length> strip-gap: Theme.spacing-lg;
+    private property <length> thumb-width: min(200px, (root.width - 2 * 48px - (root.count - 1) * root.strip-gap) / root.count);
+    private property <length> thumb-height: root.width > 0 ? root.thumb-width * root.height / root.width : 0;
+    private property <length> strip-x: (root.width - root.count * root.thumb-width - (root.count - 1) * root.strip-gap) / 2;
+    private property <length> strip-y: root.top-inset + 84px;
+    private property <length> area-x: 64px;
+    private property <length> area-y: root.strip-y + root.thumb-height + 48px;
+    private property <length> area-width: root.width - 2 * root.area-x;
+    private property <length> area-height: max(0, root.height - root.area-y - root.bottom-inset - 32px);
+    private property <int> cols: ceil(sqrt(max(1, root.active-count)));
+    private property <int> rows: ceil(max(1, root.active-count) / root.cols);
+    private property <length> gap: Theme.spacing-xl;
+    private property <length> tile-width: min(380px, (root.area-width - (root.cols - 1) * root.gap) / root.cols, ((root.area-height - (root.rows - 1) * root.gap) / root.rows) * 1.5);
+    private property <length> tile-height: root.tile-width / 1.5;
+    private property <length> grid-x: root.area-x + (root.area-width - root.cols * root.tile-width - (root.cols - 1) * root.gap) / 2;
+    private property <length> grid-y: root.area-y + (root.area-height - root.rows * root.tile-height - (root.rows - 1) * root.gap) / 2;
+    // The workspace under a dragged window, or -1.
+    property <int> drop-target: -1;
+
+    pure function workspace-at(px: length, py: length) -> int {
+        if py < root.strip-y || py > root.strip-y + root.thumb-height {
+            return -1;
+        }
+        let index = floor((px - root.strip-x) / (root.thumb-width + root.strip-gap));
+        if index < 0 || index >= root.workspaces.length {
+            return -1;
+        }
+        if px - root.strip-x - index * (root.thumb-width + root.strip-gap) > root.thumb-width {
+            return -1;
+        }
+        index
+    }
+
+    visible: root.open || self.progress > 0;
+    opacity: root.progress;
+    background: Theme.background.with-alpha(0.88);
+    animate progress { duration: Theme.duration-normal; easing: root.open ? Motion.enter : Motion.exit; }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close-requested();
+                return accept;
+            }
+            if root.key-typed(event.text) {
+                return accept;
+            }
+            reject
+        }
+
+        // A click on the backdrop returns to the desktop.
+        TouchArea {
+            clicked => {
+                root.close-requested();
+            }
+        }
+
+        Rectangle {
+            transform-scale: 0.97 + 0.03 * root.progress;
+
+            // Starts a search in the launcher, like typing does.
+            search := Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: root.top-inset + Theme.spacing-xl;
+                width: min(420px, root.width - 2 * Theme.spacing-xl);
+                height: 40px;
+                border-radius: self.height / 2;
+                background: search-touch.has-hover ? Theme.control-hover : Theme.control;
+                accessible-role: button;
+                accessible-label: "Search";
+                accessible-action-default => {
+                    root.search-clicked();
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.spacing-md;
+                    spacing: Theme.spacing-sm;
+
+                    Icon {
+                        cross-axis-self-alignment: center;
+                        source: Icons.search;
+                        color: Theme.text-secondary;
+                    }
+                    Text {
+                        text: "Type to search";
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: Theme.body.font-size;
+                        vertical-alignment: center;
+                    }
+                }
+
+                search-touch := TouchArea {
+                    mouse-cursor: MouseCursor.text;
+                    clicked => {
+                        root.search-clicked();
+                    }
+                }
+            }
+
+            for workspace[index] in root.workspaces: WorkspaceThumbnail {
+                x: root.strip-x + index * (root.thumb-width + root.strip-gap);
+                y: root.strip-y;
+                width: root.thumb-width;
+                height: root.thumb-height;
+                workspace: workspace;
+                windows: root.windows;
+                drop-target: root.drop-target == index;
+                clicked => {
+                    root.workspace-clicked(workspace.index);
+                }
+            }
+
+            if root.active-count == 0: VerticalLayout {
+                x: root.area-x;
+                y: root.area-y + (root.area-height - self.preferred-height) / 2;
+                width: root.area-width;
+                height: self.preferred-height;
+                spacing: Theme.spacing-sm;
+
+                Icon {
+                    cross-axis-self-alignment: center;
+                    source: Icons.desktop;
+                    size: 48px;
+                    color: Theme.text-secondary;
+                }
+                Text {
+                    text: "No Open Windows";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.title.font-size;
+                    font-weight: Theme.title.font-weight;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Workspace " + (root.active-workspace + 1) + " is empty";
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    horizontal-alignment: center;
+                }
+            }
+
+            for w[row] in root.windows: Rectangle {
+                private property <bool> shown: w.on-output && w.workspace == root.active-workspace;
+                private property <bool> dragging: touch.pressed && (abs(touch.mouse-x - touch.pressed-x) > 8px || abs(touch.mouse-y - touch.pressed-y) > 8px);
+
+                visible: self.shown;
+                x: root.grid-x + mod(w.slot, root.cols) * (root.tile-width + root.gap);
+                y: root.grid-y + floor(w.slot / root.cols) * (root.tile-height + root.gap);
+                width: root.tile-width;
+                height: root.tile-height;
+
+                touch := TouchArea {
+                    enabled: parent.shown;
+                    moved => {
+                        if parent.dragging {
+                            root.drop-target = root.workspace-at(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                    pointer-event(event) => {
+                        if event.button != PointerEventButton.left || event.kind != PointerEventKind.up {
+                            return;
+                        }
+                        if parent.dragging {
+                            let target = root.workspace-at(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            root.drop-target = -1;
+                            if target >= 0 && target != w.workspace {
+                                root.window-moved(row, target);
+                            }
+                        } else if self.has-hover {
+                            root.window-activated(row);
+                        }
+                    }
+                }
+
+                WindowTile {
+                    x: parent.dragging ? touch.mouse-x - touch.pressed-x : 0;
+                    y: parent.dragging ? touch.mouse-y - touch.pressed-y : 0;
+                    width: parent.width;
+                    height: parent.height;
+                    window: w;
+                    dragging: parent.dragging;
+                    hovered: touch.has-hover;
+                    close-clicked => {
+                        root.window-closed(row);
+                    }
+                }
+            }
+        }
+    }
+}

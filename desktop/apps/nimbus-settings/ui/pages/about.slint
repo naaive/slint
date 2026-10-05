@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Icon, Label, ListRow } from "@nimbus/theme.slint";
+import { AboutModel, InfoRow } from "../globals.slint";
+import { PageScroll, Group, RowDivider } from "../widgets.slint";
+
+component InfoGroup inherits Group {
+    in property <[InfoRow]> rows;
+
+    for row[index] in root.rows: VerticalLayout {
+        if index > 0: RowDivider { }
+
+        ListRow {
+            title: row.label;
+            clickable: false;
+
+            Label {
+                max-width: 440px;
+                text: row.value;
+                color: Theme.text-secondary;
+                horizontal-alignment: right;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component AboutPage inherits PageScroll {
+    VerticalLayout {
+        spacing: Theme.spacing-md;
+        padding-top: Theme.spacing-lg;
+        padding-bottom: Theme.spacing-sm;
+
+        HorizontalLayout {
+            alignment: center;
+
+            if AboutModel.logo.width > 0: Image {
+                width: 112px;
+                height: 112px;
+                source: AboutModel.logo;
+                image-fit: contain;
+                accessible-role: image;
+                accessible-label: AboutModel.os-name;
+            }
+
+            if AboutModel.logo.width == 0: Rectangle {
+                width: 112px;
+                height: 112px;
+                border-radius: 28px;
+                background: @linear-gradient(145deg, AboutModel.brand.brighter(25%) 0%, AboutModel.brand.darker(35%) 100%);
+                drop-shadow-blur: Theme.elevation-2.blur;
+                drop-shadow-offset-y: Theme.elevation-2.offset-y;
+                drop-shadow-color: Theme.elevation-2.color;
+
+                Icon {
+                    source: Icons.desktop;
+                    size: 56px;
+                    color: #ffffff;
+                }
+            }
+        }
+
+        Label {
+            text: AboutModel.os-name;
+            style: Theme.headline;
+            horizontal-alignment: center;
+        }
+
+        Label {
+            text: "with the Nimbus desktop";
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+        }
+    }
+
+    InfoGroup {
+        title: "Hardware";
+        rows: AboutModel.hardware;
+    }
+
+    InfoGroup {
+        title: "Software";
+        rows: AboutModel.software;
+    }
+}

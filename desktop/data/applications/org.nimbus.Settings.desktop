@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+[Desktop Entry]
+Type=Application
+Name=Settings
+GenericName=Settings
+Comment=Change appearance, displays, input, and power settings
+Exec=nimbus-settings
+TryExec=nimbus-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;DesktopSettings;X-Nimbus;
+Keywords=Preferences;Configuration;Wallpaper;Keyboard;Mouse;Display;Power;
+StartupNotify=true

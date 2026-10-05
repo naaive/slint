@@ -1,7 +1,132 @@
 // SPDX-License-Identifier: MIT
 
-// Stub: replaced by the app's agent.
-import { Theme } from "@nimbus/theme.slint";
-export { Theme }
+import { Palette } from "std-widgets.slint";
+import { Theme, Icons, IconButton, HeaderBar } from "@nimbus/theme.slint";
+import { Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel } from "globals.slint";
+import { Banner } from "widgets.slint";
+import { Sidebar, PageList } from "sidebar.slint";
+import { PickerDialog, CaptureDialog } from "dialogs.slint";
+import { AppearancePage } from "pages/appearance.slint";
+import { PanelPage } from "pages/panel.slint";
+import { WorkspacesPage } from "pages/workspaces.slint";
+import { InputPage } from "pages/input.slint";
+import { ShortcutsPage } from "pages/shortcuts.slint";
+import { PowerPage } from "pages/power.slint";
+import { DisplaysPage } from "pages/displays.slint";
+import { NotificationsPage } from "pages/notifications.slint";
+import { AboutPage } from "pages/about.slint";
 
-export component AppWindow inherits Window {}
+export { Theme, Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel }
+
+export component AppWindow inherits Window {
+    private property <bool> dark: Theme.dark;
+
+    function sync-palette() {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    function go(page: int) {
+        Nav.page = mod(page + PageList.pages.length, PageList.pages.length);
+    }
+
+    changed dark => {
+        root.sync-palette();
+    }
+    init => {
+        root.sync-palette();
+    }
+
+    title: "Settings";
+    icon: Icons.settings;
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    min-width: 760px;
+    min-height: 480px;
+    background: Theme.background;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control && (event.text == "f" || event.text == "F") {
+                sidebar.focus-search();
+                return accept;
+            }
+            if event.modifiers.control && (event.text == "q" || event.text == "w") {
+                Nav.quit();
+                return accept;
+            }
+            if event.modifiers.control && event.text == Key.PageDown {
+                root.go(Nav.page + 1);
+                return accept;
+            }
+            if event.modifiers.control && event.text == Key.PageUp {
+                root.go(Nav.page - 1);
+                return accept;
+            }
+            if event.modifiers.alt && event.text.is-float() && event.text.to-float() >= 1 {
+                root.go(event.text.to-float() - 1);
+                return accept;
+            }
+            reject
+        }
+
+        HorizontalLayout {
+            sidebar := Sidebar {
+                width: 264px;
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.border;
+            }
+
+            VerticalLayout {
+                HeaderBar {
+                    title: PageList.pages[Nav.page].title;
+                    background: Theme.background;
+
+                    if Nav.page == 6: IconButton {
+                        icon: Icons.refresh;
+                        accessible-label: "Refresh displays";
+                        clicked => {
+                            DisplaysModel.refresh();
+                        }
+                    }
+                }
+
+                if Nav.banner != "": HorizontalLayout {
+                    padding: Theme.spacing-md;
+                    padding-bottom: 0;
+
+                    Banner {
+                        text: Nav.banner;
+                        error: Nav.banner-is-error;
+                        dismissed => {
+                            Nav.dismiss-banner();
+                        }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+
+                    if Nav.page == 0: AppearancePage { }
+                    if Nav.page == 1: PanelPage { }
+                    if Nav.page == 2: WorkspacesPage { }
+                    if Nav.page == 3: InputPage { }
+                    if Nav.page == 4: ShortcutsPage { }
+                    if Nav.page == 5: PowerPage { }
+                    if Nav.page == 6: DisplaysPage { }
+                    if Nav.page == 7: NotificationsPage { }
+                    if Nav.page == 8: AboutPage { }
+                }
+            }
+        }
+
+        if Picker.open: PickerDialog { }
+
+        if ShortcutsModel.capture-open: CaptureDialog { }
+    }
+}

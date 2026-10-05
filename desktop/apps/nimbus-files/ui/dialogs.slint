@@ -1,0 +1,463 @@
+// SPDX-License-Identifier: MIT
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, ButtonVariant, Button, IconButton, CheckBox, Icon, Icons, Label, Spinner, ListRow } from "@nimbus/theme.slint";
+import { AppChoice, IconKind, PropertyRow } from "types.slint";
+import { FileIcon } from "file-icon.slint";
+
+// Dims the window and centers a card; Escape or a click outside cancels.
+component DialogFrame inherits Rectangle {
+    in property <string> title;
+    in property <length> card-width: 420px;
+    // Whether a click outside the card cancels.
+    in property <bool> light-dismiss: true;
+
+    callback cancelled();
+
+    background: Theme.overlay;
+
+    TouchArea {
+        clicked => {
+            if root.light-dismiss {
+                root.cancelled();
+            }
+        }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+
+        card := Rectangle {
+            width: min(root.card-width, root.width - 2 * Theme.spacing-xl);
+            height: min(layout.preferred-height, root.height - 2 * Theme.spacing-xl);
+            border-radius: Theme.radius-xlarge;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Theme.elevation-3.blur;
+            drop-shadow-offset-y: Theme.elevation-3.offset-y;
+            drop-shadow-color: Theme.elevation-3.color;
+            accessible-role: groupbox;
+            accessible-label: root.title;
+
+            // Swallows clicks so they don't reach the overlay.
+            TouchArea { }
+
+            layout := VerticalLayout {
+                padding: Theme.spacing-xl;
+                spacing: Theme.spacing-lg;
+
+                if root.title != "": Label {
+                    text: root.title;
+                    style: Theme.title;
+                    wrap: word-wrap;
+                }
+
+                @children
+            }
+        }
+    }
+
+    public function grab-focus() {
+        keys.focus();
+    }
+}
+
+component DialogButtons inherits HorizontalLayout {
+    spacing: Theme.spacing-sm;
+    alignment: end;
+}
+
+// Asks for a file name, for renaming and new folders; the stem is preselected so the extension survives typing.
+export component NameDialog inherits DialogFrame {
+    in property <string> accept-label: "Rename";
+    in property <string> initial-text;
+    // The byte length of the part to preselect.
+    in property <int> select-length;
+    in property <string> error;
+
+    callback accepted(text: string);
+    callback edited(text: string);
+
+    light-dismiss: false;
+    init => {
+        input.text = root.initial-text;
+        input.focus();
+        input.set-selection-offsets(0, root.select-length);
+    }
+
+    Rectangle {
+        min-height: Theme.control-height;
+        border-radius: Theme.radius-medium;
+        background: Theme.surface-sunken;
+        border-width: 2px;
+        border-color: root.error != "" ? Theme.error : Theme.focus-ring;
+
+        input := TextInput {
+            x: Theme.spacing-md;
+            width: parent.width - 2 * Theme.spacing-md;
+            single-line: true;
+            color: Theme.text;
+            selection-background-color: Theme.accent.with-alpha(0.4);
+            selection-foreground-color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+            accessible-role: text-input;
+            accessible-label: root.title;
+            accepted => {
+                root.accepted(self.text);
+            }
+            edited => {
+                root.edited(self.text);
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.cancelled();
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+
+    if root.error != "": Text {
+        text: root.error;
+        color: Theme.error;
+        font-family: Theme.font-family;
+        font-size: Theme.caption.font-size;
+        wrap: word-wrap;
+    }
+
+    DialogButtons {
+        Button {
+            text: "Cancel";
+            clicked => {
+                root.cancelled();
+            }
+        }
+
+        Button {
+            text: root.accept-label;
+            variant: primary;
+            enabled: root.error == "" && input.text != "";
+            clicked => {
+                root.accepted(input.text);
+            }
+        }
+    }
+}
+
+// Asks to confirm an action, such as deleting files permanently.
+export component ConfirmDialog inherits DialogFrame {
+    in property <string> message;
+    in property <string> accept-label: "Delete";
+    in property <bool> destructive: true;
+
+    callback accepted();
+
+    init => {
+        accept.focus();
+    }
+
+    Text {
+        text: root.message;
+        color: Theme.text-secondary;
+        font-family: Theme.font-family;
+        font-size: Theme.body.font-size;
+        wrap: word-wrap;
+    }
+
+    DialogButtons {
+        Button {
+            text: "Cancel";
+            clicked => {
+                root.cancelled();
+            }
+        }
+
+        accept := Button {
+            text: root.accept-label;
+            variant: root.destructive ? ButtonVariant.destructive : ButtonVariant.primary;
+            clicked => {
+                root.accepted();
+            }
+        }
+    }
+}
+
+// Asks how to resolve a name collision during a copy, move, or restore.
+export component ConflictDialog inherits DialogFrame {
+    in property <string> message;
+    in property <string> existing-detail;
+    in property <string> incoming-detail;
+    in property <bool> merge;
+
+    // `choice` is 0 to skip, 1 to replace or merge, and 2 to keep both.
+    callback resolved(choice: int, apply-to-all: bool);
+
+    card-width: 480px;
+    light-dismiss: false;
+    init => {
+        self.grab-focus();
+    }
+
+    Text {
+        text: root.message;
+        color: Theme.text-secondary;
+        font-family: Theme.font-family;
+        font-size: Theme.body.font-size;
+        wrap: word-wrap;
+    }
+
+    Rectangle {
+        border-radius: Theme.radius-large;
+        background: Theme.surface-sunken;
+        height: details.preferred-height;
+
+        details := VerticalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-xs;
+
+            Text {
+                text: "Existing: " + root.existing-detail;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                overflow: elide;
+            }
+
+            Text {
+                text: (root.merge ? "Incoming folder: " : "Incoming: ") + root.incoming-detail;
+                color: Theme.text;
+                font-family: Theme.font-family;
+                font-size: Theme.caption.font-size;
+                overflow: elide;
+            }
+        }
+    }
+
+    all := CheckBox {
+        text: "Apply this action to all conflicts";
+    }
+
+    DialogButtons {
+        Button {
+            text: "Cancel";
+            variant: flat;
+            clicked => {
+                root.cancelled();
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        Button {
+            text: "Skip";
+            clicked => {
+                root.resolved(0, all.checked);
+            }
+        }
+
+        Button {
+            text: "Keep Both";
+            clicked => {
+                root.resolved(2, all.checked);
+            }
+        }
+
+        Button {
+            text: root.merge ? "Merge" : "Replace";
+            variant: root.merge ? ButtonVariant.primary : ButtonVariant.destructive;
+            clicked => {
+                root.resolved(1, all.checked);
+            }
+        }
+    }
+}
+
+// Shows a file's details; the size of folders fills in as it's computed.
+export component PropertiesDialog inherits DialogFrame {
+    in property <string> name;
+    in property <IconKind> kind;
+    in property <string> badge;
+    in property <image> thumbnail;
+    in property <bool> has-thumbnail;
+    in property <[PropertyRow]> rows;
+    in property <bool> computing;
+
+    card-width: 460px;
+    init => {
+        self.grab-focus();
+    }
+
+    HorizontalLayout {
+        spacing: Theme.spacing-lg;
+
+        FileIcon {
+            size: 64px;
+            kind: root.kind;
+            badge: root.badge;
+            thumbnail: root.thumbnail;
+            has-thumbnail: root.has-thumbnail;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: Theme.spacing-xxs;
+
+            Label {
+                text: root.name;
+                style: Theme.title;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                alignment: start;
+
+                if root.computing: Spinner {
+                    size: 14px;
+                }
+
+                if root.computing: Text {
+                    text: "Calculating size…";
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        border-radius: Theme.radius-large;
+        background: Theme.surface-sunken;
+        height: grid.preferred-height;
+
+        grid := VerticalLayout {
+            padding: Theme.spacing-md;
+            spacing: Theme.spacing-sm;
+
+            for row in root.rows: HorizontalLayout {
+                spacing: Theme.spacing-md;
+
+                Text {
+                    width: 110px;
+                    text: row.label;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    horizontal-alignment: right;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: row.value;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    wrap: char-wrap;
+                }
+            }
+        }
+    }
+
+    DialogButtons {
+        Button {
+            text: "Close";
+            variant: primary;
+            clicked => {
+                root.cancelled();
+            }
+        }
+    }
+}
+
+// Lists applications that open the selected files.
+export component OpenWithDialog inherits DialogFrame {
+    in property <[AppChoice]> apps;
+    in property <bool> loading;
+    in-out property <int> current: 0;
+
+    callback chosen(index: int);
+    callback open-default();
+
+    card-width: 440px;
+    init => {
+        self.grab-focus();
+    }
+
+    if root.loading: HorizontalLayout {
+        alignment: center;
+
+        Spinner { }
+    }
+
+    if !root.loading && root.apps.length == 0: Text {
+        text: "No installed application declares support for this file type. Open it with the system default instead.";
+        color: Theme.text-secondary;
+        font-family: Theme.font-family;
+        font-size: Theme.body.font-size;
+        wrap: word-wrap;
+    }
+
+    if root.apps.length > 0: ScrollView {
+        height: min(320px, root.apps.length * (Theme.row-height + Theme.spacing-xxs));
+
+        VerticalLayout {
+            spacing: Theme.spacing-xxs;
+
+            for app[index] in root.apps: ListRow {
+                icon: Icons.application;
+                title: app.name;
+                subtitle: app.detail;
+                selected: index == root.current;
+                clicked => {
+                    if root.current == index {
+                        root.chosen(index);
+                    }
+                    root.current = index;
+                }
+            }
+        }
+    }
+
+    DialogButtons {
+        Button {
+            text: "Default Application";
+            variant: flat;
+            clicked => {
+                root.open-default();
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => {
+                root.cancelled();
+            }
+        }
+
+        Button {
+            text: "Open";
+            variant: primary;
+            enabled: root.current >= 0 && root.current < root.apps.length;
+            clicked => {
+                root.chosen(root.current);
+            }
+        }
+    }
+}

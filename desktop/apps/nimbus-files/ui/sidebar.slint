@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: MIT
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, NavigationItem, Label } from "@nimbus/theme.slint";
+import { PlaceItem } from "types.slint";
+import { FileStyle } from "style.slint";
+
+// The places sidebar: user folders, Trash, drives, and bookmarks, with section headings.
+export component Sidebar inherits Rectangle {
+    in property <[PlaceItem]> places;
+    in property <int> current: -1;
+
+    callback place-clicked(index: int);
+
+    background: Theme.surface-sunken;
+    accessible-role: list;
+    accessible-label: "Places";
+
+    VerticalLayout {
+        Rectangle {
+            height: Theme.header-bar-height;
+
+            HorizontalLayout {
+                padding-left: Theme.spacing-lg + Theme.spacing-xs;
+                alignment: start;
+
+                Label {
+                    text: "Files";
+                    style: Theme.title;
+                }
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+
+            VerticalLayout {
+                padding: Theme.spacing-sm;
+                padding-top: 0;
+                spacing: Theme.spacing-xxs;
+                alignment: start;
+
+                for place[index] in root.places: VerticalLayout {
+                    spacing: Theme.spacing-xxs;
+
+                    if place.heading != "": Rectangle {
+                        height: 30px;
+
+                        Text {
+                            x: Theme.spacing-md;
+                            y: parent.height - self.height - Theme.spacing-xs;
+                            text: place.heading;
+                            color: Theme.text-secondary;
+                            font-family: Theme.font-family;
+                            font-size: Theme.caption.font-size;
+                            font-weight: 600;
+                        }
+                    }
+
+                    NavigationItem {
+                        text: place.label;
+                        icon: FileStyle.icon(place.kind);
+                        selected: index == root.current;
+                        clicked => {
+                            root.place-clicked(index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+}

@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Tone } from "../tokens.slint";
+import { Icons } from "../icons.slint";
+
+// A small pill with a count or short status; with empty `text` it's a dot.
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <Tone> tone: Tone.accent;
+
+    private property <color> fill: {
+        if root.tone == Tone.neutral { return Theme.control-hover; }
+        if root.tone == Tone.success { return Theme.success; }
+        if root.tone == Tone.warning { return Theme.warning; }
+        if root.tone == Tone.error { return Theme.destructive; }
+        Theme.accent
+    }
+
+    min-width: root.text == "" ? 8px : max(18px, label.min-width + 2 * Theme.spacing-sm - 2px);
+    min-height: root.text == "" ? 8px : 18px;
+    max-width: root.text == "" ? 8px : 100000px;
+    max-height: root.min-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: root.fill;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    label := Text {
+        text: root.text;
+        color: root.tone == Tone.neutral ? Theme.text
+            : root.tone == Tone.accent ? Theme.on-accent
+            : root.tone == Tone.error ? Theme.on-destructive
+            : Theme.on-status;
+        font-family: Theme.font-family;
+        font-size: Theme.caption.font-size;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A horizontal progress bar. `indeterminate` shows activity of unknown length.
+export component ProgressBar {
+    // From 0 to 1.
+    in property <float> progress;
+    in property <bool> indeterminate;
+    in property <Tone> tone: Tone.accent;
+
+    private property <color> fill: {
+        if root.tone == Tone.success { return Theme.success; }
+        if root.tone == Tone.warning { return Theme.warning; }
+        if root.tone == Tone.error { return Theme.error; }
+        if root.tone == Tone.neutral { return Theme.text-secondary; }
+        Theme.accent
+    }
+
+    min-height: 6px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    accessible-role: progress-indicator;
+    accessible-value: round(clamp(root.progress, 0, 1) * 100) + "%";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 1;
+
+    Rectangle {
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.control-hover;
+        clip: true;
+
+        if !root.indeterminate: Rectangle {
+            x: 0;
+            width: parent.width * clamp(root.progress, 0, 1);
+            border-radius: 3px;
+            background: root.fill;
+            animate width { duration: Theme.duration-normal; easing: Motion.standard; }
+        }
+
+        if root.indeterminate: Rectangle {
+            property <float> phase: mod(animation-tick() / 1.4s, 1);
+
+            width: parent.width * 0.35;
+            x: (parent.width + self.width) * self.phase - self.width;
+            border-radius: 3px;
+            background: root.fill;
+        }
+    }
+}
+
+// A thin line separating groups in a layout; set `vertical` inside horizontal layouts.
+export component Divider inherits Rectangle {
+    in property <bool> vertical;
+
+    max-width: root.vertical ? 1px : 100000px;
+    max-height: root.vertical ? 100000px : 1px;
+    // Keeps some length in layouts that center their items, such as `HeaderBar`.
+    min-width: root.vertical ? 1px : 20px;
+    min-height: root.vertical ? 20px : 1px;
+    horizontal-stretch: root.vertical ? 0 : 1;
+    vertical-stretch: root.vertical ? 1 : 0;
+    background: Theme.border;
+}
+
+// A rotating activity indicator. It keeps spinning when animations are off, since it conveys state.
+export component Spinner {
+    in property <length> size: 24px;
+    in property <color> color: Theme.text-secondary;
+    in property <bool> running: true;
+
+    width: root.size;
+    height: root.size;
+    accessible-role: progress-indicator;
+
+    Image {
+        width: 100%;
+        height: 100%;
+        source: Icons.spinner;
+        colorize: root.color;
+        image-fit: contain;
+        visible: root.running;
+        transform-rotation: root.running ? mod(animation-tick() / 2.5ms, 360) * 1deg : 0deg;
+    }
+}

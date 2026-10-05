@@ -1,0 +1,264 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, Spinner } from "@nimbus/theme.slint";
+import { SystemStatus } from "models.slint";
+import { StatusIcons } from "common.slint";
+
+component PasswordField inherits Rectangle {
+    in property <bool> busy;
+    in property <bool> invalid;
+    in-out property <string> text;
+
+    callback accepted(text: string);
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    width: 300px;
+    height: 44px;
+    border-radius: self.height / 2;
+    background: input.has-focus ? #ffffff2e : #ffffff1f;
+    border-width: root.invalid ? 2px : 1px;
+    border-color: root.invalid ? #ff7a75 : input.has-focus ? #ffffff59 : #ffffff1f;
+    animate background, border-color { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: text-input;
+    accessible-label: "Password";
+
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            input.focus();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.spacing-lg;
+        padding-right: Theme.spacing-xs;
+        spacing: Theme.spacing-sm;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            source: Icons.lock;
+            color: #ffffffb3;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            if root.text == "": Text {
+                width: 100%;
+                text: "Password";
+                color: #ffffff8c;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            input := TextInput {
+                width: 100%;
+                text <=> root.text;
+                enabled: !root.busy;
+                single-line: true;
+                input-type: password;
+                color: #ffffff;
+                selection-background-color: Theme.accent.with-alpha(0.5);
+                selection-foreground-color: #ffffff;
+                font-family: Theme.font-family;
+                font-size: Theme.body.font-size;
+                vertical-alignment: center;
+                accessible-role: none;
+                accepted => {
+                    root.accepted(self.text);
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.text = "";
+                        return accept;
+                    }
+                    reject
+                }
+            }
+        }
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            cross-axis-self-alignment: center;
+            border-radius: 18px;
+            background: root.busy ? transparent : submit.has-hover ? Theme.accent-hover : root.text != "" ? Theme.accent : #ffffff1a;
+            accessible-role: button;
+            accessible-label: "Unlock";
+            accessible-action-default => {
+                root.accepted(root.text);
+            }
+
+            if root.busy: Spinner {
+                size: 20px;
+                color: #ffffff;
+            }
+            if !root.busy: Icon {
+                source: Icons.arrow-right;
+                color: root.text != "" ? Theme.on-accent : #ffffffb3;
+            }
+            submit := TouchArea {
+                enabled: !root.busy;
+                clicked => {
+                    root.accepted(root.text);
+                }
+            }
+        }
+    }
+}
+
+// The lock screen. It's opaque as soon as `locked` is set, so nothing behind it shows,
+// and fades out when unlocked.
+export component LockScreen inherits Rectangle {
+    in property <bool> locked;
+    in property <string> time;
+    in property <string> date;
+    in property <string> user-name;
+    in property <image> backdrop;
+    in property <bool> busy;
+    in property <string> error;
+    in property <SystemStatus> status;
+    in-out property <string> password;
+
+    callback unlock-requested(password: string);
+
+    public function focus-password() {
+        field.focus-input();
+    }
+
+    private property <float> progress: root.locked ? 1 : 0;
+
+    visible: root.locked || self.progress > 0;
+    opacity: root.progress;
+    background: #101014;
+    animate progress { duration: root.locked ? 0ms : Theme.duration-slow; easing: Motion.exit; }
+
+    // Takes every click, so nothing reaches the shell or windows below.
+    TouchArea {
+        clicked => {
+            field.focus-input();
+        }
+    }
+
+    if root.backdrop.width > 0: Image {
+        width: 100%;
+        height: 100%;
+        source: root.backdrop;
+        image-fit: cover;
+        image-rendering: smooth;
+    }
+    if root.backdrop.width == 0: Rectangle {
+        background: @linear-gradient(160deg, Theme.accent.darker(0.6) 0%, #1a1530 55%, #0c0c12 100%);
+    }
+    Rectangle {
+        background: @radial-gradient(circle, #00000020 0%, #00000080 100%);
+    }
+
+    // System status in the corner, as in the panel.
+    HorizontalLayout {
+        x: root.width - self.width - Theme.spacing-xl;
+        y: Theme.spacing-lg;
+        width: self.preferred-width;
+        height: 24px;
+        spacing: Theme.spacing-md;
+
+        Icon {
+            cross-axis-self-alignment: center;
+            source: StatusIcons.network(root.status);
+            color: #ffffff;
+        }
+        if root.status.has-battery: Icon {
+            cross-axis-self-alignment: center;
+            source: StatusIcons.battery(root.status);
+            color: #ffffff;
+        }
+        if root.status.has-battery: Text {
+            text: round(root.status.battery-level * 100) + " %";
+            color: #ffffff;
+            font-family: Theme.font-family;
+            font-size: Theme.body-strong.font-size;
+            font-weight: Theme.body-strong.font-weight;
+            vertical-alignment: center;
+        }
+    }
+
+    VerticalLayout {
+        y: root.height * 0.14 - (1 - root.progress) * 40px;
+        height: self.preferred-height;
+        spacing: Theme.spacing-xs;
+
+        Text {
+            text: root.time;
+            color: #ffffff;
+            font-family: Theme.font-family;
+            font-size: 96px;
+            font-weight: 300;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.date;
+            color: #ffffffd9;
+            font-family: Theme.font-family;
+            font-size: Theme.headline.font-size;
+            font-weight: 500;
+            horizontal-alignment: center;
+        }
+    }
+
+    VerticalLayout {
+        y: root.height * 0.48 - (1 - root.progress) * 40px;
+        height: self.preferred-height;
+        spacing: Theme.spacing-lg;
+
+        Rectangle {
+            height: 96px;
+
+            Rectangle {
+                width: 96px;
+                height: 96px;
+                border-radius: 48px;
+                background: @linear-gradient(135deg, Theme.accent.brighter(0.2) 0%, Theme.accent.darker(0.3) 100%);
+                border-width: 2px;
+                border-color: #ffffff40;
+
+                Icon {
+                    source: Icons.user;
+                    size: 48px;
+                    color: #ffffff;
+                }
+            }
+        }
+        Text {
+            text: root.user-name;
+            color: #ffffff;
+            font-family: Theme.font-family;
+            font-size: Theme.title.font-size;
+            font-weight: Theme.title.font-weight;
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+
+            field := PasswordField {
+                text <=> root.password;
+                busy: root.busy;
+                invalid: root.error != "";
+                accepted(text) => {
+                    if !root.busy && text != "" {
+                        root.unlock-requested(text);
+                    }
+                }
+            }
+        }
+        Text {
+            text: root.error != "" ? root.error : "Enter your password to unlock";
+            color: root.error != "" ? #ff8f8a : #ffffff99;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            horizontal-alignment: center;
+        }
+    }
+}

@@ -1,0 +1,240 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icon } from "icon.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// One entry of a settings-style sidebar; place several in a `VerticalLayout` on `Theme.surface-sunken`.
+export component NavigationItem {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> selected;
+    // A trailing count, such as unread items; hidden when empty.
+    in property <string> badge;
+
+    callback clicked;
+
+    min-height: Theme.control-height + 4px;
+    min-width: layout.min-width;
+    vertical-stretch: 0;
+    accessible-role: list-item;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+    forward-focus: focus-scope;
+
+    Rectangle {
+        border-radius: Theme.radius-medium;
+        background: root.selected ? Theme.surface-selected
+            : touch.pressed ? Theme.surface-pressed
+            : touch.has-hover ? Theme.surface-hover
+            : transparent;
+        animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    }
+
+    layout := HorizontalLayout {
+        cross-axis-alignment: center;
+        padding-left: Theme.spacing-md;
+        padding-right: Theme.spacing-md;
+        spacing: Theme.spacing-md;
+
+        if root.icon.width > 0: Icon {
+            source: root.icon;
+            color: root.selected ? Theme.accent-text : Theme.text;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            font-weight: root.selected ? Theme.body-strong.font-weight : Theme.body.font-weight;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.badge != "": Text {
+            text: root.badge;
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if focus-scope.keyboard-focus: FocusRing {
+        radius: Theme.radius-medium;
+        offset: 0;
+    }
+}
+
+// A tab strip with an underline under the current tab.
+export component TabBar {
+    in property <[string]> model;
+    in-out property <int> current-index: 0;
+
+    // Emitted after a user action changes `current-index`.
+    callback selected(index: int);
+
+    min-height: Theme.control-height + 6px;
+    min-width: layout.min-width;
+    vertical-stretch: 0;
+    accessible-role: tab-list;
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+
+    layout := HorizontalLayout {
+        alignment: start;
+        spacing: Theme.spacing-xs;
+
+        for item[index] in root.model: Rectangle {
+            min-width: label.min-width + 2 * Theme.spacing-lg;
+            accessible-role: tab;
+            accessible-label: item;
+            accessible-item-selected: index == root.current-index;
+            accessible-item-index: index;
+            accessible-action-default => {
+                tab-touch.clicked();
+            }
+
+            Rectangle {
+                y: 3px;
+                height: parent.height - 9px;
+                border-radius: Theme.radius-medium;
+                background: tab-touch.pressed ? Theme.surface-pressed : tab-touch.has-hover ? Theme.surface-hover : transparent;
+            }
+
+            label := Text {
+                text: item;
+                color: index == root.current-index ? Theme.text : Theme.text-secondary;
+                font-family: Theme.font-family;
+                font-size: Theme.body-strong.font-size;
+                font-weight: Theme.body-strong.font-weight;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                y: parent.height - self.height;
+                x: Theme.spacing-sm;
+                width: parent.width - 2 * Theme.spacing-sm;
+                height: 3px;
+                border-radius: 1.5px;
+                background: Theme.accent;
+                opacity: index == root.current-index ? 1 : 0;
+                animate opacity { duration: Theme.duration-fast; easing: Motion.standard; }
+            }
+
+            tab-touch := TouchArea {
+                clicked => {
+                    if index != root.current-index {
+                        root.current-index = index;
+                        root.selected(index);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The title area at the top of an app window, with a centered title.
+// Children sit in a row at the trailing end.
+// To put some at the leading end, add `Rectangle { horizontal-stretch: 1; }` between the two groups.
+export component HeaderBar inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+
+    // Emitted on a press in an empty area, so the window can start an interactive move.
+    callback drag-started();
+    // Emitted on a double click in an empty area, to toggle maximize.
+    callback double-clicked();
+
+    min-height: Theme.header-bar-height;
+    vertical-stretch: 0;
+    background: Theme.surface;
+
+    TouchArea {
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.drag-started();
+            }
+        }
+        double-clicked => {
+            root.double-clicked();
+        }
+    }
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 0;
+
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body-strong.font-size;
+            font-weight: Theme.title.font-weight;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        if root.subtitle != "": Text {
+            text: root.subtitle;
+            color: Theme.text-secondary;
+            font-family: Theme.font-family;
+            font-size: Theme.caption.font-size;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    HorizontalLayout {
+        cross-axis-alignment: center;
+        padding-left: Theme.spacing-sm;
+        padding-right: Theme.spacing-sm;
+        spacing: Theme.spacing-xs;
+        alignment: end;
+
+        @children
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border;
+    }
+}

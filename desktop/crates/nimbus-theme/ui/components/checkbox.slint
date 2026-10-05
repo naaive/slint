@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "../tokens.slint";
+import { Icons } from "../icons.slint";
+import { Icon } from "icon.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// A check box with an optional label; clicking the label toggles it too.
+export component CheckBox {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    out property <bool> has-focus: focus-scope.has-focus;
+
+    // Emitted after a user action changes `checked`.
+    callback toggled(checked: bool);
+
+    public function toggle() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+
+    min-height: 24px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    opacity: root.enabled ? 1 : 0.5;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        root.toggle();
+    }
+    forward-focus: focus-scope;
+
+    HorizontalLayout {
+        cross-axis-alignment: center;
+        spacing: Theme.spacing-sm;
+
+        box := Rectangle {
+            width: 20px;
+            height: 20px;
+            border-radius: Theme.radius-small;
+            border-width: root.checked ? 0 : 2px;
+            border-color: touch.has-hover ? Theme.text-secondary : Theme.border-strong;
+            background: root.checked ? (touch.has-hover ? Theme.accent-hover : Theme.accent) : transparent;
+            animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+
+            if root.checked: Icon {
+                source: Icons.check;
+                size: 14px;
+                color: Theme.on-accent;
+            }
+
+            if focus-scope.keyboard-focus: FocusRing {
+                radius: Theme.radius-small;
+            }
+        }
+
+        if root.text != "": Text {
+            text: root.text;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.toggle();
+        }
+    }
+
+    focus-scope := FocusScope {
+        property <bool> keyboard-focus;
+
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focus = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            self.keyboard-focus = false;
+        }
+        key-pressed(event) => {
+            if event.text == Key.Space {
+                root.toggle();
+                return accept;
+            }
+            reject
+        }
+    }
+}

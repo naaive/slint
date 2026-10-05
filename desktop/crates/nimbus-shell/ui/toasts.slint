@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, IconButton, Button } from "@nimbus/theme.slint";
+import { NotificationItem } from "models.slint";
+import { AppIcon } from "common.slint";
+
+// One notification: as a toast, or as an entry in the notification center.
+export component NotificationCard inherits Rectangle {
+    in property <NotificationItem> item;
+    // Toasts float above windows; entries sit on the popup surface.
+    in property <bool> floating;
+
+    callback activated;
+    callback dismissed;
+    callback action(key: string);
+
+    min-height: layout.preferred-height;
+    preferred-height: layout.preferred-height;
+    border-radius: Theme.radius-xlarge;
+    background: root.floating ? Theme.popup-background : touch.has-hover ? Theme.control-hover : Theme.control;
+    border-width: root.item.critical ? 2px : root.floating ? 1px : 0;
+    border-color: root.item.critical ? Theme.error : Theme.border;
+    drop-shadow-blur: root.floating ? Theme.elevation-3.blur : 0;
+    drop-shadow-offset-y: root.floating ? Theme.elevation-3.offset-y : 0;
+    drop-shadow-color: root.floating ? Theme.elevation-3.color : transparent;
+    animate background { duration: Theme.duration-fast; easing: Motion.standard; }
+    accessible-role: list-item;
+    accessible-label: root.item.summary;
+    accessible-description: root.item.body;
+    accessible-action-default => {
+        root.activated();
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.activated();
+        }
+    }
+
+    layout := VerticalLayout {
+        padding: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-md;
+
+            AppIcon {
+                size: 36px;
+                y: 2px;
+                visual: root.item.visual;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: Theme.spacing-xxs;
+
+                HorizontalLayout {
+                    spacing: Theme.spacing-xs;
+
+                    Text {
+                        text: root.item.app-name;
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: Theme.caption.font-size;
+                        overflow: elide;
+                        horizontal-stretch: 0;
+                    }
+                    if root.item.time != "": Text {
+                        text: "· " + root.item.time;
+                        color: Theme.text-secondary;
+                        font-family: Theme.font-family;
+                        font-size: Theme.caption.font-size;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                }
+                Text {
+                    text: root.item.summary;
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body-strong.font-size;
+                    font-weight: Theme.body-strong.font-weight;
+                    overflow: elide;
+                }
+                if root.item.body != "": Text {
+                    text: root.item.body;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    wrap: word-wrap;
+                    overflow: elide;
+                    max-height: 2.8 * Theme.body.font-size;
+                }
+            }
+            IconButton {
+                icon: Icons.close;
+                size: Theme.control-height-small;
+                icon-size: 14px;
+                accessible-label: "Dismiss";
+                clicked => {
+                    root.dismissed();
+                }
+            }
+        }
+
+        if root.item.actions.length > 0: HorizontalLayout {
+            spacing: Theme.spacing-sm;
+            padding-left: 36px + Theme.spacing-md;
+
+            for action in root.item.actions: Button {
+                horizontal-stretch: 1;
+                text: action.label;
+                compact: true;
+                clicked => {
+                    root.action(action.key);
+                }
+            }
+        }
+    }
+}
+
+// The stack of toasts in the corner, newest first.
+export component ToastStack inherits VerticalLayout {
+    in property <[NotificationItem]> toasts;
+
+    callback activated(id: int);
+    callback dismissed(id: int);
+    callback action(id: int, key: string);
+
+    spacing: Theme.spacing-sm;
+    alignment: start;
+
+    for toast in root.toasts: NotificationCard {
+        property <bool> shown;
+
+        item: toast;
+        floating: true;
+        opacity: self.shown && !toast.closing ? 1 : 0;
+        transform-scale: self.shown && !toast.closing ? 1 : 0.94;
+        animate opacity, transform-scale { duration: Theme.duration-normal; easing: Motion.enter; }
+        init => {
+            self.shown = true;
+        }
+        activated => {
+            root.activated(toast.id);
+        }
+        dismissed => {
+            root.dismissed(toast.id);
+        }
+        action(key) => {
+            root.action(toast.id, key);
+        }
+    }
+}

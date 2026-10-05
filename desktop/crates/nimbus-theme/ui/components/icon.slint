@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme } from "../tokens.slint";
+
+// A symbolic icon tinted with `color`, such as one from `Icons`.
+export component Icon inherits Image {
+    in property <color> color: Theme.text;
+    in property <length> size: Theme.icon-size;
+
+    width: root.size;
+    height: root.size;
+    colorize: root.color;
+    image-fit: contain;
+    accessible-role: none;
+}
