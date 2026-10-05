@@ -1,0 +1,40 @@
+[package]
+name = "nimbus-compositor"
+description = "The Nimbus Wayland compositor, built on Smithay, hosting the Slint shell in-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nimbus-compositor"
+path = "src/main.rs"
+
+[dependencies]
+nimbus-ipc = { workspace = true }
+nimbus-config = { workspace = true }
+nimbus-xdg = { workspace = true }
+nimbus-services = { workspace = true }
+nimbus-shell = { workspace = true }
+slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
+smithay = { version = "0.7", default-features = false, features = [
+  "wayland_frontend",
+  "desktop",
+  "renderer_gl",
+  "renderer_pixman",
+  "backend_winit",
+  "backend_drm",
+  "backend_gbm",
+  "backend_egl",
+  "backend_libinput",
+  "backend_udev",
+  "backend_session_libseat",
+  "use_system_lib",
+] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

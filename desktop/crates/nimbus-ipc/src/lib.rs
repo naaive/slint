@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: MIT
+
+//! Window-management domain model shared by the compositor, the shell, and `nimbusctl`.
+//!
+//! The control socket speaks newline-delimited JSON: a client writes one [`Request`] per line,
+//! and the compositor answers each with one [`Response`] line.
+//! A client that sends [`Request::Subscribe`] then receives an [`Event`] line for every change.
+
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+
+/// Compositor-assigned toplevel identifier, unique for the compositor's lifetime.
+pub type WindowId = u64;
+/// Zero-based workspace index.
+pub type WorkspaceId = u32;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowInfo {
+    pub id: WindowId,
+    /// The `xdg_toplevel` app id, which usually matches a desktop entry id without `.desktop`.
+    pub app_id: String,
+    pub title: String,
+    pub workspace: WorkspaceId,
+    pub output: String,
+    pub focused: bool,
+    pub minimized: bool,
+    pub maximized: bool,
+    pub fullscreen: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OutputInfo {
+    pub name: String,
+    pub width: i32,
+    pub height: i32,
+    pub scale: f64,
+    pub refresh_mhz: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LayoutMode {
+    #[default]
+    Floating,
+    Tiling,
+}
+
+/// The compositor's complete observable state, sent in reply to [`Request::GetState`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompositorState {
+    pub windows: Vec<WindowInfo>,
+    pub outputs: Vec<OutputInfo>,
+    pub workspace_count: u32,
+    pub active_workspace: WorkspaceId,
+    pub layout: LayoutMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// A command for the compositor, from the in-process shell or from a socket client.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "request", rename_all = "kebab-case")]
+pub enum Request {
+    GetState,
+    /// Switch the connection to event streaming; see [`Event`].
+    Subscribe,
+    Activate { id: WindowId },
+    Close { id: WindowId },
+    SetMinimized { id: WindowId, minimized: bool },
+    SetMaximized { id: WindowId, maximized: bool },
+    SetFullscreen { id: WindowId, fullscreen: bool },
+    MoveToWorkspace { id: WindowId, workspace: WorkspaceId },
+    FocusDirection { direction: Direction },
+    SwitchWorkspace { workspace: WorkspaceId },
+    SetLayout { layout: LayoutMode },
+    /// Run a command line through `sh -c` with the session's Wayland environment.
+    Spawn { command: String },
+    ToggleLauncher,
+    ToggleOverview,
+    Lock,
+    ReloadConfig,
+    Quit,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "response", rename_all = "kebab-case")]
+pub enum Response {
+    Ok,
+    State(CompositorState),
+    Error { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub enum Event {
+    WindowOpened(WindowInfo),
+    WindowChanged(WindowInfo),
+    WindowClosed { id: WindowId },
+    WorkspaceActivated { workspace: WorkspaceId },
+    OutputsChanged { outputs: Vec<OutputInfo> },
+    LayoutChanged { layout: LayoutMode },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("I/O error on the Nimbus control socket: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("malformed message on the Nimbus control socket: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("the Nimbus control socket closed the connection")]
+    Closed,
+    #[error("the compositor rejected the request: {0}")]
+    Rejected(String),
+}
+
+/// Environment variable through which the compositor advertises its control socket.
+pub const SOCKET_ENV: &str = "NIMBUS_SOCKET";
+
+/// Returns the control socket path: `$NIMBUS_SOCKET`, or `$XDG_RUNTIME_DIR/nimbus-<wayland display>.sock`.
+pub fn socket_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(SOCKET_ENV) {
+        return Some(path.into());
+    }
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
+    Some(PathBuf::from(runtime).join(format!("nimbus-{display}.sock")))
+}
+
+/// Writes `message` as one JSON line and flushes.
+pub fn write_message<T: Serialize>(writer: &mut impl Write, message: &T) -> Result<(), Error> {
+    serde_json::to_writer(&mut *writer, message)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Reads one JSON line, or returns [`Error::Closed`] at end of stream.
+pub fn read_message<T: for<'de> Deserialize<'de>>(reader: &mut impl BufRead) -> Result<T, Error> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(Error::Closed);
+    }
+    Ok(serde_json::from_str(&line)?)
+}
+
+/// A blocking client for the control socket, as used by `nimbusctl`.
+pub struct Client {
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+    writer: std::os::unix::net::UnixStream,
+}
+
+impl Client {
+    pub fn connect() -> Result<Self, Error> {
+        let path = socket_path().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "neither NIMBUS_SOCKET nor XDG_RUNTIME_DIR is set")
+        })?;
+        Self::connect_to(&path)
+    }
+
+    pub fn connect_to(path: &std::path::Path) -> Result<Self, Error> {
+        let writer = std::os::unix::net::UnixStream::connect(path)?;
+        let reader = std::io::BufReader::new(writer.try_clone()?);
+        Ok(Self { reader, writer })
+    }
+
+    pub fn request(&mut self, request: &Request) -> Result<Response, Error> {
+        write_message(&mut self.writer, request)?;
+        match read_message(&mut self.reader)? {
+            Response::Error { message } => Err(Error::Rejected(message)),
+            response => Ok(response),
+        }
+    }
+
+    /// Subscribes and returns an iterator over events; it ends when the compositor exits.
+    pub fn subscribe(mut self) -> Result<impl Iterator<Item = Result<Event, Error>>, Error> {
+        self.request(&Request::Subscribe)?;
+        let mut reader = self.reader;
+        Ok(std::iter::from_fn(move || match read_message(&mut reader) {
+            Err(Error::Closed) => None,
+            other => Some(other),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_wire_format_is_tagged_kebab_case() {
+        let json = serde_json::to_string(&Request::SwitchWorkspace { workspace: 2 }).unwrap();
+        assert_eq!(json, r#"{"request":"switch-workspace","workspace":2}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Request::SwitchWorkspace { workspace: 2 });
+    }
+
+    #[test]
+    fn messages_round_trip_through_lines() {
+        let mut buffer = Vec::new();
+        let event = Event::WindowOpened(WindowInfo { id: 7, app_id: "foot".into(), ..Default::default() });
+        write_message(&mut buffer, &event).unwrap();
+        write_message(&mut buffer, &Event::WindowClosed { id: 7 }).unwrap();
+        let mut reader = std::io::BufReader::new(buffer.as_slice());
+        assert_eq!(read_message::<Event>(&mut reader).unwrap(), event);
+        assert_eq!(read_message::<Event>(&mut reader).unwrap(), Event::WindowClosed { id: 7 });
+        assert!(matches!(read_message::<Event>(&mut reader), Err(Error::Closed)));
+    }
+
+    #[test]
+    fn client_reports_rejections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let _: Request = read_message(&mut reader).unwrap();
+            write_message(&mut writer, &Response::Error { message: "no such window".into() }).unwrap();
+        });
+        let mut client = Client::connect_to(&path).unwrap();
+        let result = client.request(&Request::Close { id: 1 });
+        assert!(matches!(result, Err(Error::Rejected(m)) if m == "no such window"));
+        server.join().unwrap();
+    }
+}

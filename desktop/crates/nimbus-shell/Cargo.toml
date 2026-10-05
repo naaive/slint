@@ -1,0 +1,32 @@
+[package]
+name = "nimbus-shell"
+description = "The Nimbus desktop shell UI: panel, dock, launcher, overview, quick settings, notifications, and lock screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Builds the `nimbus-shell-preview` binary, which runs the shell in a regular window with mock data.
+preview = ["slint/backend-winit", "slint/renderer-femtovg"]
+
+[dependencies]
+nimbus-ipc = { workspace = true }
+nimbus-config = { workspace = true }
+nimbus-xdg = { workspace = true }
+nimbus-services = { workspace = true }
+nimbus-theme = { workspace = true }
+slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
+tracing = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+nimbus-theme = { workspace = true }
+
+[dev-dependencies]
+i-slint-backend-testing = { workspace = true }
+
+[[bin]]
+name = "nimbus-shell-preview"
+path = "src/bin/preview.rs"
+required-features = ["preview"]

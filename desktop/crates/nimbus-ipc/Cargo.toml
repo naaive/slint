@@ -1,0 +1,15 @@
+[package]
+name = "nimbus-ipc"
+description = "Window-management domain model and the JSON-lines protocol spoken on the compositor's control socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "nimbus-services"
+description = "Desktop system services over D-Bus: notifications, power, network, audio, media, and session control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+zbus = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

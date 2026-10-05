@@ -1,0 +1,22 @@
+[package]
+name = "nimbus-files"
+description = "File manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nimbus-theme = { workspace = true }
+nimbus-config = { workspace = true }
+slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true }
+nimbus-theme = { workspace = true }
+
+[dev-dependencies]
+i-slint-backend-testing = { workspace = true }

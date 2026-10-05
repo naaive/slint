@@ -53,7 +53,7 @@ members = [
 ]
 
 # These subtrees are their own workspaces; keep them out of this one.
-exclude = ['examples', 'demos', 'tests', 'ui-libraries']
+exclude = ['examples', 'demos', 'desktop', 'tests', 'ui-libraries']
 
 default-members = [
   'api/rs/build',

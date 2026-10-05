@@ -1,0 +1,10 @@
+[package]
+name = "nimbus-theme"
+description = "The Nimbus design system: Slint tokens and components shared by the shell and apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nimbus-config = { workspace = true }
