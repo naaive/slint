@@ -6,7 +6,7 @@ use crate::state::State;
 use crate::wm::WindowMode;
 use nimbus_config::Action;
 use nimbus_ipc::{Direction, LayoutMode, Request, Response, WindowId};
-use nimbus_services::ServiceCommand;
+use nimbus_services::{ServiceCommand, SystemState};
 use nimbus_shell::Osd;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -127,27 +127,76 @@ impl State {
     }
 
     fn screenshot_request(&mut self, output: Option<String>, path: Option<PathBuf>) -> Response {
-        let output = match output {
-            Some(name) => match self.nimbus.output_by_name(&name) {
-                Some(output) => output,
-                None => return Response::Error { message: format!("no output named '{name}'") },
-            },
-            None => match self.nimbus.active_output() {
-                Some(output) => output,
-                None => return Response::Error { message: "there are no outputs".into() },
-            },
+        let output = match self.screenshot_target(output) {
+            Ok(output) => output,
+            Err(response) => return response,
         };
-        let Some(path) = path else {
-            self.screenshot_output(&output);
-            return Response::Ok;
+        match path {
+            // The control socket answers through `screenshot_to` instead, once the file is written.
+            Some(path) => self.save_screenshot(&output, path, |response| {
+                if let Response::Error { message } = response {
+                    tracing::warn!("{message}");
+                }
+            }),
+            None => self.screenshot_output(&output),
+        }
+        Response::Ok
+    }
+
+    /// Captures `output`, or the active one, into `path` and answers through `reply` once the file is written.
+    pub fn screenshot_to(
+        &mut self,
+        output: Option<String>,
+        path: PathBuf,
+        reply: crate::ipc::Deferred,
+    ) {
+        match self.screenshot_target(output) {
+            Ok(output) => {
+                self.save_screenshot(&output, path, move |response| reply.reply(response))
+            }
+            Err(response) => reply.reply(response),
+        }
+    }
+
+    fn screenshot_target(
+        &self,
+        output: Option<String>,
+    ) -> Result<smithay::output::Output, Response> {
+        match output {
+            Some(name) => self
+                .nimbus
+                .output_by_name(&name)
+                .ok_or_else(|| Response::Error { message: format!("no output named '{name}'") }),
+            None => self
+                .nimbus
+                .active_output()
+                .ok_or_else(|| Response::Error { message: "there are no outputs".into() }),
+        }
+    }
+
+    /// Captures on the event loop, which owns the renderer, then encodes and writes on a worker thread.
+    fn save_screenshot(
+        &mut self,
+        output: &smithay::output::Output,
+        path: PathBuf,
+        reply: impl FnOnce(Response) + Send + 'static,
+    ) {
+        let capture = match self.backend.capture(&self.nimbus, output) {
+            Ok(capture) => capture,
+            Err(err) => {
+                reply(Response::Error { message: format!("screenshot failed: {err:#}") });
+                return;
+            }
         };
-        match self
-            .backend
-            .capture(&self.nimbus, &output)
-            .and_then(|capture| capture.save_png(&path))
-        {
-            Ok(()) => Response::Ok,
-            Err(err) => Response::Error { message: format!("screenshot failed: {err:#}") },
+        let spawned =
+            std::thread::Builder::new().name("nimbus-screenshot".into()).spawn(move || {
+                reply(match capture.save_png(&path) {
+                    Ok(()) => Response::Ok,
+                    Err(err) => Response::Error { message: format!("screenshot failed: {err:#}") },
+                });
+            });
+        if let Err(err) = spawned {
+            tracing::warn!("screenshot failed: {err}");
         }
     }
 
@@ -166,10 +215,10 @@ impl State {
 
     fn with_shell_on_active_output(
         &mut self,
-        f: impl FnOnce(&crate::shell_host::ShellHost, &str),
+        f: impl FnOnce(&mut crate::shell_host::ShellHost, &str),
     ) -> Response {
         let output = self.nimbus.active_output().map(|o| o.name()).unwrap_or_default();
-        match self.nimbus.shell.as_ref() {
+        match self.nimbus.shell.as_mut() {
             Some(shell) => {
                 f(shell, &output);
                 Response::Ok
@@ -180,14 +229,16 @@ impl State {
 
     /// Shows the shell's lock screen on every output; returns `false` without a shell.
     pub fn lock_session(&mut self) -> bool {
-        match self.nimbus.shell.as_ref() {
-            Some(shell) => {
-                shell.set_locked(true);
-                self.nimbus.queue_redraw_all();
-                true
-            }
-            None => false,
-        }
+        let output = self.nimbus.active_output().map(|o| o.name());
+        let Some(shell) = self.nimbus.shell.as_mut() else {
+            return false;
+        };
+        // Typing goes to the lock screen in front of the user.
+        shell.focus_output(output.as_deref());
+        shell.set_locked(true);
+        self.break_grabs_for_lock();
+        self.nimbus.queue_redraw_all();
+        true
     }
 
     /// Runs a keybinding action.
@@ -265,40 +316,39 @@ impl State {
     }
 
     fn change_volume(&mut self, delta: f32) {
-        let Some(shell) = self.nimbus.shell.as_ref() else {
+        let Some(shell) = self.nimbus.shell.as_mut() else {
             tracing::debug!("volume keys need the shell's services");
             return;
         };
-        let Some(audio) = shell.system_state().and_then(|s| s.audio.clone()) else {
+        let Some((command, osd)) = shell.system_state_mut().and_then(|s| volume_step(s, delta))
+        else {
             return;
         };
-        let level = (audio.volume + delta).clamp(0.0, 1.0);
-        shell.send_service(ServiceCommand::SetVolume(level));
-        shell.show_osd(Osd::Volume { level, muted: audio.muted && delta <= 0.0 });
+        shell.send_service(command);
+        shell.show_osd(osd);
     }
 
     fn toggle_mute(&mut self) {
-        let Some(shell) = self.nimbus.shell.as_ref() else {
+        let Some(shell) = self.nimbus.shell.as_mut() else {
             return;
         };
         shell.send_service(ServiceCommand::ToggleMute);
-        if let Some(audio) = shell.system_state().and_then(|s| s.audio.clone()) {
-            shell.show_osd(Osd::Volume { level: audio.volume, muted: !audio.muted });
+        if let Some(osd) = shell.system_state_mut().and_then(toggle_mute_state) {
+            shell.show_osd(osd);
         }
     }
 
     fn change_brightness(&mut self, delta: f32) {
-        let Some(shell) = self.nimbus.shell.as_ref() else {
+        let Some(shell) = self.nimbus.shell.as_mut() else {
             tracing::debug!("brightness keys need the shell's services");
             return;
         };
-        let Some(level) = shell.system_state().and_then(|s| s.brightness) else {
+        let Some((command, osd)) = shell.system_state_mut().and_then(|s| brightness_step(s, delta))
+        else {
             return;
         };
-        // Never fully dark: a black screen looks like a hang.
-        let level = (level + delta).clamp(0.01, 1.0);
-        shell.send_service(ServiceCommand::SetBrightness(level));
-        shell.show_osd(Osd::Brightness { level });
+        shell.send_service(command);
+        shell.show_osd(osd);
     }
 
     /// Captures the active output and saves it as a PNG in the screenshots directory.
@@ -332,6 +382,29 @@ impl State {
             tracing::warn!("screenshot failed: {err}");
         }
     }
+}
+
+/// Changes the cached volume by `delta`, so the next key press builds on it before the audio service reports back.
+fn volume_step(state: &mut SystemState, delta: f32) -> Option<(ServiceCommand, Osd)> {
+    let audio = state.audio.as_mut()?;
+    audio.volume = (audio.volume + delta).clamp(0.0, 1.0);
+    let muted = audio.muted && delta <= 0.0;
+    Some((ServiceCommand::SetVolume(audio.volume), Osd::Volume { level: audio.volume, muted }))
+}
+
+/// Flips the cached mute state; see [`volume_step`].
+fn toggle_mute_state(state: &mut SystemState) -> Option<Osd> {
+    let audio = state.audio.as_mut()?;
+    audio.muted = !audio.muted;
+    Some(Osd::Volume { level: audio.volume, muted: audio.muted })
+}
+
+/// Changes the cached brightness by `delta`; see [`volume_step`].
+fn brightness_step(state: &mut SystemState, delta: f32) -> Option<(ServiceCommand, Osd)> {
+    let level = state.brightness.as_mut()?;
+    // Never fully dark: a black screen looks like a hang.
+    *level = (*level + delta).clamp(0.01, 1.0);
+    Some((ServiceCommand::SetBrightness(*level), Osd::Brightness { level: *level }))
 }
 
 /// `$XDG_PICTURES_DIR/Screenshots`, or `~/Pictures/Screenshots`.
@@ -373,6 +446,31 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn rapid_level_keys_build_on_each_other() {
+        let mut state = SystemState {
+            audio: Some(nimbus_services::Audio { volume: 0.5, muted: false }),
+            brightness: Some(0.5),
+            ..Default::default()
+        };
+        let commands: Vec<ServiceCommand> = (0..2)
+            .filter_map(|_| volume_step(&mut state, LEVEL_STEP).map(|(command, _)| command))
+            .collect();
+        assert!(matches!(
+            commands[..],
+            [ServiceCommand::SetVolume(a), ServiceCommand::SetVolume(b)]
+                if (a - 0.55).abs() < 1e-6 && (b - 0.60).abs() < 1e-6
+        ));
+        let mutes: Vec<Option<Osd>> = (0..2).map(|_| toggle_mute_state(&mut state)).collect();
+        assert!(matches!(
+            mutes[..],
+            [Some(Osd::Volume { muted: true, .. }), Some(Osd::Volume { muted: false, .. })]
+        ));
+        brightness_step(&mut state, -LEVEL_STEP);
+        brightness_step(&mut state, -LEVEL_STEP);
+        assert!(state.brightness.is_some_and(|b| (b - 0.40).abs() < 1e-6));
+    }
 
     #[test]
     fn civil_dates_are_correct() {

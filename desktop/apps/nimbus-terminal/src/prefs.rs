@@ -3,6 +3,7 @@
 //! The terminal's own preferences, stored in `$XDG_CONFIG_HOME/nimbus/terminal.toml`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -78,13 +79,11 @@ pub enum PrefsError {
     Parse { path: PathBuf, source: toml::de::Error },
     #[error("cannot serialize the terminal preferences: {0}")]
     Serialize(#[from] toml::ser::Error),
-    #[error("neither XDG_CONFIG_HOME nor HOME is set")]
-    NoConfigDir,
 }
 
 /// `$XDG_CONFIG_HOME/nimbus/terminal.toml`.
-pub fn default_path() -> Result<PathBuf, PrefsError> {
-    Ok(dirs::config_dir().ok_or(PrefsError::NoConfigDir)?.join("nimbus").join("terminal.toml"))
+pub fn default_path() -> Result<PathBuf, nimbus_config::Error> {
+    Ok(nimbus_config::default_path()?.with_file_name("terminal.toml"))
 }
 
 impl Prefs {
@@ -110,15 +109,39 @@ impl Prefs {
         }
     }
 
+    /// Loads `path`, or returns the defaults when it's missing, unreadable, or invalid.
+    ///
+    /// A file that exists but fails to load is copied to `<path>.bak`, since the next save replaces it.
+    pub fn load_or_default(path: &Path) -> Self {
+        Self::load_from(path).unwrap_or_else(|error| {
+            tracing::warn!("{error}");
+            let backup = path.with_extension("toml.bak");
+            if let Err(error) = std::fs::copy(path, &backup) {
+                tracing::warn!(
+                    "cannot back up {} to {}: {error}",
+                    path.display(),
+                    backup.display()
+                );
+            }
+            Self::default()
+        })
+    }
+
     /// Writes atomically through a temporary file next to `path`.
     pub fn save_to(&self, path: &Path) -> Result<(), PrefsError> {
+        static SAVES: AtomicUsize = AtomicUsize::new(0);
         let io = |source| PrefsError::Io { path: path.into(), source };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(self)?).map_err(io)?;
-        std::fs::rename(&tmp, path).map_err(io)
+        let text = toml::to_string_pretty(self)?;
+        let save = SAVES.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("toml.{}-{save}.tmp", std::process::id()));
+        let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result.map_err(io)
     }
 }
 
@@ -178,6 +201,40 @@ mod tests {
 
         std::fs::write(&path, "font-size = [").expect("writable");
         assert!(matches!(Prefs::load_from(&path), Err(PrefsError::Parse { .. })));
+    }
+
+    #[test]
+    fn invalid_file_is_backed_up() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("terminal.toml");
+        let backup = dir.path().join("terminal.toml.bak");
+        assert_eq!(Prefs::load_or_default(&path), Prefs::default());
+        assert!(!backup.exists(), "a missing file needs no backup");
+
+        std::fs::write(&path, "font-size = [").expect("writable");
+        assert_eq!(Prefs::load_or_default(&path), Prefs::default());
+        Prefs::default().save_to(&path).expect("saving works");
+        assert_eq!(std::fs::read_to_string(&backup).ok().as_deref(), Some("font-size = ["));
+    }
+
+    #[test]
+    fn saves_leave_no_temporary_files() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let path = dir.path().join("terminal.toml");
+        let prefs = Prefs { font_size: 14.0, ..Prefs::default() };
+        prefs.save_to(&path).expect("saving works");
+        prefs.save_to(&path).expect("saving again works");
+        assert_eq!(Prefs::load_from(&path).ok(), Some(prefs.clone()));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("readable")
+            .map(|entry| entry.expect("an entry").file_name())
+            .collect();
+        assert_eq!(names, ["terminal.toml"]);
+
+        let blocked = dir.path().join("blocked.toml");
+        std::fs::create_dir_all(blocked.join("child")).expect("writable");
+        assert!(prefs.save_to(&blocked).is_err(), "a non-empty directory can't be replaced");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("readable").count(), 2);
     }
 
     #[test]

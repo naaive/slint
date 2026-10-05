@@ -11,18 +11,18 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use futures_channel::mpsc::UnboundedReceiver;
+use nimbus_xdg::DesktopEntry;
 use slint::{ComponentHandle as _, Image, Model as _, ModelRc, VecModel};
 
 use super::convert::{self, ItemContext, SpecialFolders};
 use super::workers::{self, ConflictDetails, Msg, PlaceSources, Sender, ThumbnailQueue};
-use crate::core::apps::AppInfo;
 use crate::core::diff::{self, Edit};
 use crate::core::entry::{EntryKind, FileEntry};
 use crate::core::format;
 use crate::core::history::{History, Location};
 use crate::core::menu::MenuEntry;
 use crate::core::mime;
-use crate::core::ops::{Conflict, Decision, Operation, Progress};
+use crate::core::ops::{Conflict, ConflictKind, Decision, Operation, Progress};
 use crate::core::pathbar;
 use crate::core::places::{self, Mount, Place, Target};
 use crate::core::prefs::{Preferences, ViewMode};
@@ -115,7 +115,7 @@ pub(super) enum Dialog {
     ConfirmDeleteTrashed { items: Vec<TrashItem> },
     Conflict,
     Properties { id: u64, cancel: Arc<AtomicBool> },
-    OpenWith { id: u64, paths: Vec<PathBuf>, apps: Vec<AppInfo> },
+    OpenWith { id: u64, paths: Vec<PathBuf>, apps: Vec<DesktopEntry> },
 }
 
 pub(super) enum ToastAction {
@@ -185,6 +185,7 @@ pub struct Controller {
     pub(super) files: Rc<VecModel<FileItem>>,
     jobs_model: Rc<VecModel<JobItem>>,
     pub(super) thumbnails: ThumbnailQueue,
+    prefs_writer: workers::PrefsWriter,
     pub(super) state: RefCell<State>,
     toast_timer: slint::Timer,
     refresh_timer: slint::Timer,
@@ -225,6 +226,7 @@ impl Controller {
         } else {
             None
         };
+        let prefs_writer = workers::PrefsWriter::start(env.prefs_path.clone());
         let start = start.unwrap_or_else(|| env.home.clone());
         let state = State {
             history: History::new(Location::Dir(start.clone())),
@@ -278,6 +280,7 @@ impl Controller {
             files,
             jobs_model,
             thumbnails,
+            prefs_writer,
             state: RefCell::new(state),
             toast_timer: slint::Timer::default(),
             refresh_timer: slint::Timer::default(),
@@ -958,14 +961,7 @@ impl Controller {
             change(&mut state.prefs);
             state.prefs.clone()
         };
-        if let Some(path) = self.env.prefs_path.clone() {
-            // Saving is a small write, but it still belongs off the UI thread.
-            std::thread::spawn(move || {
-                if let Err(error) = prefs.save_to(&path) {
-                    tracing::warn!("couldn't save preferences: {error}");
-                }
-            });
-        }
+        self.prefs_writer.save(&prefs);
         self.sync_prefs();
         self.rebuild_view();
     }
@@ -1167,20 +1163,31 @@ impl Controller {
         let folder =
             next.conflict.target.parent().map(|p| self.pretty_dir(Some(p))).unwrap_or_default();
         let merge = next.conflict.is_merge();
-        let (title, message) = if merge {
-            (
+        let (title, message) = match next.conflict.kind() {
+            ConflictKind::DirOverDir => (
                 format!("Merge Folder “{name}”?"),
                 format!(
                     "A folder with this name already exists in “{folder}”. Merging adds the incoming files to it."
                 ),
-            )
-        } else {
-            (
+            ),
+            ConflictKind::FileOverDir => (
+                format!("Replace Folder “{name}”?"),
+                format!(
+                    "A folder with this name already exists in “{folder}”. Replacing it with a file permanently deletes the folder and everything in it."
+                ),
+            ),
+            ConflictKind::DirOverFile => (
+                format!("Replace “{name}”?"),
+                format!(
+                    "A file with this name already exists in “{folder}”. Replacing it with a folder permanently deletes the file."
+                ),
+            ),
+            ConflictKind::FileOverFile => (
                 format!("Replace “{name}”?"),
                 format!(
                     "An item with this name already exists in “{folder}”. Replacing it overwrites its content."
                 ),
-            )
+            ),
         };
         let ui = &self.ui;
         ui.set_dialog_title(title.into());
@@ -1225,7 +1232,7 @@ impl Controller {
         self.ui.set_props_computing(!done);
     }
 
-    fn on_apps(&self, id: u64, apps: Vec<AppInfo>, default: Option<&str>) {
+    fn on_apps(&self, id: u64, apps: Vec<DesktopEntry>, default: Option<&str>) {
         let mut state = self.state.borrow_mut();
         let Dialog::OpenWith { id: current, apps: stored, .. } = &mut state.dialog else { return };
         if *current != id {

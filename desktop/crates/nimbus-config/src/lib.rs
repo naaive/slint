@@ -4,6 +4,7 @@
 //!
 //! Every field has a default, so a partial or missing file is valid.
 //! Unknown keys are ignored so that older builds can read newer files.
+//! Saving over an existing file keeps its comments and unknown keys.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -285,12 +286,14 @@ impl Config {
     /// Loads `path`, or returns the defaults when it doesn't exist.
     pub fn load_from(path: &Path) -> Result<Self, Error> {
         match std::fs::read_to_string(path) {
-            Ok(text) => {
-                toml::from_str(&text).map_err(|source| Error::Parse { path: path.into(), source })
-            }
+            Ok(text) => Self::parse(path, &text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(source) => Err(Error::Io { path: path.into(), source }),
         }
+    }
+
+    fn parse(path: &Path, text: &str) -> Result<Self, Error> {
+        toml::from_str(text).map_err(|source| Error::Parse { path: path.into(), source })
     }
 
     pub fn load() -> Result<Self, Error> {
@@ -298,19 +301,86 @@ impl Config {
     }
 
     /// Writes atomically through a temporary file next to `path`.
+    ///
+    /// When `path` already holds a valid configuration, only the values that differ are rewritten,
+    /// so comments and keys this version doesn't know about are kept.
     pub fn save_to(&self, path: &Path) -> Result<(), Error> {
         let io = |source| Error::Io { path: path.into(), source };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
+        let text = toml::to_string_pretty(self)?;
+        let text = match std::fs::read_to_string(path) {
+            Ok(existing) => merge_into(&existing, &text).unwrap_or(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => text,
+            Err(source) => return Err(io(source)),
+        };
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, toml::to_string_pretty(self)?).map_err(io)?;
+        std::fs::write(&tmp, text).map_err(io)?;
         std::fs::rename(&tmp, path).map_err(io)
     }
 
     pub fn save(&self) -> Result<(), Error> {
         self.save_to(&default_path()?)
     }
+}
+
+fn merge_into(existing: &str, new: &str) -> Option<String> {
+    let old_config: Config = toml::from_str(existing).ok()?;
+    let mut doc: toml_edit::DocumentMut = existing.parse().ok()?;
+    let old: toml_edit::DocumentMut = toml::to_string_pretty(&old_config).ok()?.parse().ok()?;
+    let new: toml_edit::DocumentMut = new.parse().ok()?;
+    merge_table(doc.as_table_mut(), Some(old.as_table()), new.as_table());
+    Some(doc.to_string())
+}
+
+fn merge_table(
+    target: &mut dyn toml_edit::TableLike,
+    old: Option<&dyn toml_edit::TableLike>,
+    new: &dyn toml_edit::TableLike,
+) {
+    if let Some(old) = old {
+        let removed: Vec<String> = old
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .filter(|key| !new.contains_key(key))
+            .collect();
+        for key in removed {
+            target.remove(&key);
+        }
+    }
+    for (key, new_item) in new.iter() {
+        let old_item = old.and_then(|old| old.get(key));
+        match target.get_mut(key) {
+            Some(item) => merge_item(item, old_item, new_item),
+            None => {
+                target.insert(key, new_item.clone());
+            }
+        }
+    }
+}
+
+fn merge_item(target: &mut toml_edit::Item, old: Option<&toml_edit::Item>, new: &toml_edit::Item) {
+    if let (Some(target), Some(new)) = (target.as_table_like_mut(), new.as_table_like()) {
+        merge_table(target, old.and_then(toml_edit::Item::as_table_like), new);
+        return;
+    }
+    match (target.as_value_mut(), new.as_value()) {
+        (Some(target), Some(new)) => {
+            if !same_value(target, new) {
+                let decor = target.decor().clone();
+                *target = new.clone();
+                *target.decor_mut() = decor;
+            }
+        }
+        _ => *target = new.clone(),
+    }
+}
+
+fn same_value(a: &toml_edit::Value, b: &toml_edit::Value) -> bool {
+    let parse =
+        |value: &toml_edit::Value| toml::from_str::<toml::Table>(&format!("v = {value}")).ok();
+    parse(a).is_some_and(|a| Some(a) == parse(b))
 }
 
 #[cfg(test)]
@@ -345,5 +415,57 @@ mod tests {
                 .unwrap();
         assert_eq!(config.keybindings.0["Super+Return"], Action::Spawn("foot".into()));
         assert_eq!(config.keybindings.0["Super+3"], Action::Workspace(2));
+    }
+
+    #[test]
+    fn save_keeps_comments_and_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "# My setup\nfuture-key = 1\n\n[panel]\n# taller panel\nheight = 40 # px\nfuture-panel-key = \"x\"\n\n[keybindings]\n\"Super+X\" = \"lock\"\n\"Super+Y\" = \"quit\"\n\"Super+Return\" = { spawn = \"foot\" }\n";
+        std::fs::write(&path, original).unwrap();
+
+        let mut config = Config::load_from(&path).unwrap();
+        config.panel.height = 48;
+        config.keybindings.0.remove("Super+Y");
+        config.save_to(&path).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        for kept in [
+            "# My setup",
+            "future-key = 1",
+            "# taller panel",
+            "height = 48 # px",
+            "future-panel-key = \"x\"",
+            "\"Super+Return\" = { spawn = \"foot\" }",
+        ] {
+            assert!(text.contains(kept), "{kept:?} missing from:\n{text}");
+        }
+        assert!(!text.contains("Super+Y"), "removed keybinding still in:\n{text}");
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn save_removes_option_reset_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[appearance]\nwallpaper = \"/a.png\"\nunknown = true\n").unwrap();
+        let mut config = Config::load_from(&path).unwrap();
+        config.appearance.wallpaper = None;
+        config.save_to(&path).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("wallpaper"), "{text}");
+        assert!(text.contains("unknown = true"), "{text}");
+        assert_eq!(Config::load_from(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn save_replaces_invalid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[workspaces]\nlayout = \"tiled\"\n").unwrap();
+        let config = Config::default();
+        config.save_to(&path).unwrap();
+        assert_eq!(Config::load_from(&path).unwrap(), config);
     }
 }

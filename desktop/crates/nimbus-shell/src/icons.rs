@@ -46,6 +46,11 @@ impl IconCache {
         }
     }
 
+    /// The output scale icons are loaded at, rounded up to a whole number.
+    pub fn scale(&self) -> u32 {
+        self.scale.max(1)
+    }
+
     /// Returns the image for an icon name or absolute path, or `None` if it can't be found or decoded.
     pub fn image(&mut self, icon: &str) -> Option<slint::Image> {
         let icon = icon.trim();

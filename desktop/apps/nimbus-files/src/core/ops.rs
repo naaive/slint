@@ -83,7 +83,8 @@ pub enum Resolution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decision {
     pub resolution: Resolution,
-    /// Applies the resolution to the remaining conflicts of the same kind (file or folder).
+    /// Applies the resolution to the remaining conflicts of the same [`ConflictKind`].
+    /// A Replace between a file and a folder is never applied without asking.
     pub apply_to_all: bool,
 }
 
@@ -95,9 +96,26 @@ pub struct Conflict {
     pub target_is_dir: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictKind {
+    FileOverFile,
+    DirOverDir,
+    FileOverDir,
+    DirOverFile,
+}
+
 impl Conflict {
+    pub fn kind(&self) -> ConflictKind {
+        match (self.source_is_dir, self.target_is_dir) {
+            (false, false) => ConflictKind::FileOverFile,
+            (true, true) => ConflictKind::DirOverDir,
+            (false, true) => ConflictKind::FileOverDir,
+            (true, false) => ConflictKind::DirOverFile,
+        }
+    }
+
     pub fn is_merge(&self) -> bool {
-        self.source_is_dir && self.target_is_dir
+        self.kind() == ConflictKind::DirOverDir
     }
 }
 
@@ -135,14 +153,7 @@ enum Mode {
 
 /// Runs an operation to completion or cancellation; per-item failures are collected, not fatal.
 pub fn run(operation: &Operation, trash: &Trash, observer: &mut dyn Observer) -> Outcome {
-    let mut engine = Engine {
-        observer,
-        progress: Progress::default(),
-        remembered_file: None,
-        remembered_dir: None,
-        outcome: Outcome::default(),
-        buffer: Vec::new(),
-    };
+    let mut engine = Engine::new(observer);
     let result = match operation {
         Operation::Copy { sources, dest } => engine.transfer(sources, dest, Mode::Copy),
         Operation::Move { sources, dest } => engine.transfer(sources, dest, Mode::Move),
@@ -166,13 +177,25 @@ pub fn run(operation: &Operation, trash: &Trash, observer: &mut dyn Observer) ->
 struct Engine<'a> {
     observer: &'a mut dyn Observer,
     progress: Progress,
-    remembered_file: Option<Resolution>,
-    remembered_dir: Option<Resolution>,
+    /// Answers to "apply to all", indexed by [`ConflictKind`].
+    remembered: [Option<Resolution>; 4],
     outcome: Outcome,
     buffer: Vec<u8>,
+    sync: fn(&Path) -> io::Result<()>,
 }
 
-impl Engine<'_> {
+impl<'a> Engine<'a> {
+    fn new(observer: &'a mut dyn Observer) -> Self {
+        Self {
+            observer,
+            progress: Progress::default(),
+            remembered: [None; 4],
+            outcome: Outcome::default(),
+            buffer: Vec::new(),
+            sync: sync_filesystem,
+        }
+    }
+
     fn check(&self) -> Step {
         if self.observer.is_cancelled() { Err(Cancelled) } else { Ok(()) }
     }
@@ -200,18 +223,14 @@ impl Engine<'_> {
     }
 
     fn decide(&mut self, conflict: &Conflict) -> Step<Resolution> {
-        let remembered =
-            if conflict.is_merge() { self.remembered_dir } else { self.remembered_file };
-        if let Some(resolution) = remembered {
+        let kind = conflict.kind();
+        if let Some(resolution) = self.remembered[kind as usize] {
             return Ok(resolution);
         }
         let decision = self.observer.resolve(conflict).ok_or(Cancelled)?;
-        if decision.apply_to_all {
-            if conflict.is_merge() {
-                self.remembered_dir = Some(decision.resolution);
-            } else {
-                self.remembered_file = Some(decision.resolution);
-            }
+        let mixed = matches!(kind, ConflictKind::FileOverDir | ConflictKind::DirOverFile);
+        if decision.apply_to_all && !(mixed && decision.resolution == Resolution::Replace) {
+            self.remembered[kind as usize] = Some(decision.resolution);
         }
         Ok(decision.resolution)
     }
@@ -235,8 +254,9 @@ impl Engine<'_> {
                 self.fail(source, "Invalid file name");
                 continue;
             };
-            let is_real_dir = fs::symlink_metadata(source).is_ok_and(|m| m.is_dir());
-            if is_real_dir && dest.starts_with(source) {
+            let into_itself = fs::symlink_metadata(source)
+                .is_ok_and(|m| m.is_dir() && (dest.starts_with(source) || is_within(dest, &m)));
+            if into_itself {
                 let verb = if mode == Mode::Copy { "copy" } else { "move" };
                 self.fail(source, format!("You can't {verb} a folder into itself"));
                 self.advance(stat.0, stat.1);
@@ -280,6 +300,20 @@ impl Engine<'_> {
             }
         };
         if let Ok(target_meta) = fs::symlink_metadata(&target) {
+            if same_file(&source_meta, &target_meta) {
+                if mode == Mode::Move {
+                    self.outcome.skipped += 1;
+                    self.advance(stat.0, stat.1);
+                    return Ok(None);
+                }
+                target = unique_sibling(&target, Style::Copy);
+                return self.copy_placed(source, target);
+            }
+            if replacing_deletes(source, &target) {
+                self.fail(source, CONTAINS_SOURCE);
+                self.advance(stat.0, stat.1);
+                return Ok(None);
+            }
             let conflict = Conflict {
                 source: source.to_path_buf(),
                 target: target.clone(),
@@ -292,21 +326,17 @@ impl Engine<'_> {
                     self.advance(stat.0, stat.1);
                     return Ok(None);
                 }
-                Resolution::KeepBoth => {
-                    let parent = target.parent().map(Path::to_path_buf).unwrap_or_default();
-                    let name = target
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    target = parent.join(names::unique(&name, Style::Numbered, |n| {
-                        fs::symlink_metadata(parent.join(n)).is_ok()
-                    }));
-                }
+                Resolution::KeepBoth => target = unique_sibling(&target, Style::Numbered),
                 Resolution::Replace if conflict.is_merge() => {
                     self.merge(source, &target, mode)?;
                     return Ok(Some(target));
                 }
                 Resolution::Replace => {
+                    if replacing_deletes(source, &target) {
+                        self.fail(source, CONTAINS_SOURCE);
+                        self.advance(stat.0, stat.1);
+                        return Ok(None);
+                    }
                     if let Err(error) = trash::remove_any(&target) {
                         self.fail_io(&target, &error);
                         self.advance(stat.0, stat.1);
@@ -339,12 +369,26 @@ impl Engine<'_> {
         if !self.copy_tree(source, &target)? {
             return Ok(None);
         }
-        if mode == Mode::Move
-            && let Err(error) = trash::remove_any(source)
-        {
-            self.fail_io(source, &error);
+        if mode == Mode::Move && !self.finish_move(source, &target) {
+            return Ok(None);
         }
         Ok(Some(target))
+    }
+
+    fn copy_placed(&mut self, source: &Path, target: PathBuf) -> Step<Option<PathBuf>> {
+        Ok(self.copy_tree(source, &target)?.then_some(target))
+    }
+
+    /// Deletes the source of a copy that moved an item across drives, once the copy is on the drive.
+    fn finish_move(&mut self, source: &Path, target: &Path) -> bool {
+        if let Err(error) = (self.sync)(target) {
+            self.fail_io(target, &error);
+            return false;
+        }
+        if let Err(error) = trash::remove_any(source) {
+            self.fail_io(source, &error);
+        }
+        true
     }
 
     /// Moves or copies the children of `source` into the existing folder `target`.
@@ -516,7 +560,11 @@ impl Engine<'_> {
             self.check()?;
             self.set_current(path);
             let mut ok = true;
-            for entry in walkdir::WalkDir::new(path).contents_first(true).follow_links(false) {
+            for entry in walkdir::WalkDir::new(path)
+                .contents_first(true)
+                .follow_links(false)
+                .follow_root_links(false)
+            {
                 self.check()?;
                 let result = match &entry {
                     Ok(entry) if entry.file_type().is_dir() => fs::remove_dir(entry.path()),
@@ -548,6 +596,11 @@ impl Engine<'_> {
             self.progress.current = item.name.clone();
             let mut target = item.original.clone();
             if let Ok(existing) = fs::symlink_metadata(&target) {
+                if replacing_deletes(&item.file, &target) {
+                    self.fail(&item.original, CONTAINS_SOURCE);
+                    self.advance(0, 1);
+                    continue;
+                }
                 let conflict = Conflict {
                     source: item.file.clone(),
                     target: target.clone(),
@@ -567,6 +620,11 @@ impl Engine<'_> {
                         }));
                     }
                     Resolution::Replace => {
+                        if replacing_deletes(&item.file, &target) {
+                            self.fail(&item.original, CONTAINS_SOURCE);
+                            self.advance(0, 1);
+                            continue;
+                        }
                         if let Err(error) = trash::remove_any(&target) {
                             self.fail_io(&target, &error);
                             self.advance(0, 1);
@@ -645,17 +703,64 @@ impl Engine<'_> {
 
 /// Total bytes of regular files and the number of entries in a tree, without following symlinks.
 pub fn scan(path: &Path) -> (u64, u64) {
-    walkdir::WalkDir::new(path).follow_links(false).into_iter().flatten().fold(
-        (0, 0),
-        |(bytes, items), entry| {
+    walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+        .flatten()
+        .fold((0, 0), |(bytes, items), entry| {
             let size = if entry.file_type().is_file() {
                 entry.metadata().map(|m| m.len()).unwrap_or(0)
             } else {
                 0
             };
             (bytes + size, items + 1)
-        },
-    )
+        })
+}
+
+const CONTAINS_SOURCE: &str = "You can't replace a folder with an item it contains";
+
+fn same_file(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// `path` with its parent folder resolved, keeping a symlink at `path` itself.
+fn real_path(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => {
+            fs::canonicalize(parent).map_or_else(|_| path.to_path_buf(), |p| p.join(name))
+        }
+        _ => fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+    }
+}
+
+/// Whether the folder `dir` is `path` or one of its ancestors, also through symlinks and bind mounts.
+fn is_within(path: &Path, dir: &fs::Metadata) -> bool {
+    real_path(path).ancestors().any(|a| fs::metadata(a).is_ok_and(|m| same_file(&m, dir)))
+}
+
+/// Whether deleting `target` deletes `source` too, because it's the same item or a folder holding it.
+fn replacing_deletes(source: &Path, target: &Path) -> bool {
+    let (Ok(source_meta), Ok(target_meta)) =
+        (fs::symlink_metadata(source), fs::symlink_metadata(target))
+    else {
+        return false;
+    };
+    same_file(&source_meta, &target_meta)
+        || (target_meta.is_dir() && source.parent().is_some_and(|p| is_within(p, &target_meta)))
+}
+
+/// A free name next to `path`, derived from its name.
+fn unique_sibling(path: &Path, style: Style) -> PathBuf {
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    parent.join(names::unique(&name, style, |n| fs::symlink_metadata(parent.join(n)).is_ok()))
+}
+
+/// Flushes the filesystem holding `path` to its drive.
+fn sync_filesystem(path: &Path) -> io::Result<()> {
+    let dir = File::open(path.parent().unwrap_or(path))?;
+    rustix::fs::syncfs(&dir).map_err(io::Error::from)
 }
 
 fn display_name(path: &Path) -> String {
@@ -1097,6 +1202,163 @@ mod tests {
             &mut script,
         );
         assert!(outcome.errors[0].1.contains("already exists"));
+    }
+
+    #[test]
+    fn replace_never_deletes_a_folder_holding_the_source() {
+        let fx = Fixture::new();
+        fx.write("p/foo/foo", "build output");
+        fx.write("p/foo/main.go", "code");
+        for op in [
+            Operation::Copy { sources: vec![fx.path("p/foo/foo")], dest: fx.path("p") },
+            Operation::Move { sources: vec![fx.path("p/foo/foo")], dest: fx.path("p") },
+        ] {
+            let mut script = Script::new(vec![decision(Resolution::Replace, true)]);
+            let outcome = fx.run(op, &mut script);
+            assert_eq!(script.conflicts, []);
+            assert_eq!(outcome.errors.len(), 1);
+            assert_eq!(outcome.errors[0].1, CONTAINS_SOURCE);
+            assert_eq!(fx.read("p/foo/foo"), "build output");
+            assert_eq!(fx.read("p/foo/main.go"), "code");
+        }
+
+        fx.write("q/foo/foo/foo", "inner");
+        let mut script = Script::new(vec![decision(Resolution::Replace, true)]);
+        let outcome = fx.run(
+            Operation::Move { sources: vec![fx.path("q/foo/foo")], dest: fx.path("q") },
+            &mut script,
+        );
+        assert_eq!(outcome.errors.len(), 1);
+        assert_eq!(fx.read("q/foo/foo/foo"), "inner");
+    }
+
+    #[test]
+    fn replace_through_a_symlinked_destination_keeps_the_source() {
+        let fx = Fixture::new();
+        fx.write("src/report.odt", "only copy");
+        fx.write("src/photos/a.png", "a");
+        std::os::unix::fs::symlink(fx.path("src"), fx.path("link")).expect("symlink");
+
+        let mut script = Script::new(vec![decision(Resolution::Replace, true)]);
+        let outcome = fx.run(
+            Operation::Copy { sources: vec![fx.path("src/report.odt")], dest: fx.path("link") },
+            &mut script,
+        );
+        assert_eq!(script.conflicts, []);
+        assert_eq!(outcome.created, [fx.path("link/report (copy).odt")]);
+        assert_eq!(fx.read("src/report.odt"), "only copy");
+
+        let mut script = Script::new(vec![decision(Resolution::Replace, true)]);
+        let outcome = fx.run(
+            Operation::Move {
+                sources: vec![fx.path("src/report.odt"), fx.path("src/photos")],
+                dest: fx.path("link"),
+            },
+            &mut script,
+        );
+        assert_eq!(script.conflicts, []);
+        assert_eq!(outcome.skipped, 2);
+        assert_eq!(fx.read("src/report.odt"), "only copy");
+        assert_eq!(fx.read("src/photos/a.png"), "a");
+
+        // Merging a folder into itself through the symlink copies it next to itself.
+        let outcome = fx.run(
+            Operation::Copy { sources: vec![fx.path("src/photos")], dest: fx.path("link") },
+            &mut Script::new(vec![decision(Resolution::Replace, true)]),
+        );
+        assert_eq!(outcome.errors, []);
+        assert_eq!(fx.read("src/photos/a.png"), "a");
+        assert_eq!(fx.read("src/photos (copy)/a.png"), "a");
+    }
+
+    #[test]
+    fn apply_to_all_is_kept_per_conflict_kind() {
+        let fx = Fixture::new();
+        fx.write("src/c/x", "dir");
+        let sources = vec![
+            fx.write("src/a.txt", "new"),
+            fx.write("src/photos", "a file"),
+            fx.write("src/b.txt", "new"),
+            fx.path("src/c"),
+        ];
+        fx.write("dst/a.txt", "old");
+        fx.write("dst/photos/1.png", "picture");
+        fx.write("dst/b.txt", "old");
+        fx.write("dst/c", "a file");
+        let mut script = Script::new(vec![
+            decision(Resolution::Replace, true),
+            decision(Resolution::Skip, false),
+            decision(Resolution::Skip, false),
+        ]);
+        let outcome = fx.run(Operation::Copy { sources, dest: fx.path("dst") }, &mut script);
+        let kinds: Vec<_> = script.conflicts.iter().map(Conflict::kind).collect();
+        assert_eq!(
+            kinds,
+            [ConflictKind::FileOverFile, ConflictKind::FileOverDir, ConflictKind::DirOverFile]
+        );
+        assert_eq!(outcome.skipped, 2);
+        assert_eq!(fx.read("dst/b.txt"), "new");
+        assert_eq!(fx.read("dst/photos/1.png"), "picture");
+        assert_eq!(fx.read("dst/c"), "a file");
+
+        // A Replace between a file and a folder is asked about every time.
+        let sources = vec![fx.write("src2/d", "file"), fx.write("src2/e", "file")];
+        fx.write("dst/d/keep", "1");
+        fx.write("dst/e/keep", "2");
+        let mut script = Script::new(vec![
+            decision(Resolution::Replace, true),
+            decision(Resolution::Skip, false),
+        ]);
+        fx.run(Operation::Copy { sources, dest: fx.path("dst") }, &mut script);
+        assert_eq!(script.conflicts.len(), 2);
+        assert_eq!(fx.read("dst/d"), "file");
+        assert_eq!(fx.read("dst/e/keep"), "2");
+    }
+
+    #[test]
+    fn refuses_to_copy_a_folder_into_itself_through_a_symlink() {
+        let fx = Fixture::new();
+        fx.write("src/tree/x/file", "");
+        std::os::unix::fs::symlink(fx.path("src/tree"), fx.path("link")).expect("symlink");
+        let outcome = fx.run(
+            Operation::Copy { sources: vec![fx.path("src/tree")], dest: fx.path("link/x") },
+            &mut Script::new(vec![]),
+        );
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(outcome.errors[0].1.contains("into itself"));
+        assert!(!fx.path("src/tree/x/tree").exists());
+    }
+
+    #[test]
+    fn deletes_a_symlink_to_a_folder_without_following_it() {
+        let fx = Fixture::new();
+        fx.write("src/real/sub/g", "1");
+        fx.write("src/real/f", "2");
+        std::os::unix::fs::symlink(fx.path("src/real"), fx.path("src/link")).expect("symlink");
+        let mut script = Script::new(vec![]);
+        let outcome = fx.run(Operation::Delete { paths: vec![fx.path("src/link")] }, &mut script);
+        assert_eq!(outcome.errors, []);
+        assert_eq!(outcome.done, 1);
+        assert_eq!(script.last.total_items, 1);
+        assert!(fs::symlink_metadata(fx.path("src/link")).is_err());
+        assert_eq!(fx.read("src/real/sub/g"), "1");
+    }
+
+    #[test]
+    fn a_move_keeps_its_source_when_the_copy_isnt_synced() {
+        let fx = Fixture::new();
+        let source = fx.write("src/a", "data");
+        let target = fx.write("dst/a", "data");
+        let mut script = Script::new(vec![]);
+        let mut engine = Engine::new(&mut script);
+        engine.sync = |_| Err(io::Error::from_raw_os_error(5));
+        assert!(!engine.finish_move(&source, &target));
+        assert_eq!(engine.outcome.errors.len(), 1);
+        assert!(source.exists());
+
+        engine.sync = sync_filesystem;
+        assert!(engine.finish_move(&source, &target));
+        assert!(!source.exists());
     }
 
     #[test]

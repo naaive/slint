@@ -33,6 +33,8 @@ use smithay::wayland::fractional_scale::with_fractional_scale;
 use smithay::wayland::shell::wlr_layer::Layer;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -113,7 +115,7 @@ where
     push_layers(renderer, output, output_scale, &[Layer::Overlay], &mut elements);
 
     let fullscreen = nimbus.wm.fullscreen_on(&name).map(|w| w.window.clone());
-    let shell_above_fullscreen = nimbus.shell.as_ref().is_some_and(|s| s.wants_keyboard());
+    let shell_above_fullscreen = nimbus.shell.as_ref().is_some_and(|s| s.wants_keyboard_on(&name));
     if fullscreen.is_none() || shell_above_fullscreen {
         elements.extend(shell_element.map(OutputRenderElement::Memory));
     }
@@ -349,7 +351,22 @@ impl Capture {
             .ok_or_else(|| {
                 anyhow!("the captured buffer is smaller than {}x{}", self.width, self.height)
             })?;
-        image.save(path).with_context(|| format!("cannot write {}", path.display()))
+        // Without O_NONBLOCK, opening a FIFO blocks until a reader shows up.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .with_context(|| format!("cannot open {}", path.display()))?;
+        if !file.metadata()?.file_type().is_file() {
+            anyhow::bail!("{} isn't a regular file", path.display());
+        }
+        let mut writer = std::io::BufWriter::new(file);
+        image
+            .write_to(&mut writer, image::ImageFormat::Png)
+            .and_then(|()| writer.flush().map_err(image::ImageError::IoError))
+            .with_context(|| format!("cannot write {}", path.display()))
     }
 }
 

@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use nimbus_config::{Action, Keybindings};
+use xkbcommon::xkb;
 
 /// Modifiers in the canonical order of a chord string.
 const MODIFIERS: [&str; 4] = ["Super", "Ctrl", "Alt", "Shift"];
@@ -13,44 +14,71 @@ const MODIFIERS: [&str; 4] = ["Super", "Ctrl", "Alt", "Shift"];
 fn modifier_name(token: &str) -> Option<&'static str> {
     match token.to_ascii_lowercase().as_str() {
         "super" | "logo" | "mod4" | "win" | "meta" => Some("Super"),
-        "ctrl" | "control" | "primary" => Some("Ctrl"),
+        "ctrl" | "control" => Some("Ctrl"),
         "alt" | "mod1" => Some("Alt"),
         "shift" => Some("Shift"),
         _ => None,
     }
 }
 
-/// Rewrites a chord such as `shift+super+q` as `Super+Shift+Q`.
+/// Rewrites a chord such as `shift+super+q` as `Super+Shift+Q`, using the compositor's grammar.
 ///
-/// Returns `None` without exactly one non-modifier key.
+/// Returns `None` unless the chord is modifiers followed by one XKB keysym name.
+/// `Super++` binds the plus key.
 pub fn normalize_chord(chord: &str) -> Option<String> {
-    let mut mods = [false; 4];
-    let mut key = None;
-    for token in chord.split('+').map(str::trim) {
-        if token.is_empty() {
-            return None;
-        }
-        match modifier_name(token) {
-            Some(name) => {
-                let slot = MODIFIERS.iter().position(|m| *m == name)?;
-                mods[slot] = true;
-            }
-            None if key.is_none() => key = Some(normalize_key(token)),
-            None => return None,
-        }
+    let parts: Vec<&str> = chord.split('+').map(str::trim).collect();
+    let (key, modifiers) = parts.split_last()?;
+    let (key, modifiers) = match (key.is_empty(), modifiers.split_last()) {
+        (true, Some((&"", rest))) => ("plus", rest),
+        _ => (*key, modifiers),
+    };
+    if key.is_empty() || modifier_name(key).is_some() {
+        return None;
     }
-    let key = key?;
+    let mut mods = [false; 4];
+    for token in modifiers {
+        let name = modifier_name(token)?;
+        let slot = MODIFIERS.iter().position(|m| *m == name)?;
+        mods[slot] = true;
+    }
+    let key = normalize_key(key)?;
     let mut parts: Vec<&str> =
         MODIFIERS.iter().zip(mods).filter(|(_, on)| *on).map(|(m, _)| *m).collect();
     parts.push(&key);
     Some(parts.join("+"))
 }
 
-fn normalize_key(token: &str) -> String {
-    let mut chars = token.chars();
-    match (chars.next(), chars.next()) {
-        (Some(c), None) => c.to_uppercase().collect(),
-        _ => token.to_string(),
+/// Resolves a keysym name the way the compositor does, exactly first and then ignoring case,
+/// and returns its canonical name.
+fn normalize_key(token: &str) -> Option<String> {
+    // xkbcommon's wrapper panics on interior NUL bytes.
+    if token.contains('\0') {
+        return None;
+    }
+    let sym = [xkb::KEYSYM_NO_FLAGS, xkb::KEYSYM_CASE_INSENSITIVE]
+        .into_iter()
+        .map(|flags| xkb::keysym_from_name(token, flags))
+        .find(|sym| sym.raw() != 0)?;
+    Some(keysym_name(sym))
+}
+
+/// The name of `sym`, folded to its unshifted letter, with ASCII letters in upper case.
+///
+/// The compositor matches letters regardless of case, so `Super+E` and `Super+e` are the same chord.
+fn keysym_name(sym: xkb::Keysym) -> String {
+    let lower = char::from_u32(xkb::keysym_to_utf32(sym)).and_then(|c| {
+        let mut lower = c.to_lowercase();
+        match (lower.next(), lower.next()) {
+            (Some(l), None) if l != c => Some(l),
+            _ => None,
+        }
+    });
+    let sym = lower.map_or(sym, |l| xkb::utf32_to_keysym(u32::from(l)));
+    let name = xkb::keysym_get_name(sym);
+    if name.len() == 1 && name.bytes().all(|b| b.is_ascii_lowercase()) {
+        name.to_ascii_uppercase()
+    } else {
+        name
     }
 }
 
@@ -137,10 +165,11 @@ fn keysym_for(c: char) -> Option<String> {
     if let Some(digit) = shifted_digits.chars().position(|s| s == c) {
         return Some(digit.to_string());
     }
-    if c.is_alphanumeric() {
-        return Some(c.to_uppercase().collect());
+    if c.is_control() || ('\u{E000}'..='\u{F8FF}').contains(&c) {
+        return None;
     }
-    None
+    let sym = xkb::utf32_to_keysym(u32::from(c));
+    (sym.raw() != 0).then(|| keysym_name(sym))
 }
 
 /// Human-readable labels for the parts of a chord, for drawing key caps.
@@ -402,6 +431,8 @@ pub struct Row {
     pub category: &'static str,
     /// Another binding has the same normalized chord, so only one of them can work.
     pub conflict: bool,
+    /// The chord doesn't parse, so the compositor ignores the binding.
+    pub invalid: bool,
 }
 
 fn sort_key(action: &Action) -> (usize, u64, String) {
@@ -428,6 +459,7 @@ pub fn rows(bindings: &Keybindings) -> Vec<Row> {
             description: describe(action),
             category: ActionKind::of(action).category(),
             conflict: conflicted.iter().any(|c| c == chord),
+            invalid: normalize_chord(chord).is_none(),
         })
         .collect()
 }
@@ -511,8 +543,30 @@ mod tests {
         assert_eq!(normalize_chord("Mod4+Return").as_deref(), Some("Super+Return"));
         assert_eq!(normalize_chord("Super+Shift"), None);
         assert_eq!(normalize_chord("Super+A+B"), None);
-        assert_eq!(normalize_chord("Super++"), None);
+        assert_eq!(normalize_chord("Super++").as_deref(), Some("Super+plus"));
         assert_eq!(normalize_chord(""), None);
+        assert_eq!(normalize_chord("Primary+Q"), None, "the compositor has no 'Primary'");
+        assert_eq!(normalize_chord("Q+Super"), None, "the key comes last");
+        assert_eq!(normalize_chord("Super+É"), None, "keysym names are ASCII");
+        assert_eq!(normalize_chord("Super+Eacute").as_deref(), Some("Super+eacute"));
+        assert_eq!(normalize_chord("Super+return").as_deref(), Some("Super+Return"));
+        assert_eq!(normalize_chord("Super+NotAKey"), None);
+    }
+
+    #[test]
+    fn non_ascii_keys_become_keysym_names() {
+        let sup = mods(true, false, false, false);
+        assert_eq!(chord_from_key_event("é", sup).as_deref(), Some("Super+eacute"));
+        assert_eq!(chord_from_key_event("É", sup).as_deref(), Some("Super+eacute"));
+        assert_eq!(chord_from_key_event("ф", sup).as_deref(), Some("Super+Cyrillic_ef"));
+        let mut b = Keybindings(BTreeMap::new());
+        let chord = chord_from_key_event("é", sup).unwrap();
+        bind(&mut b, &chord, Action::Lock, None, false).unwrap();
+        assert_eq!(b.0.get("Super+eacute"), Some(&Action::Lock));
+        assert_eq!(
+            bind(&mut b, "Super+É", Action::Lock, None, false),
+            Err(BindError::InvalidChord("Super+É".into()))
+        );
     }
 
     #[test]
@@ -594,7 +648,7 @@ mod tests {
         let rows = rows(&defaults);
         assert_eq!(rows.len(), defaults.0.len());
         assert_eq!(rows[0].description, "Run “nimbus-files”");
-        assert!(rows.iter().all(|r| !r.conflict));
+        assert!(rows.iter().all(|r| !r.conflict && !r.invalid));
         let mut categories: Vec<&str> = rows.iter().map(|r| r.category).collect();
         categories.dedup();
         let mut unique = categories.clone();
@@ -611,6 +665,10 @@ mod tests {
         clash.0.insert("Super+L".into(), Action::Lock);
         assert_eq!(conflicts(&clash), ["Super+Q", "super+q"]);
         assert_eq!(super::rows(&clash).iter().filter(|r| r.conflict).count(), 2);
+        clash.0.insert("Super+É".into(), Action::Lock);
+        let invalid: Vec<String> =
+            super::rows(&clash).into_iter().filter(|r| r.invalid).map(|r| r.chord).collect();
+        assert_eq!(invalid, ["Super+É"]);
     }
 
     #[test]

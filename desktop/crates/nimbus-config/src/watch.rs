@@ -11,6 +11,10 @@ use std::time::Duration;
 /// Editors and `Config::save_to` touch the file several times per save.
 const DEBOUNCE: Duration = Duration::from_millis(100);
 
+/// Writing in place truncates the file first, and some tools delete it before writing it again.
+/// A missing or blank file only counts as the defaults once it stays that way this long.
+const SETTLE: Duration = Duration::from_secs(1);
+
 /// Keeps a file watch alive; dropping it stops the callbacks.
 pub struct ConfigWatcher {
     _watcher: notify::RecommendedWatcher,
@@ -20,6 +24,7 @@ pub struct ConfigWatcher {
 ///
 /// Watches the parent directory, so editors that save by renaming and files created later both work.
 /// The callback runs on the watcher's thread; invalid files are logged and skipped.
+/// A missing or blank file yields the defaults only after it stays that way for a second.
 pub fn watch(
     path: &Path,
     on_change: impl Fn(Config) + Send + 'static,
@@ -64,7 +69,10 @@ fn reload_loop(
     mut last: Option<Config>,
     on_change: impl Fn(Config),
 ) {
-    while rx.recv().is_ok() {
+    if rx.recv().is_err() {
+        return;
+    }
+    loop {
         loop {
             match rx.recv_timeout(DEBOUNCE) {
                 Ok(()) => continue,
@@ -72,13 +80,31 @@ fn reload_loop(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
-        match Config::load_from(path) {
+        let read = std::fs::read_to_string(path);
+        let blank = match &read {
+            Ok(text) => text.trim().is_empty(),
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        let loaded = if blank {
+            match rx.recv_timeout(SETTLE) {
+                Ok(()) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => Config::load_from(path),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            read.map_err(|source| Error::Io { path: path.into(), source })
+                .and_then(|text| Config::parse(path, &text))
+        };
+        match loaded {
             Ok(config) if last.as_ref() == Some(&config) => {}
             Ok(config) => {
                 last = Some(config.clone());
                 on_change(config);
             }
             Err(error) => tracing::warn!("ignoring configuration change: {error}"),
+        }
+        if rx.recv().is_err() {
+            return;
         }
     }
 }
@@ -104,6 +130,7 @@ fn notify_error(dir: &Path, error: notify::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Workspaces;
     use std::sync::mpsc::Receiver;
 
     const WAIT: Duration = Duration::from_secs(5);
@@ -178,5 +205,46 @@ mod tests {
         drop(watcher);
         std::fs::write(&path, "[panel]\nheight = 50\n").unwrap();
         assert_quiet(&rx);
+    }
+
+    fn assert_never_defaults_then_six(rx: &Receiver<Config>) {
+        loop {
+            let count = rx.recv_timeout(WAIT).unwrap().workspaces.count;
+            assert_ne!(count, Workspaces::default().count, "transient state applied as defaults");
+            if count == 6 {
+                break;
+            }
+        }
+        assert_quiet(rx);
+    }
+
+    #[test]
+    fn truncated_file_is_not_applied_as_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[workspaces]\ncount = 8\n").unwrap();
+        let (_watcher, rx) = start(&path);
+
+        let file = std::fs::File::create(&path).unwrap();
+        std::thread::sleep(DEBOUNCE * 3);
+        std::io::Write::write_all(&mut &file, b"[workspaces]\ncount = 6\n").unwrap();
+        drop(file);
+        assert_never_defaults_then_six(&rx);
+    }
+
+    #[test]
+    fn deleted_file_is_not_applied_as_defaults_until_it_stays_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[workspaces]\ncount = 8\n").unwrap();
+        let (_watcher, rx) = start(&path);
+
+        std::fs::remove_file(&path).unwrap();
+        std::thread::sleep(DEBOUNCE * 3);
+        std::fs::write(&path, "[workspaces]\ncount = 6\n").unwrap();
+        assert_never_defaults_then_six(&rx);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Config::default());
     }
 }

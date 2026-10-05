@@ -99,6 +99,7 @@ impl Inner {
                 keys: strings(row.labels.clone()),
                 description: row.description.as_str().into(),
                 conflict: row.conflict,
+                invalid: row.invalid,
             };
             match categories.iter_mut().find(|(title, _)| *title == row.category) {
                 Some((_, items)) => items.push(item),

@@ -5,6 +5,7 @@
 use crate::autostart::Launch;
 use crate::env::{ACTIVATION_VARIABLES, SessionEnv, find_in_path};
 use anyhow::Context as _;
+use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
 use std::collections::VecDeque;
@@ -105,10 +106,18 @@ pub struct CompositorCommand {
 
 pub struct SessionPlan {
     pub compositor: CompositorCommand,
+    /// The environment of the compositor; clients additionally get the compositor's sockets.
     pub env: SessionEnv,
     /// Recomputed after every compositor start, so edits to autostart entries apply after a restart.
     pub autostart: Box<dyn Fn() -> Vec<Launch>>,
     pub ready_timeout: Duration,
+    /// The file the compositor keeps while the screen is locked, from [`lock_marker`].
+    pub lock_marker: Option<PathBuf>,
+}
+
+/// Returns the lock marker in `runtime_dir`, which is `$XDG_RUNTIME_DIR`.
+pub fn lock_marker(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("nimbus/locked")
 }
 
 #[derive(Default)]
@@ -117,22 +126,31 @@ struct Shared {
     shutdown: AtomicBool,
 }
 
+fn compositor_command(plan: &SessionPlan) -> Command {
+    let mut command = Command::new(&plan.compositor.program);
+    command.args(&plan.compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
+    plan.env.apply(&mut command);
+    command
+}
+
 /// Runs the session until logout, a termination signal, or too many compositor crashes.
-pub fn run(mut plan: SessionPlan) -> anyhow::Result<ExitCode> {
+pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
     let shared = Arc::new(Shared::default());
     forward_signals(shared.clone())?;
     let mut policy = RestartPolicy::default();
     let mut children = Children::default();
     let mut target_started = false;
+    let mut client_env = plan.env.clone();
+    // The display manager authenticated the user, so a marker left by an earlier session is stale.
+    if let Some(marker) = &plan.lock_marker {
+        let _ = std::fs::remove_file(marker);
+    }
 
     let code = loop {
         if shared.shutdown.load(Ordering::SeqCst) {
             break ExitCode::SUCCESS;
         }
-        let mut command = Command::new(&plan.compositor.program);
-        command.args(&plan.compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
-        plan.env.apply(&mut command);
-        let mut compositor = command
+        let mut compositor = compositor_command(&plan)
             .spawn()
             .with_context(|| format!("cannot start {}", plan.compositor.program.display()))?;
         let pid = i32::try_from(compositor.id()).context("compositor process id out of range")?;
@@ -152,12 +170,13 @@ pub fn run(mut plan: SessionPlan) -> anyhow::Result<ExitCode> {
                     ready.wayland_display,
                     ready.socket.display()
                 );
-                plan.env.set("WAYLAND_DISPLAY", ready.wayland_display);
-                plan.env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
-                update_activation_environment(&plan.env);
-                target_started |= start_systemd_target(&plan.env);
+                client_env = plan.env.clone();
+                client_env.set("WAYLAND_DISPLAY", ready.wayland_display);
+                client_env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
+                update_activation_environment(&client_env);
+                target_started |= start_systemd_target(&client_env);
                 for launch in (plan.autostart)() {
-                    children.spawn(&launch, &plan.env);
+                    children.spawn(&launch, &client_env);
                 }
             }
             Err(ReadyError::Timeout) => {
@@ -170,7 +189,13 @@ pub fn run(mut plan: SessionPlan) -> anyhow::Result<ExitCode> {
             Err(ReadyError::Closed) => {}
         }
 
-        let status = compositor.wait().context("cannot wait for the compositor")?;
+        let status = loop {
+            if let Some(status) = compositor.try_wait().context("cannot wait for the compositor")? {
+                break status;
+            }
+            children.reap();
+            std::thread::sleep(POLL);
+        };
         shared.compositor_pid.store(0, Ordering::SeqCst);
         children.terminate(CHILD_GRACE);
 
@@ -178,6 +203,12 @@ pub fn run(mut plan: SessionPlan) -> anyhow::Result<ExitCode> {
             Outcome::Shutdown => {
                 tracing::info!("compositor exited ({status}); ending the session");
                 break ExitCode::SUCCESS;
+            }
+            Outcome::Crashed if plan.lock_marker.as_deref().is_some_and(Path::exists) => {
+                tracing::error!(
+                    "compositor exited ({status}) while the screen was locked; ending the session"
+                );
+                break ExitCode::FAILURE;
             }
             Outcome::Crashed => match policy.on_crash(Instant::now()) {
                 CrashDecision::Restart => {
@@ -194,7 +225,7 @@ pub fn run(mut plan: SessionPlan) -> anyhow::Result<ExitCode> {
     if target_started {
         let mut stop = Command::new("systemctl");
         stop.args(["--user", "stop", SESSION_TARGET]);
-        run_helper(stop, &plan.env);
+        run_helper(stop, &client_env);
     }
     Ok(code)
 }
@@ -317,12 +348,20 @@ fn run_helper(mut command: Command, env: &SessionEnv) -> bool {
     }
 }
 
+/// An autostarted process group, led by the process the session started.
+struct Group {
+    label: String,
+    pgid: Pid,
+    /// The group leader until it's reaped.
+    leader: Option<Child>,
+}
+
 /// Autostarted processes, each leading its own process group.
 ///
-/// They're reaped only in `terminate`, so a group id can't be reused while it's still tracked.
+/// A group stays tracked until it's empty, so its id can't be reused while the session may still signal it.
 #[derive(Default)]
 struct Children {
-    running: Vec<(String, Child)>,
+    running: Vec<Group>,
 }
 
 impl Children {
@@ -337,34 +376,52 @@ impl Children {
         match command.spawn() {
             Ok(child) => {
                 tracing::info!("autostarted {}", launch.label);
-                self.running.push((launch.label.clone(), child));
+                let Ok(pgid) = i32::try_from(child.id()) else { return };
+                self.running.push(Group {
+                    label: launch.label.clone(),
+                    pgid: Pid::from_raw(pgid),
+                    leader: Some(child),
+                });
             }
             Err(error) => tracing::warn!("cannot autostart {}: {error}", launch.label),
         }
+    }
+
+    /// Reaps exited group leaders and forgets empty groups.
+    fn reap(&mut self) {
+        self.running.retain_mut(|group| {
+            if let Some(leader) = &mut group.leader
+                && let Ok(Some(status)) = leader.try_wait()
+            {
+                tracing::debug!("{} exited ({status})", group.label);
+                group.leader = None;
+            }
+            group.leader.is_some() || killpg(group.pgid, None) != Err(Errno::ESRCH)
+        });
     }
 
     fn terminate(&mut self, grace: Duration) {
         self.signal_all(Signal::SIGTERM);
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
-            self.running.retain_mut(|(_, child)| matches!(child.try_wait(), Ok(None)));
+            self.reap();
             if self.running.is_empty() {
                 return;
             }
             std::thread::sleep(POLL);
         }
         self.signal_all(Signal::SIGKILL);
-        for (label, mut child) in self.running.drain(..) {
-            tracing::warn!("killed {label}, which ignored SIGTERM");
-            let _ = child.wait();
+        for group in self.running.drain(..) {
+            tracing::warn!("killed {}, which ignored SIGTERM", group.label);
+            if let Some(mut leader) = group.leader {
+                let _ = leader.wait();
+            }
         }
     }
 
     fn signal_all(&self, signal: Signal) {
-        for (_, child) in &self.running {
-            if let Ok(pid) = i32::try_from(child.id()) {
-                let _ = killpg(Pid::from_raw(pid), signal);
-            }
+        for group in &self.running {
+            let _ = killpg(group.pgid, signal);
         }
     }
 }
@@ -460,5 +517,53 @@ mod tests {
         children.terminate(Duration::from_secs(5));
         assert!(children.running.is_empty());
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(POLL);
+        }
+        false
+    }
+
+    #[test]
+    fn exited_children_are_reaped_during_the_session() {
+        let mut children = Children::default();
+        let env = SessionEnv::default();
+        let launch = |label: &str, script: &str| Launch {
+            label: label.into(),
+            argv: vec!["sh".into(), "-c".into(), script.into()],
+            working_dir: None,
+        };
+        children.spawn(&launch("one-shot", "true"), &env);
+        children.spawn(&launch("daemonizes", "sleep 30 &"), &env);
+        assert!(wait_until(|| {
+            children.reap();
+            children.running.len() == 1 && children.running[0].leader.is_none()
+        }));
+        let group = &children.running[0];
+        assert_eq!(group.label, "daemonizes");
+        children.terminate(Duration::from_secs(5));
+        assert!(children.running.is_empty());
+    }
+
+    #[test]
+    fn compositor_doesnt_get_the_client_environment() {
+        let mut env = SessionEnv::default();
+        env.set("XDG_CURRENT_DESKTOP", "Nimbus");
+        let plan = SessionPlan {
+            compositor: CompositorCommand { program: "nimbus-compositor".into(), args: vec![] },
+            env,
+            autostart: Box::new(Vec::new),
+            ready_timeout: Duration::from_secs(1),
+            lock_marker: None,
+        };
+        let command = compositor_command(&plan);
+        let names: Vec<_> = command.get_envs().map(|(name, _)| name.to_owned()).collect();
+        assert_eq!(names, [OsString::from("XDG_CURRENT_DESKTOP")]);
     }
 }

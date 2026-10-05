@@ -19,12 +19,14 @@ use crate::shell_host::ShellHost;
 use crate::wm::layout::{self, Rect};
 use crate::wm::{OutputArea, Wm};
 use nimbus_ipc::{CompositorState as IpcState, Event, OutputInfo, WindowInfo};
-use smithay::desktop::{PopupManager, layer_map_for_output};
+use smithay::backend::renderer::utils::with_renderer_surface_state;
+use smithay::desktop::{PopupManager, WindowSurfaceType, layer_map_for_output};
 use smithay::input::keyboard::{KeyboardHandle, Keycode, XkbConfig};
 use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, DisconnectReason, GlobalId,
 };
@@ -150,6 +152,8 @@ pub struct Nimbus {
     pub shell: Option<ShellHost>,
     pub children: Children,
     pub session_lock: SessionLock,
+    /// The ext-session-lock that is pending or active.
+    pub lock_owner: Option<ExtSessionLockV1>,
     pub lock_surfaces: HashMap<String, LockSurface>,
     pub idle_inhibitors: HashSet<WlSurface>,
     pub last_activity: Instant,
@@ -233,6 +237,7 @@ impl Nimbus {
             shell: None,
             children: Children::default(),
             session_lock: SessionLock::Unlocked,
+            lock_owner: None,
             lock_surfaces: HashMap::new(),
             idle_inhibitors: HashSet::new(),
             last_activity: Instant::now(),
@@ -304,6 +309,7 @@ impl Nimbus {
             }
         }
         self.lock_surfaces.remove(&output.name());
+        self.pending_redraws.remove(&output.name());
         if let Some(shell) = self.shell.as_mut() {
             shell.remove_output(&output.name());
         }
@@ -316,19 +322,21 @@ impl Nimbus {
         // Close gaps between outputs left by a removed one.
         let mut x = 0;
         let outputs: Vec<Output> = self.outputs().cloned().collect();
+        let mut moved = Vec::new();
         for output in &outputs {
             let Some(geo) = self.wm.space.output_geometry(output) else {
                 continue;
             };
-            if geo.loc.x != x {
+            if geo.loc != Point::from((x, 0)) {
                 output.change_current_state(None, None, None, Some((x, 0).into()));
                 self.wm.space.map_output(output, (x, 0));
+                moved.push((output.name(), Point::from((x, 0)) - geo.loc));
             }
             x += geo.size.w;
             layer_map_for_output(output).arrange();
         }
         let areas = self.output_areas();
-        self.wm.reassign_outputs(&areas);
+        self.wm.reassign_outputs(&areas, &moved);
         self.clamp_pointer();
         self.arrange();
         if let Some(shell) = self.shell.as_mut() {
@@ -494,12 +502,13 @@ impl Nimbus {
             for layer in [Layer::Overlay, Layer::Top] {
                 if let Some(surface) = map.layers_on(layer).find(|l| {
                     l.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
+                        && is_mapped(l.wl_surface())
                 }) {
                     return KeyboardTarget::Surface(surface.wl_surface().clone());
                 }
             }
         }
-        if let Some(surface) = self.layer_focus.as_ref().filter(|s| s.is_alive()) {
+        if let Some(surface) = self.layer_focus.as_ref().filter(|s| s.is_alive() && is_mapped(s)) {
             return KeyboardTarget::Surface(surface.clone());
         }
         self.wm
@@ -510,6 +519,8 @@ impl Nimbus {
 
     /// Confirms a pending ext-session-lock once every output rendered without client content.
     pub fn confirm_session_lock(&mut self) {
+        let live: HashSet<String> = self.outputs().map(|o| o.name()).collect();
+        self.pending_redraws.retain(|name| live.contains(name));
         if matches!(self.session_lock, SessionLock::Pending(_))
             && self.pending_redraws.is_empty()
             && let SessionLock::Pending(locker) =
@@ -519,8 +530,27 @@ impl Nimbus {
         }
     }
 
+    /// Whether a visible surface inhibits idling; the idle-inhibit protocol ignores hidden ones.
     pub fn idle_inhibited(&self) -> bool {
-        !self.idle_inhibitors.is_empty()
+        self.idle_inhibitors.iter().any(|s| s.is_alive() && self.surface_visible(s))
+    }
+
+    /// Drops inhibitors of destroyed surfaces and tells ext-idle-notify clients whether idling is inhibited.
+    pub fn refresh_idle_inhibit(&mut self) {
+        self.idle_inhibitors.retain(|s| s.is_alive());
+        let inhibited = self.idle_inhibited();
+        self.idle_notifier_state.set_is_inhibited(inhibited);
+    }
+
+    /// Whether `surface` belongs to a shown window or a layer surface on an output.
+    fn surface_visible(&self, surface: &WlSurface) -> bool {
+        let root = crate::input::root_surface(surface);
+        if let Some(id) = self.wm.find_surface(&root) {
+            return self.wm.is_visible(id);
+        }
+        self.outputs().any(|o| {
+            layer_map_for_output(o).layer_for_surface(&root, WindowSurfaceType::TOPLEVEL).is_some()
+        })
     }
 }
 
@@ -541,6 +571,8 @@ impl State {
             if let Some(shell) = self.nimbus.shell.as_ref() {
                 shell.handle_compositor_events(&events);
             }
+            // Draws what the events changed, and runs any actions they caused, in this frame.
+            self.process_shell();
         }
         self.backend.render(&mut self.nimbus);
         self.nimbus.confirm_session_lock();
@@ -550,13 +582,16 @@ impl State {
         }
     }
 
-    /// Applies [`Nimbus::keyboard_target`] to the seat, unless a popup grab owns the keyboard.
+    /// Applies [`Nimbus::keyboard_target`] to the seat, unless a popup grab owns the keyboard outside a lock screen.
     pub fn apply_keyboard_focus(&mut self) {
         let Some(keyboard) = self.nimbus.keyboard.clone() else {
             return;
         };
         if keyboard.is_grabbed() {
-            return;
+            if !self.nimbus.is_locked() {
+                return;
+            }
+            keyboard.unset_grab(self);
         }
         let target = match self.nimbus.keyboard_target() {
             KeyboardTarget::Surface(surface) => Some(surface),
@@ -572,6 +607,11 @@ impl State {
         let minutes = self.nimbus.config.current().power.lock_after_minutes;
         (minutes > 0).then(|| Duration::from_secs(u64::from(minutes) * 60))
     }
+}
+
+/// Whether `surface` has a buffer attached; layer surfaces unmap themselves by attaching none.
+pub fn is_mapped(surface: &WlSurface) -> bool {
+    with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false)
 }
 
 fn distance_to(rect: Rect, p: Point<f64, Logical>) -> f64 {

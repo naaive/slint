@@ -18,7 +18,7 @@ impl Default for MasterStack {
 
 impl Layout for MasterStack {
     fn arrange(&self, area: Rect, count: usize, gaps: i32) -> Vec<Rect> {
-        let gaps = gaps.max(0);
+        let gaps = gaps.clamp(0, (area.size.w.min(area.size.h) / 4).max(0));
         let rect = |x: i32, y: i32, w: i32, h: i32| {
             Rect::new((x, y).into(), Size::from((w.max(1), h.max(1))))
         };
@@ -41,7 +41,7 @@ impl Layout for MasterStack {
 
                 let stacked = i32::try_from(count - 1).unwrap_or(i32::MAX);
                 let stack_x = area.loc.x + 2 * gaps + master_width;
-                let available = height - (stacked - 1) * gaps;
+                let available = height.saturating_sub((stacked - 1).saturating_mul(gaps));
                 let mut y = area.loc.y + gaps;
                 for index in 0..stacked {
                     // The last window takes the rounding remainder so the column ends exactly at the gap.
@@ -93,6 +93,17 @@ mod tests {
         assert_eq!(last.loc.y + last.size.h, 32 + 688 - 8);
         for r in &rects {
             assert!(area().contains_rect(*r), "{r:?} escapes the area");
+        }
+    }
+
+    #[test]
+    fn huge_gaps_stay_inside_the_area() {
+        for count in 1..5 {
+            let rects = MasterStack::default().arrange(area(), count, i32::MAX);
+            assert_eq!(rects.len(), count);
+            for r in &rects {
+                assert!(area().contains_rect(*r), "{r:?} escapes the area");
+            }
         }
     }
 

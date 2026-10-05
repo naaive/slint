@@ -120,7 +120,7 @@ fn clean_exit_runs_autostart_then_stops_it() {
         wait_for_file(&marker, Duration::from_secs(1)),
         "wayland-test /tmp/nimbus test.sock Nimbus wayland;xcb\n"
     );
-    assert_eq!(wait_for_file(&from_config, Duration::from_secs(1)), "wayland\n");
+    assert!(!from_config.exists(), "the compositor runs the configuration's commands");
     assert_eq!(sandbox.starts(), vec!["--backend headless"]);
 }
 
@@ -149,4 +149,49 @@ fn sigterm_is_forwarded_and_ends_the_session() {
     let status = wait_with_timeout(&mut session, Duration::from_secs(10));
     assert!(status.success(), "{status}");
     assert_eq!(sandbox.starts().len(), 1);
+}
+
+#[test]
+fn restarted_compositor_gets_the_inherited_wayland_display() {
+    let sandbox = Sandbox::new("");
+    let displays = sandbox.path("displays");
+    let compositor = sandbox.compositor(&format!(
+        "echo \"${{WAYLAND_DISPLAY-unset}} ${{NIMBUS_SOCKET-unset}}\" >> '{}'\n\
+         echo 'NIMBUS_READY WAYLAND_DISPLAY=wayland-own NIMBUS_SOCKET=/tmp/own.sock'\n\
+         [ $(wc -l < '{}') -lt 2 ] && exit 1\nexit 0",
+        displays.display(),
+        displays.display(),
+    ));
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
+    assert!(status.success(), "{status}");
+    assert_eq!(std::fs::read_to_string(displays).unwrap(), "unset unset\nunset unset\n");
+}
+
+#[test]
+fn crash_while_locked_ends_the_session() {
+    let sandbox = Sandbox::new("");
+    let marker = sandbox.path("runtime/nimbus/locked");
+    let compositor = sandbox.compositor(&format!(
+        "mkdir -p '{}'\ntouch '{}'\nexit 3",
+        marker.parent().unwrap().display(),
+        marker.display()
+    ));
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(sandbox.starts().len(), 1);
+}
+
+#[test]
+fn lock_marker_from_an_earlier_session_is_ignored() {
+    let sandbox = Sandbox::new("");
+    let marker = sandbox.path("runtime/nimbus/locked");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "").unwrap();
+    let compositor = sandbox.compositor("exit 3");
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(sandbox.starts().len(), 4);
 }

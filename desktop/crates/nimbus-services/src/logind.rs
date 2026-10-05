@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::{Instant, sleep_until};
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{OwnedFd, OwnedObjectPath};
 use zbus::{Connection, Message};
@@ -18,12 +19,13 @@ const MANAGER_PATH: &str = "/org/freedesktop/login1";
 const MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 const AUTO_SESSION: &str = "/org/freedesktop/login1/session/auto";
-/// How long suspend waits after a lock request, so the lock screen is on screen before the system sleeps.
-const LOCK_GRACE: Duration = Duration::from_millis(500);
+/// How long suspend waits for [`LoginCommand::LockPresented`], well below logind's default `InhibitDelayMaxSec` of 5 s.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub(crate) enum LoginCommand {
     Lock,
+    LockPresented,
     Suspend,
     Reboot,
     PowerOff,
@@ -55,11 +57,18 @@ pub(crate) fn classify(message: &Message) -> Signal {
 pub(crate) struct Logind {
     updates: Updates,
     sleep_inhibitor: Option<OwnedFd>,
+    /// While suspend waits for the lock screen, when to let it proceed anyway.
+    release_at: Option<Instant>,
 }
 
 impl Logind {
     pub(crate) fn new(updates: Updates) -> Self {
-        Self { updates, sleep_inhibitor: None }
+        Self { updates, sleep_inhibitor: None, release_at: None }
+    }
+
+    fn release_sleep(&mut self) {
+        self.release_at = None;
+        self.sleep_inhibitor = None;
     }
 
     /// Resolves the object path of this process's session, whose signals carry its real path rather than `auto`.
@@ -100,6 +109,12 @@ impl Logind {
         let manager =
             |method| bus::call(conn, owner, MANAGER_PATH, MANAGER_INTERFACE, method, &(false,));
         let result = match (&command, session) {
+            (LoginCommand::LockPresented, _) => {
+                if self.release_at.is_some() {
+                    self.release_sleep();
+                }
+                return;
+            }
             (LoginCommand::Lock, Some(session)) => {
                 bus::call(conn, owner, session, SESSION_INTERFACE, "Lock", &()).await
             }
@@ -168,7 +183,18 @@ impl BusService for Logind {
         let mut signals = bus::signals(conn, rules).await?;
         self.inhibit_sleep(conn, owner.as_str()).await;
         loop {
+            let release_at = self.release_at;
+            let release = async move {
+                match release_at {
+                    Some(deadline) => sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
+                () = release => {
+                    tracing::debug!("The lock screen didn't report a frame in time; suspending anyway");
+                    self.release_sleep();
+                }
                 message = signals.next() => {
                     let Some(message) = message else { return Err(bus::stream_ended()) };
                     match classify(&message) {
@@ -176,13 +202,12 @@ impl BusService for Logind {
                         Signal::Unlock => self.updates.event(ServiceEvent::UnlockRequested),
                         Signal::PrepareForSleep(true) => {
                             self.updates.event(ServiceEvent::LockRequested);
-                            let inhibitor = self.sleep_inhibitor.take();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(LOCK_GRACE).await;
-                                drop(inhibitor);
-                            });
+                            if self.sleep_inhibitor.is_some() {
+                                self.release_at = Some(Instant::now() + LOCK_TIMEOUT);
+                            }
                         }
                         Signal::PrepareForSleep(false) => {
+                            self.release_at = None;
                             if self.sleep_inhibitor.is_none() {
                                 self.inhibit_sleep(conn, owner.as_str()).await;
                             }
@@ -199,11 +224,12 @@ impl BusService for Logind {
     }
 
     fn unavailable(&mut self) {
-        self.sleep_inhibitor = None;
+        self.release_sleep();
     }
 
     fn command_unavailable(&mut self, command: LoginCommand) {
         match command {
+            LoginCommand::LockPresented => {}
             LoginCommand::Lock => self.updates.event(ServiceEvent::LockRequested),
             LoginCommand::Logout => self.updates.event(ServiceEvent::LogoutRequested),
             command => tracing::info!("logind isn't available; can't {command:?}"),

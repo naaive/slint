@@ -55,13 +55,13 @@ export component ShortcutsPage inherits PageScroll {
 
             ListRow {
                 title: item.description;
-                subtitle: item.conflict ? "Uses the same keys as another shortcut" : "";
+                subtitle: item.invalid ? "These keys aren't recognized, so this shortcut doesn't work" : item.conflict ? "Uses the same keys as another shortcut" : "";
                 accessible-description: item.chord;
                 clicked => {
                     ShortcutsModel.edit(item.chord);
                 }
 
-                if item.conflict: Icon {
+                if item.conflict || item.invalid: Icon {
                     source: Icons.warning;
                     color: Theme.warning;
                 }

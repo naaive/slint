@@ -173,7 +173,7 @@ impl Wm {
             workspaces: Workspaces::new(config.count),
             layout: layout_from_config(config.layout),
             tiling: MasterStack::default(),
-            gaps: i32::try_from(config.gaps).unwrap_or(0),
+            gaps: clamp_gaps(config.gaps),
             events: Vec::new(),
         }
     }
@@ -535,7 +535,7 @@ impl Wm {
     }
 
     pub fn set_gaps(&mut self, gaps: u32) {
-        self.gaps = i32::try_from(gaps).unwrap_or(0);
+        self.gaps = clamp_gaps(gaps);
     }
 
     /// Focuses the nearest visible window in `direction` from the focused one.
@@ -620,19 +620,33 @@ impl Wm {
         }
     }
 
-    /// Moves windows off outputs that no longer exist.
-    pub fn reassign_outputs(&mut self, areas: &[OutputArea]) {
+    /// Moves windows off outputs that no longer exist, and keeps floating windows on their output
+    /// after it moved by the offset in `moved` or changed size.
+    pub fn reassign_outputs(
+        &mut self,
+        areas: &[OutputArea],
+        moved: &[(String, Point<i32, Logical>)],
+    ) {
         let Some(first) = areas.first() else {
             return;
         };
         for w in &mut self.windows {
-            let known =
-                w.output.as_deref().is_some_and(|name| areas.iter().any(|a| a.name == name));
-            if !known && w.initial_commit {
-                w.output = Some(first.name.clone());
-                if let Some(rect) = w.floating.as_mut() {
-                    rect.loc = floating::clamp_location(*rect, first.usable);
+            let area = w.output.as_deref().and_then(|name| areas.iter().find(|a| a.name == name));
+            let delta = w
+                .output
+                .as_deref()
+                .and_then(|name| moved.iter().find(|(n, _)| n == name))
+                .map_or_else(Point::default, |(_, delta)| *delta);
+            let area = match area {
+                Some(area) => area,
+                None if w.initial_commit => {
+                    w.output = Some(first.name.clone());
+                    first
                 }
+                None => continue,
+            };
+            if let Some(rect) = w.floating.as_mut() {
+                *rect = floating::refit(*rect, delta, area.usable);
             }
         }
     }
@@ -808,6 +822,13 @@ fn set_state(
     } else {
         state.states.unset(flag);
     }
+}
+
+/// The largest gap between tiled windows, in logical pixels.
+pub const MAX_GAPS: u32 = 256;
+
+fn clamp_gaps(gaps: u32) -> i32 {
+    i32::try_from(gaps.min(MAX_GAPS)).unwrap_or(0)
 }
 
 /// The area for a window's output, falling back to the first output.

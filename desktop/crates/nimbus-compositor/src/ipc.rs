@@ -4,13 +4,15 @@
 //!
 //! Every connection is a non-blocking calloop source.
 //! A client that stops reading is disconnected once its pending output exceeds [`MAX_PENDING_OUTPUT`].
+//! Responses go out in request order, even when one is computed off the event loop.
 
 use crate::state::State;
 use anyhow::Context;
 use nimbus_ipc::{Event, Request, Response};
+use smithay::reexports::calloop::channel::{self, Event as ChannelEvent};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -22,14 +24,63 @@ pub const MAX_PENDING_OUTPUT: usize = 8 << 20;
 
 type ConnectionId = u64;
 
+/// A response that a worker thread computes; see [`IpcServer::defer`].
+/// Dropping it unanswered sends an error, so later responses on the connection aren't held forever.
+pub struct Deferred {
+    connection: ConnectionId,
+    ticket: u64,
+    sender: Option<channel::Sender<(ConnectionId, u64, Response)>>,
+}
+
+impl Deferred {
+    pub fn reply(mut self, response: Response) {
+        self.send(response);
+    }
+
+    fn send(&mut self, response: Response) {
+        if let Some(sender) = self.sender.take() {
+            // The receiver only goes away when the compositor exits.
+            let _ = sender.send((self.connection, self.ticket, response));
+        }
+    }
+}
+
+impl Drop for Deferred {
+    fn drop(&mut self) {
+        self.send(Response::Error { message: "the request was abandoned".into() });
+    }
+}
+
+enum Reply {
+    Ready(Response),
+    Pending(u64),
+}
+
 struct Connection {
     stream: UnixStream,
     input: Vec<u8>,
     output: Vec<u8>,
+    /// Responses waiting for an earlier, deferred one.
+    replies: VecDeque<Reply>,
     subscribed: bool,
+    /// The client shut down its write side; the connection closes once every reply is written.
+    read_closed: bool,
     dead: bool,
     read_token: Option<RegistrationToken>,
     write_token: Option<RegistrationToken>,
+}
+
+impl Connection {
+    fn finished(&self) -> bool {
+        self.read_closed && self.output.is_empty() && self.replies.is_empty()
+    }
+}
+
+/// What a read left of a connection.
+enum ReadState {
+    Open,
+    ReadClosed,
+    Dead,
 }
 
 pub struct IpcServer {
@@ -37,6 +88,8 @@ pub struct IpcServer {
     handle: LoopHandle<'static, State>,
     connections: HashMap<ConnectionId, Connection>,
     next_id: ConnectionId,
+    next_ticket: u64,
+    deferred: channel::Sender<(ConnectionId, u64, Response)>,
 }
 
 impl IpcServer {
@@ -71,7 +124,22 @@ impl IpcServer {
                 },
             )
             .map_err(|e| anyhow::anyhow!("cannot watch the control socket: {e}"))?;
-        Ok(Self { path, handle: handle.clone(), connections: HashMap::new(), next_id: 1 })
+        let (deferred, replies) = channel::channel();
+        handle
+            .insert_source(replies, |event, _, state| {
+                if let ChannelEvent::Msg((id, ticket, response)) = event {
+                    state.nimbus.ipc.complete(id, ticket, response);
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("cannot receive deferred control responses: {e}"))?;
+        Ok(Self {
+            path,
+            handle: handle.clone(),
+            connections: HashMap::new(),
+            next_id: 1,
+            next_ticket: 1,
+            deferred,
+        })
     }
 
     fn add_connection(&mut self, stream: UnixStream) {
@@ -87,16 +155,20 @@ impl IpcServer {
         let token = self.handle.insert_source(
             Generic::new(reader, Interest::READ, Mode::Level),
             move |_, reader, state| {
-                let alive = state.ipc_readable(id, reader);
-                if alive {
-                    Ok(PostAction::Continue)
-                } else {
-                    if let Some(conn) = state.nimbus.ipc.connections.get_mut(&id) {
-                        conn.read_token = None;
-                        conn.dead = true;
-                    }
-                    Ok(PostAction::Remove)
+                let read = state.ipc_readable(id, reader);
+                let Some(conn) = state.nimbus.ipc.connections.get_mut(&id) else {
+                    return Ok(PostAction::Remove);
+                };
+                match read {
+                    ReadState::Open => return Ok(PostAction::Continue),
+                    ReadState::ReadClosed => conn.read_closed = true,
+                    ReadState::Dead => conn.dead = true,
                 }
+                if conn.finished() {
+                    conn.dead = true;
+                }
+                conn.read_token = None;
+                Ok(PostAction::Remove)
             },
         );
         match token {
@@ -107,7 +179,9 @@ impl IpcServer {
                         stream,
                         input: Vec::new(),
                         output: Vec::new(),
+                        replies: VecDeque::new(),
                         subscribed: false,
+                        read_closed: false,
                         dead: false,
                         read_token: Some(token),
                         write_token: None,
@@ -134,6 +208,50 @@ impl IpcServer {
         self.flush(id);
     }
 
+    /// Sends a response once every earlier response on the connection went out.
+    fn respond(&mut self, id: ConnectionId, response: Response) {
+        if let Some(conn) = self.connections.get_mut(&id) {
+            conn.replies.push_back(Reply::Ready(response));
+        }
+        self.send_ready(id);
+    }
+
+    /// Reserves the place of a response that a worker thread sends later through the returned handle.
+    fn defer(&mut self, id: ConnectionId) -> Option<Deferred> {
+        let conn = self.connections.get_mut(&id)?;
+        let ticket = self.next_ticket;
+        self.next_ticket += 1;
+        conn.replies.push_back(Reply::Pending(ticket));
+        Some(Deferred { connection: id, ticket, sender: Some(self.deferred.clone()) })
+    }
+
+    fn complete(&mut self, id: ConnectionId, ticket: u64, response: Response) {
+        let Some(conn) = self.connections.get_mut(&id) else {
+            return;
+        };
+        if let Some(reply) =
+            conn.replies.iter_mut().find(|r| matches!(r, Reply::Pending(t) if *t == ticket))
+        {
+            *reply = Reply::Ready(response);
+        }
+        self.send_ready(id);
+    }
+
+    fn send_ready(&mut self, id: ConnectionId) {
+        loop {
+            let response = match self.connections.get_mut(&id) {
+                Some(conn) if matches!(conn.replies.front(), Some(Reply::Ready(_))) => {
+                    match conn.replies.pop_front() {
+                        Some(Reply::Ready(response)) => response,
+                        _ => return,
+                    }
+                }
+                _ => return,
+            };
+            self.send(id, &response);
+        }
+    }
+
     /// Writes pending output; returns whether some remains.
     fn flush(&mut self, id: ConnectionId) -> bool {
         let Some(conn) = self.connections.get_mut(&id) else {
@@ -155,6 +273,9 @@ impl IpcServer {
         }
         if conn.output.len() > MAX_PENDING_OUTPUT {
             tracing::warn!("disconnecting a control client that stopped reading");
+            conn.dead = true;
+        }
+        if conn.finished() {
             conn.dead = true;
         }
         let pending = !conn.output.is_empty() && !conn.dead;
@@ -196,7 +317,7 @@ impl IpcServer {
         let subscribed: Vec<ConnectionId> = self
             .connections
             .iter()
-            .filter(|(_, c)| c.subscribed && !c.dead)
+            .filter(|(_, c)| c.subscribed && !c.dead && !c.read_closed)
             .map(|(&id, _)| id)
             .collect();
         for id in subscribed {
@@ -251,13 +372,13 @@ pub fn take_lines(buffer: &mut Vec<u8>) -> Result<Vec<Vec<u8>>, ()> {
 }
 
 impl State {
-    /// Reads and answers requests; returns `false` once the connection is closed.
-    fn ipc_readable(&mut self, id: ConnectionId, reader: &UnixStream) -> bool {
+    /// Reads and answers requests.
+    fn ipc_readable(&mut self, id: ConnectionId, reader: &UnixStream) -> ReadState {
         let mut chunk = [0u8; 8192];
         let mut closed = false;
         let lines = {
             let Some(conn) = self.nimbus.ipc.connections.get_mut(&id) else {
-                return false;
+                return ReadState::Dead;
             };
             loop {
                 match (&*reader).read(&mut chunk) {
@@ -275,8 +396,7 @@ impl State {
                     Err(err) if err.kind() == ErrorKind::Interrupted => {}
                     Err(err) => {
                         tracing::debug!("control client read failed: {err}");
-                        closed = true;
-                        break;
+                        return ReadState::Dead;
                     }
                 }
             }
@@ -289,10 +409,7 @@ impl State {
                     id,
                     &Response::Error { message: format!("request longer than {MAX_LINE} bytes") },
                 );
-                if let Some(conn) = self.nimbus.ipc.connections.get_mut(&id) {
-                    conn.dead = true;
-                }
-                return false;
+                return ReadState::Dead;
             }
         };
         for line in lines {
@@ -303,19 +420,27 @@ impl State {
                     }
                     Response::Ok
                 }
+                Ok(Request::Screenshot { output, path: Some(path) }) => {
+                    // Writing the file can block, for example on a FIFO, so a worker thread does it.
+                    if let Some(reply) = self.nimbus.ipc.defer(id) {
+                        self.screenshot_to(output, path, reply);
+                    }
+                    continue;
+                }
                 Ok(request) => {
                     tracing::debug!(?request, "control request");
                     self.handle_request(request)
                 }
                 Err(err) => Response::Error { message: format!("malformed request: {err}") },
             };
-            self.nimbus.ipc.send(id, &response);
+            self.nimbus.ipc.respond(id, response);
         }
-        if closed {
-            // Answers to the final requests may still be buffered; the write side stays usable for them.
-            self.nimbus.ipc.flush(id);
+        match self.nimbus.ipc.connections.get(&id) {
+            Some(conn) if !conn.dead && !closed => ReadState::Open,
+            // Answers to the final requests may still be pending; the write side stays usable for them.
+            Some(conn) if !conn.dead => ReadState::ReadClosed,
+            _ => ReadState::Dead,
         }
-        !closed && self.nimbus.ipc.connections.get(&id).is_some_and(|c| !c.dead)
     }
 }
 

@@ -7,8 +7,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::rc::Rc;
+use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
 use std::time::{Duration, SystemTime};
 
 use chrono::{Datelike, Local};
@@ -19,10 +19,12 @@ use nimbus_xdg::{AppIndex, IconResolver};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use crate::backdrop::Backdrop;
+use crate::client_images::ClientImages;
 use crate::clock::{self, FALLBACK_CLOCK_FORMAT};
-use crate::icons::IconCache;
+use crate::icons::{ICON_SIZE, IconCache};
 use crate::notifications::{self, DEFAULT_ACTION, Notifications};
 use crate::persist::ConfigWriter;
+use crate::system_scheme::SYSTEM;
 use crate::windows::{DockClick, DockEntry, Windows, dock_click, dock_entries, readable_app_id};
 use crate::{
     AppItem, CalendarDay, DockItem, DockMenuWindow, NotificationAction, NotificationItem, Osd,
@@ -34,6 +36,8 @@ use crate::{
 pub const OSD_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long a closing toast fades before it's removed; a little longer than `Theme.duration-normal`.
 const TOAST_FADE: Duration = Duration::from_millis(250);
+/// How often results of background work are checked while any is running.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// The panel heights the layout supports.
 const PANEL_HEIGHT: std::ops::RangeInclusive<u32> = 24..=64;
 /// The most workspace dots the panel shows.
@@ -107,6 +111,7 @@ struct State {
     active_workspace: u32,
     apps: AppIndex,
     icons: IconCache,
+    client_images: ClientImages,
     dock: Vec<DockEntry>,
     /// The dock entry whose menu is open.
     dock_menu: Option<String>,
@@ -118,26 +123,33 @@ struct State {
     month: (i32, u32),
     writer: ConfigWriter,
     backdrop: Backdrop,
+    /// The system color scheme query the theme waits for.
+    scheme_ticket: Option<u64>,
 }
 
 pub struct Controller {
+    this: Weak<Self>,
     window: slint::Weak<ShellWindow>,
     on_action: Box<dyn Fn(ShellAction)>,
     on_unlock: RefCell<Option<Rc<dyn Fn(String)>>>,
+    on_toast_closed: RefCell<Option<Rc<dyn Fn(u32)>>>,
     state: RefCell<State>,
     models: Models,
     clock_timer: Timer,
     osd_timer: Timer,
+    poll_timer: Timer,
     toast_timers: RefCell<HashMap<u32, Timer>>,
 }
 
 impl Controller {
     pub fn new(ui: &ShellWindow, config: &Config, on_action: Box<dyn Fn(ShellAction)>) -> Rc<Self> {
         let today = Local::now().date_naive();
-        let controller = Rc::new(Self {
+        let controller = Rc::new_cyclic(|this| Self {
+            this: this.clone(),
             window: ui.as_weak(),
             on_action,
             on_unlock: RefCell::new(None),
+            on_toast_closed: RefCell::new(None),
             state: RefCell::new(State {
                 config: config.clone(),
                 output: String::new(),
@@ -147,6 +159,7 @@ impl Controller {
                 active_workspace: 0,
                 apps: AppIndex::default(),
                 icons: IconCache::default(),
+                client_images: ClientImages::new(ICON_SIZE),
                 dock: Vec::new(),
                 dock_menu: None,
                 launcher_ids: Vec::new(),
@@ -156,10 +169,12 @@ impl Controller {
                 month: (today.year(), today.month()),
                 writer: ConfigWriter::new(),
                 backdrop: Backdrop::default(),
+                scheme_ticket: None,
             }),
             models: Models::new(),
             clock_timer: Timer::default(),
             osd_timer: Timer::default(),
+            poll_timer: Timer::default(),
             toast_timers: RefCell::new(HashMap::new()),
         });
         controller.models.attach(ui);
@@ -182,10 +197,14 @@ impl Controller {
     // Configuration and clock.
 
     pub fn set_config(&self, ui: &ShellWindow, config: &Config) {
-        nimbus_theme::apply_theme!(
-            ui,
-            nimbus_theme::ThemeSettings::from_config(&config.appearance)
-        );
+        let mut scheme_ticket = None;
+        let theme =
+            nimbus_theme::ThemeSettings::from_config_with_system(&config.appearance, || {
+                let (ticket, dark) = SYSTEM.query();
+                scheme_ticket = Some(ticket);
+                dark
+            });
+        nimbus_theme::apply_theme!(ui, theme);
         ui.set_panel(PanelSettings {
             top: config.panel.position == PanelPosition::Top,
             height: config.panel.height.clamp(*PANEL_HEIGHT.start(), *PANEL_HEIGHT.end()) as f32,
@@ -196,12 +215,63 @@ impl Controller {
         {
             let mut state = self.state.borrow_mut();
             state.config = config.clone();
+            state.scheme_ticket = scheme_ticket;
             state.backdrop.request(config.appearance.wallpaper.as_deref());
-            let scale = output_scale(&state);
-            state.icons.set_scale(scale);
+            update_scale(&mut state);
         }
         self.refresh_clock(ui);
         self.refresh_windows(ui);
+        self.schedule_poll();
+    }
+
+    /// Polls background work until all of it is done.
+    fn schedule_poll(&self) {
+        if self.poll_timer.running() {
+            return;
+        }
+        let weak = self.this.clone();
+        self.poll_timer.start(TimerMode::Repeated, POLL_INTERVAL, move || {
+            if let Some(this) = weak.upgrade()
+                && let Some(ui) = this.ui()
+                && !this.poll(&ui)
+            {
+                this.poll_timer.stop();
+            }
+        });
+    }
+
+    /// Applies the results of finished background work; returns whether any is still running.
+    fn poll(&self, ui: &ShellWindow) -> bool {
+        let (backdrop, theme, images) = {
+            let mut state = self.state.borrow_mut();
+            let backdrop = state.backdrop.take_update();
+            let dark = state.scheme_ticket.and_then(|ticket| SYSTEM.answer(ticket));
+            if dark.is_some() {
+                state.scheme_ticket = None;
+            }
+            let theme = dark
+                .filter(|_| state.config.appearance.color_scheme == ColorScheme::System)
+                .map(|dark| {
+                    nimbus_theme::ThemeSettings::from_config_with_system(
+                        &state.config.appearance,
+                        || dark,
+                    )
+                });
+            (backdrop, theme, state.client_images.poll())
+        };
+        if let Some(image) = backdrop {
+            ui.set_lock_backdrop(image.unwrap_or_default());
+        }
+        if let Some(theme) = theme {
+            nimbus_theme::apply_theme!(ui, theme);
+        }
+        if images {
+            self.refresh_notifications();
+        }
+        let state = self.state.borrow();
+        state.backdrop.is_pending()
+            || state.scheme_ticket.is_some()
+            || state.client_images.is_pending()
     }
 
     pub fn set_config_path(&self, path: Option<PathBuf>) {
@@ -212,8 +282,7 @@ impl Controller {
         {
             let mut state = self.state.borrow_mut();
             state.output = name.to_owned();
-            let scale = output_scale(&state);
-            state.icons.set_scale(scale);
+            update_scale(&mut state);
         }
         self.refresh_windows(ui);
     }
@@ -291,8 +360,7 @@ impl Controller {
             state.workspace_count = compositor.workspace_count;
             state.active_workspace = compositor.active_workspace;
             state.outputs = compositor.outputs.clone();
-            let scale = output_scale(&state);
-            state.icons.set_scale(scale);
+            update_scale(&mut state);
         }
         self.refresh_windows(ui);
     }
@@ -314,8 +382,7 @@ impl Controller {
                 Event::WorkspaceActivated { workspace } => state.active_workspace = *workspace,
                 Event::OutputsChanged { outputs } => {
                     state.outputs = outputs.clone();
-                    let scale = output_scale(&state);
-                    state.icons.set_scale(scale);
+                    update_scale(&mut state);
                 }
                 Event::LayoutChanged { .. } => return,
             }
@@ -434,8 +501,7 @@ impl Controller {
             let mut state = self.state.borrow_mut();
             state.apps = apps.clone();
             state.icons.set_resolver(icons.clone());
-            let scale = output_scale(&state);
-            state.icons.set_scale(scale);
+            update_scale(&mut state);
         }
         self.refresh_windows(ui);
         if ui.get_launcher_open() {
@@ -754,7 +820,7 @@ impl Controller {
     }
 
     /// Fades the toast out, keeping the notification in the history.
-    fn close_toast(self: &Rc<Self>, id: u32) {
+    pub fn close_toast(self: &Rc<Self>, id: u32) {
         if !self.state.borrow_mut().notifications.close_toast(id) {
             return;
         }
@@ -797,8 +863,16 @@ impl Controller {
                 action: DEFAULT_ACTION.into(),
             }));
         } else {
-            self.close_toast(id);
+            let handler = self.on_toast_closed.borrow().clone();
+            match handler {
+                Some(handler) => handler(id),
+                None => self.close_toast(id),
+            }
         }
+    }
+
+    pub fn set_toast_closed_handler(&self, handler: Rc<dyn Fn(u32)>) {
+        *self.on_toast_closed.borrow_mut() = Some(handler);
     }
 
     fn notification_action(&self, id: u32, key: String) {
@@ -842,6 +916,7 @@ impl Controller {
         let item = |n: &Notification,
                     closing: bool,
                     icons: &mut IconCache,
+                    client_images: &mut ClientImages,
                     actions: &mut HashMap<u32, ModelRc<NotificationAction>>| {
             let actions = actions
                 .entry(n.id)
@@ -855,15 +930,21 @@ impl Controller {
                     ModelRc::new(VecModel::from(buttons))
                 })
                 .clone();
-            let icon = n.app_icon.strip_prefix("file://").unwrap_or(&n.app_icon);
+            let icon = n.app_icon.trim();
+            let icon = icon.strip_prefix("file://").unwrap_or(icon);
             let name =
                 if n.app_name.trim().is_empty() { "Notification" } else { n.app_name.as_str() };
+            let visual = if icon.starts_with('/') {
+                crate::icons::visual(name, client_images.image(Path::new(icon)))
+            } else {
+                icons.visual(name, Some(icon))
+            };
             NotificationItem {
                 id: n.id as i32,
                 app_name: name.into(),
                 summary: notifications::plain_text(&n.summary).into(),
                 body: notifications::plain_text(&n.body).into(),
-                visual: icons.visual(name, Some(icon)),
+                visual,
                 time: clock::relative_time(n.received, now).into(),
                 critical: n.urgency == nimbus_services::Urgency::Critical,
                 actions,
@@ -874,7 +955,9 @@ impl Controller {
             .notifications
             .history()
             .iter()
-            .map(|n| item(n, false, &mut state.icons, &mut state.action_models))
+            .map(|n| {
+                item(n, false, &mut state.icons, &mut state.client_images, &mut state.action_models)
+            })
             .collect();
         let toasts: Vec<_> = state
             .notifications
@@ -882,11 +965,21 @@ impl Controller {
             .iter()
             .filter_map(|t| {
                 let n = state.notifications.get(t.id)?;
-                Some(item(n, t.closing, &mut state.icons, &mut state.action_models))
+                Some(item(
+                    n,
+                    t.closing,
+                    &mut state.icons,
+                    &mut state.client_images,
+                    &mut state.action_models,
+                ))
             })
             .collect();
+        let pending = state.client_images.is_pending();
         sync_rows(&self.models.notifications, history);
         sync_rows(&self.models.toasts, toasts);
+        if pending {
+            self.schedule_poll();
+        }
     }
 
     // Lock screen.
@@ -961,8 +1054,7 @@ impl Controller {
         on!(on_overview_requested, |c, ui, open| c.set_overview(&ui, open));
         on!(on_launcher_requested, |c, ui, open| c.set_launcher(&ui, open, ""));
         on!(on_popup_requested, |c, ui, popup| c.set_popup(&ui, popup));
-        on!(on_workspace_clicked, |c, ui, workspace| {
-            let _ = &ui;
+        on!(on_workspace_clicked, |c, _ui, workspace| {
             if let Ok(workspace) = u32::try_from(workspace) {
                 c.emit(ShellAction::Compositor(Request::SwitchWorkspace { workspace }));
             }
@@ -985,14 +1077,12 @@ impl Controller {
             c.set_overview(&ui, false);
             c.emit(ShellAction::Compositor(Request::Activate { id }));
         });
-        on!(on_window_closed, |c, ui, row| {
-            let _ = &ui;
+        on!(on_window_closed, |c, _ui, row| {
             if let Some(id) = c.window_id(row) {
                 c.emit(ShellAction::Compositor(Request::Close { id }));
             }
         });
-        on!(on_window_moved, |c, ui, row, workspace| {
-            let _ = &ui;
+        on!(on_window_moved, |c, _ui, row, workspace| {
             if let (Some(id), Ok(workspace)) = (c.window_id(row), u32::try_from(workspace)) {
                 c.emit(ShellAction::Compositor(Request::MoveToWorkspace { id, workspace }));
             }
@@ -1042,18 +1132,9 @@ impl Controller {
             let page = (!page.is_empty()).then(|| page.to_string());
             c.emit(ShellAction::OpenSettings(page));
         });
-        on!(on_media_previous, |c, ui| {
-            let _ = &ui;
-            c.emit(service(ServiceCommand::MediaPrevious));
-        });
-        on!(on_media_play_pause, |c, ui| {
-            let _ = &ui;
-            c.emit(service(ServiceCommand::MediaPlayPause));
-        });
-        on!(on_media_next, |c, ui| {
-            let _ = &ui;
-            c.emit(service(ServiceCommand::MediaNext));
-        });
+        on!(on_media_previous, |c, _ui| c.emit(service(ServiceCommand::MediaPrevious)));
+        on!(on_media_play_pause, |c, _ui| c.emit(service(ServiceCommand::MediaPlayPause)));
+        on!(on_media_next, |c, _ui| c.emit(service(ServiceCommand::MediaNext)));
         on!(on_lock_requested, |c, ui| {
             c.set_popup(&ui, Popup::None);
             c.emit(ShellAction::Compositor(Request::Lock));
@@ -1070,18 +1151,10 @@ impl Controller {
         on!(on_power_confirmed, |c, ui, action| c.power_confirmed(&ui, action));
         on!(on_month_changed, |c, ui, delta| c.change_month(&ui, delta));
         on!(on_notification_activated, |c, ui, id| c.notification_activated(&ui, id as u32));
-        on!(on_notification_dismissed, |c, ui, id| {
-            let _ = &ui;
-            c.notification_dismissed(id as u32);
-        });
-        on!(on_notification_action, |c, ui, id, key| {
-            let _ = &ui;
-            c.notification_action(id as u32, key.to_string());
-        });
-        on!(on_clear_notifications, |c, ui| {
-            let _ = &ui;
-            c.clear_notifications();
-        });
+        on!(on_notification_dismissed, |c, _ui, id| c.notification_dismissed(id as u32));
+        on!(on_notification_action, |c, _ui, id, key| c
+            .notification_action(id as u32, key.to_string()));
+        on!(on_clear_notifications, |c, _ui| c.clear_notifications());
         on!(on_unlock_requested, |c, ui, password| c.unlock_requested(&ui, password.to_string()));
     }
 }
@@ -1092,6 +1165,12 @@ fn is_search_text(text: &str) -> bool {
         && text.chars().all(|c| {
             !c.is_control() && !c.is_whitespace() && !('\u{f700}'..='\u{f8ff}').contains(&c)
         })
+}
+
+fn update_scale(state: &mut State) {
+    let scale = output_scale(state);
+    state.icons.set_scale(scale);
+    state.client_images.set_size(ICON_SIZE * state.icons.scale());
 }
 
 /// The scale of this shell's output, from the compositor or else the configuration.
@@ -1169,6 +1248,29 @@ mod tests {
         assert_eq!(display_title(&window, "Files"), "Files");
         let window = WindowInfo { title: "Doc".into(), ..Default::default() };
         assert_eq!(display_title(&window, "Files"), "Doc");
+    }
+
+    #[test]
+    fn the_lock_backdrop_arrives_without_a_clock_tick() {
+        i_slint_backend_testing::init_no_event_loop();
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("wall.png");
+        image::RgbImage::new(200, 100).save(&path).expect("fixture saves");
+        let mut config = Config::default();
+        config.appearance.color_scheme = ColorScheme::Dark;
+        config.appearance.wallpaper = Some(path);
+        let ui = ShellWindow::new().expect("the window opens");
+        let controller = Controller::new(&ui, &config, Box::new(|_| {}));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !controller.state.borrow().backdrop.is_decoded() {
+            assert!(std::time::Instant::now() < deadline, "the wallpaper never decoded");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(ui.get_lock_backdrop().size().width, 0);
+        i_slint_backend_testing::mock_elapsed_time(POLL_INTERVAL);
+        assert!(ui.get_lock_backdrop().size().width > 0);
+        assert!(!controller.poll_timer.running(), "polling stops once nothing is pending");
     }
 
     #[test]

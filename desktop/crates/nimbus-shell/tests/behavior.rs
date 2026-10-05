@@ -30,8 +30,13 @@ impl Fixture {
         Self::with_config(support::config())
     }
 
-    fn with_config(mut config: Config) -> Self {
+    fn with_config(config: Config) -> Self {
         i_slint_backend_testing::init_no_event_loop();
+        Self::on_initialized_platform(config)
+    }
+
+    /// Another shell, like one on a second output, after [`Fixture::new`] set up the platform.
+    fn on_initialized_platform(mut config: Config) -> Self {
         config.appearance.animations = false;
         let dir = tempfile::tempdir().expect("temporary directory");
         let actions = Rc::new(RefCell::new(Vec::new()));
@@ -531,6 +536,69 @@ fn expired_transient_notifications_leave_no_history() {
     }
     let summaries: Vec<_> = ui.get_notifications().iter().map(|n| n.summary.to_string()).collect();
     assert_eq!(summaries, ["New message"]);
+}
+
+#[test]
+fn clicked_toasts_close_on_every_output() {
+    let first = Fixture::new();
+    let outputs = [first, Fixture::on_initialized_platform(support::config())];
+    let closed = Rc::new(RefCell::new(Vec::new()));
+    for f in &outputs {
+        let closed = closed.clone();
+        f.shell.on_toast_closed(move |id| closed.borrow_mut().push(id));
+    }
+    // Critical, without a default action: the toast stays until clicked.
+    let mut critical = support::notifications().remove(0);
+    critical.urgency = Urgency::Critical;
+    for f in &outputs {
+        f.shell.handle_service_event(&ServiceEvent::Notification(critical.clone()));
+    }
+    outputs[0].shell.component().invoke_notification_activated(critical.id as i32);
+    let ids = std::mem::take(&mut *closed.borrow_mut());
+    assert_eq!(ids, [critical.id]);
+    // The host routes the request to every shell.
+    for f in &outputs {
+        f.shell.close_toast(critical.id);
+    }
+    mock_elapsed_time(Duration::from_millis(300));
+    for f in &outputs {
+        assert_eq!(f.shell.component().get_toasts().row_count(), 0);
+        assert_eq!(f.shell.component().get_notifications().row_count(), 1);
+        assert!(f.take_actions().is_empty());
+    }
+}
+
+#[test]
+fn notification_images_load_in_the_background() {
+    let f = Fixture::new();
+    let ui = f.shell.component();
+    // The default allowed directories include `/tmp`.
+    let dir = tempfile::tempdir_in("/tmp").expect("temporary directory");
+    let photo = dir.path().join("photo.png");
+    image::RgbImage::new(16, 16).save(&photo).expect("fixture saves");
+    let oversized = dir.path().join("huge.png");
+    std::fs::File::create(&oversized)
+        .and_then(|file| file.set_len(64 * 1024 * 1024))
+        .expect("fixture writes");
+    let icon = |id: u32| {
+        ui.get_notifications().iter().find(|n| n.id == id as i32).is_some_and(|n| n.visual.has_icon)
+    };
+
+    let with_photo =
+        support::notification(50, "Chat", &format!("file://{}", photo.display()), "Hi", "", 0);
+    let with_huge =
+        support::notification(51, "Chat", &oversized.display().to_string(), "Yo", "", 0);
+    f.shell.handle_service_event(&ServiceEvent::Notification(with_photo));
+    f.shell.handle_service_event(&ServiceEvent::Notification(with_huge));
+    assert!(!icon(50) && !icon(51), "the UI thread doesn't read client files");
+    assert!(
+        wait_for(|| {
+            mock_elapsed_time(Duration::from_millis(50));
+            icon(50)
+        }),
+        "the image arrives"
+    );
+    assert!(!icon(51), "an oversized file shows the initial");
 }
 
 #[test]

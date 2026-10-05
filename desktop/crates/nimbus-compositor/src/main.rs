@@ -135,9 +135,8 @@ fn run(args: Args) -> anyhow::Result<()> {
     let socket_name = socket.socket_name().to_string_lossy().into_owned();
     handle
         .insert_source(socket, |stream, _, state| {
-            if let Err(err) =
-                state.nimbus.display_handle.insert_client(stream, Arc::new(ClientState::default()))
-            {
+            let data = Arc::new(ClientState::default());
+            if let Err(err) = state.nimbus.display_handle.insert_client(stream, data) {
                 tracing::warn!("cannot accept a Wayland client: {err}");
             }
         })
@@ -201,11 +200,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let mut state = State { backend, nimbus };
     start_housekeeping(&mut state)?;
 
-    for command in state.nimbus.config.current().autostart.clone() {
-        if let Err(err) = state.nimbus.children.spawn(&command) {
-            tracing::warn!("cannot autostart '{command}': {err}");
-        }
-    }
+    // nimbus-session runs `autostart`, after readiness and again after every restart.
     state.nimbus.arrange();
 
     tracing::info!(backend = ?kind, socket = %socket_name, control = %ipc_path.display(), "Nimbus is ready");
@@ -235,6 +230,8 @@ fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
     handle
         .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
             state.nimbus.children.reap();
+            // Visibility changes, such as minimizing or switching workspaces, can end an inhibition.
+            state.nimbus.refresh_idle_inhibit();
             if let Some(timeout) = state.lock_timeout()
                 && state.nimbus.last_activity.elapsed() >= timeout
                 && !state.nimbus.idle_inhibited()

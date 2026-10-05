@@ -22,6 +22,7 @@ type Slot = Arc<Mutex<Option<(PathBuf, Option<SharedPixelBuffer<Rgba8Pixel>>)>>>
 pub struct Backdrop {
     requested: Option<PathBuf>,
     applied: Option<PathBuf>,
+    pending: bool,
     ready: Slot,
     /// Counts requests, so that a slow decode of an older wallpaper doesn't overwrite a newer one.
     generation: Arc<AtomicU64>,
@@ -35,6 +36,7 @@ impl Backdrop {
         }
         self.requested = wallpaper.map(Path::to_path_buf);
         let current = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.pending = false;
         let Some(path) = self.requested.clone() else {
             return;
         };
@@ -48,9 +50,20 @@ impl Backdrop {
                     *slot = Some((path, pixels));
                 }
             });
-        if let Err(err) = spawned {
-            tracing::warn!("Can't decode the wallpaper in the background: {err}");
+        match spawned {
+            Ok(_) => self.pending = true,
+            Err(err) => tracing::warn!("Can't decode the wallpaper in the background: {err}"),
         }
+    }
+
+    /// Whether a decode is running whose result [`Backdrop::take_update`] hasn't returned yet.
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    #[cfg(test)]
+    pub fn is_decoded(&self) -> bool {
+        self.ready.lock().unwrap_or_else(PoisonError::into_inner).is_some()
     }
 
     /// Returns the new backdrop once it's decoded: `Some(None)` means no wallpaper, so the default gradient.
@@ -64,6 +77,7 @@ impl Backdrop {
             return None;
         }
         self.applied = Some(path);
+        self.pending = false;
         Some(pixels.map(slint::Image::from_rgba8))
     }
 }
@@ -121,6 +135,7 @@ mod tests {
         };
         assert!(update.is_some_and(|image| image.size().width == WIDTH));
         assert!(backdrop.take_update().is_none(), "an update arrives once");
+        assert!(!backdrop.is_pending());
         backdrop.request(None);
         assert!(matches!(backdrop.take_update(), Some(None)));
     }

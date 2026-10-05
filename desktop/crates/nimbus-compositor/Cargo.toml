@@ -51,4 +51,4 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 zbus = { workspace = true }
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

@@ -32,6 +32,8 @@ png = "0.18"
 md-5 = "0.10"
 walkdir = "2.5"
 rustix = { version = "1", features = ["fs"] }
+toml = { workspace = true }
+xkbcommon = { version = "0.8", default-features = false }
 
 [build-dependencies]
 slint-build = { workspace = true }

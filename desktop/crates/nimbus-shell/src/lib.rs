@@ -14,12 +14,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 mod backdrop;
+mod client_images;
 mod clock;
 mod controller;
 mod icons;
 mod notifications;
 mod persist;
 mod status;
+mod system_scheme;
 mod windows;
 
 use controller::Controller;
@@ -178,6 +180,19 @@ impl Shell {
     /// Without a handler, the lock screen reports that unlocking is unavailable.
     pub fn on_unlock_attempt(&self, handler: impl Fn(String) + 'static) {
         self.controller.set_unlock_handler(Rc::new(handler));
+    }
+
+    /// Registers the handler for a toast the user clicked away, so the host can hide it on every output.
+    ///
+    /// The host calls [`Shell::close_toast`] on each shell; the notification stays in the history.
+    /// Without a handler, the toast closes only on this shell.
+    pub fn on_toast_closed(&self, handler: impl Fn(u32) + 'static) {
+        self.controller.set_toast_closed_handler(Rc::new(handler));
+    }
+
+    /// Fades out the toast for the notification `id`, keeping the notification in the history.
+    pub fn close_toast(&self, id: u32) {
+        self.controller.close_toast(id);
     }
 
     /// Tells the lock screen that the last password was wrong; it clears the field and shows an error.

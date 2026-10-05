@@ -3,9 +3,9 @@
 //! Connectivity from NetworkManager on the system bus.
 
 use tokio::sync::mpsc::UnboundedReceiver;
-use zbus::Connection;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{OwnedObjectPath, Value};
+use zbus::{Connection, Message};
 
 use crate::bus::{self, BusService, Props, Wake};
 use crate::hub::{Update, Updates};
@@ -54,6 +54,11 @@ fn real_path(path: Option<OwnedObjectPath>) -> Option<OwnedObjectPath> {
     path.filter(|path| path.as_str() != "/")
 }
 
+/// Whether `message` comes from one of the `watched` object paths.
+pub(crate) fn is_watched(message: &Message, watched: &[OwnedObjectPath]) -> bool {
+    message.header().path().is_some_and(|path| watched.iter().any(|w| w.as_str() == path.as_str()))
+}
+
 pub(crate) struct NetworkManager {
     updates: Updates,
 }
@@ -63,7 +68,14 @@ impl NetworkManager {
         Self { updates }
     }
 
-    async fn snapshot(conn: &Connection, owner: &str) -> zbus::Result<Network> {
+    /// Reads the current state and replaces `watched` with the object paths it was read from.
+    async fn snapshot(
+        conn: &Connection,
+        owner: &str,
+        watched: &mut Vec<OwnedObjectPath>,
+    ) -> zbus::Result<Network> {
+        watched.clear();
+        watched.push(OwnedObjectPath::try_from(PATH)?);
         let mut nm = bus::get_all(conn, owner, PATH, INTERFACE).await?;
         let wifi_enabled = nm.take::<bool>("WirelessEnabled").unwrap_or(false);
         let connectivity = nm.take::<u32>("Connectivity").unwrap_or(CONNECTIVITY_UNKNOWN);
@@ -76,6 +88,7 @@ impl NetworkManager {
         let Some(primary) = primary else {
             return Ok(network);
         };
+        watched.push(primary.clone());
         // The primary connection can vanish between the two calls; that's not an error.
         let mut active =
             bus::get_all(conn, owner, primary.as_str(), ACTIVE_INTERFACE).await.unwrap_or_default();
@@ -87,7 +100,7 @@ impl NetworkManager {
         network.kind = classify(&connection_type);
         if network.kind == ConnectionKind::Wifi {
             let name = active.take::<String>("Id");
-            if let Some(mut ap) = Self::access_point(conn, owner, &mut active).await {
+            if let Some(mut ap) = Self::access_point(conn, owner, &mut active, watched).await {
                 network.ssid = ap.take::<Vec<u8>>("Ssid").as_deref().and_then(ssid_to_string);
                 network.strength =
                     f32::from(ap.take::<u8>("Strength").unwrap_or(0).min(100)) / 100.0;
@@ -97,10 +110,16 @@ impl NetworkManager {
         Ok(network)
     }
 
-    async fn access_point(conn: &Connection, owner: &str, active: &mut Props) -> Option<Props> {
+    async fn access_point(
+        conn: &Connection,
+        owner: &str,
+        active: &mut Props,
+        watched: &mut Vec<OwnedObjectPath>,
+    ) -> Option<Props> {
         let mut path = real_path(active.take("SpecificObject"));
         if path.is_none() {
             let device = active.take::<Vec<OwnedObjectPath>>("Devices")?.into_iter().next()?;
+            watched.push(device.clone());
             let value = bus::get_property(
                 conn,
                 owner,
@@ -112,7 +131,9 @@ impl NetworkManager {
             .ok()?;
             path = real_path(OwnedObjectPath::try_from(value).ok());
         }
-        bus::get_all(conn, owner, path?.as_str(), ACCESS_POINT_INTERFACE).await.ok()
+        let path = path?;
+        watched.push(path.clone());
+        bus::get_all(conn, owner, path.as_str(), ACCESS_POINT_INTERFACE).await.ok()
     }
 }
 
@@ -127,10 +148,12 @@ impl BusService for NetworkManager {
         commands: &mut UnboundedReceiver<NetworkCommand>,
     ) -> zbus::Result<()> {
         let mut signals = bus::signals(conn, [bus::properties_changed_rule(owner, PATH)?]).await?;
+        let mut watched = Vec::new();
         loop {
-            let network = Self::snapshot(conn, owner.as_str()).await?;
+            let network = Self::snapshot(conn, owner.as_str(), &mut watched).await?;
             self.updates.send(Update::Network(network));
-            match bus::next_wake(&mut signals, commands).await? {
+            let relevant = |message: &Message| is_watched(message, &watched);
+            match bus::next_wake_where(&mut signals, commands, relevant).await? {
                 Some(Wake::Signal) => {}
                 Some(Wake::Command(NetworkCommand::SetWifiEnabled(enabled))) => {
                     let value = Value::Bool(enabled);
@@ -177,6 +200,24 @@ mod tests {
         assert!(!is_available(0, false));
         assert!(!is_available(2, true));
         assert!(!is_available(1, true));
+    }
+
+    #[test]
+    fn watches_only_snapshot_paths() {
+        let changed = |path: &str| {
+            Message::signal(path, "org.freedesktop.DBus.Properties", "PropertiesChanged")
+                .unwrap()
+                .build(&())
+                .unwrap()
+        };
+        let watched = [
+            OwnedObjectPath::try_from(PATH).unwrap(),
+            OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/AccessPoint/7").unwrap(),
+        ];
+        assert!(is_watched(&changed(PATH), &watched));
+        assert!(is_watched(&changed("/org/freedesktop/NetworkManager/AccessPoint/7"), &watched));
+        assert!(!is_watched(&changed("/org/freedesktop/NetworkManager/AccessPoint/70"), &watched));
+        assert!(!is_watched(&changed("/org/freedesktop/NetworkManager/Devices/2"), &watched));
     }
 
     #[test]

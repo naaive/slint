@@ -306,6 +306,7 @@ pub(crate) async fn run(updates: Updates, mut commands: UnboundedReceiver<AudioC
     let mut subscription: Option<Subscription> = None;
     let mut next_subscribe = Instant::now();
     service.refresh().await;
+    let mut next_poll = Instant::now() + POLL;
     loop {
         if service.all_missing() {
             tracing::info!("Neither wpctl nor pactl is installed; audio controls disabled");
@@ -318,12 +319,15 @@ pub(crate) async fn run(updates: Updates, mut commands: UnboundedReceiver<AudioC
         if subscription.is_none() && !service.pactl_missing && Instant::now() >= next_subscribe {
             next_subscribe = Instant::now() + RESUBSCRIBE;
             match Subscription::spawn() {
-                Ok(spawned) => subscription = Some(spawned),
+                Ok(spawned) => {
+                    subscription = Some(spawned);
+                    next_poll = Instant::now() + SUBSCRIBED_POLL;
+                }
                 Err(err) if err.kind() == io::ErrorKind::NotFound => service.pactl_missing = true,
                 Err(err) => tracing::debug!("Can't run pactl subscribe: {err}"),
             }
         }
-        let poll = Instant::now() + if subscription.is_some() { SUBSCRIBED_POLL } else { POLL };
+        let poll_interval = if subscription.is_some() { SUBSCRIBED_POLL } else { POLL };
         tokio::select! {
             command = commands.recv() => match command {
                 Some(command) => service.handle(command, &mut commands).await,
@@ -334,14 +338,19 @@ pub(crate) async fn run(updates: Updates, mut commands: UnboundedReceiver<AudioC
                     let deadline = Instant::now() + SETTLE;
                     while let Ok(Some(_)) = tokio::time::timeout_at(deadline, next_line(&mut subscription)).await {}
                     service.refresh().await;
+                    next_poll = Instant::now() + poll_interval;
                 }
                 Some(_) => {}
                 None => {
                     tracing::debug!("pactl subscribe exited; polling instead");
                     subscription = None;
+                    next_poll = Instant::now() + POLL;
                 }
             },
-            () = sleep_until(poll) => service.refresh().await,
+            () = sleep_until(next_poll) => {
+                service.refresh().await;
+                next_poll = Instant::now() + poll_interval;
+            }
         }
     }
 }

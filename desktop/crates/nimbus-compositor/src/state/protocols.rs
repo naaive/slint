@@ -5,6 +5,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Size};
 use smithay::wayland::compositor::with_states;
@@ -16,8 +17,18 @@ use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::output::OutputHandler;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::{
+    self, ExtSessionLockV1,
+};
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, delegate_dispatch, delegate_global_dispatch,
+};
 use smithay::wayland::session_lock::{
-    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+    ExtLockSurfaceUserData, LockSurface, SessionLockHandler, SessionLockManagerGlobalData,
+    SessionLockManagerState, SessionLockState, SessionLocker,
 };
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
@@ -25,7 +36,7 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_dmabuf, delegate_foreign_toplevel_list, delegate_fractional_scale,
     delegate_idle_inhibit, delegate_idle_notify, delegate_output, delegate_presentation,
-    delegate_session_lock, delegate_single_pixel_buffer, delegate_viewporter,
+    delegate_single_pixel_buffer, delegate_viewporter,
     delegate_xdg_activation,
 };
 use std::time::Duration;
@@ -108,13 +119,12 @@ impl IdleNotifierHandler for State {
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
         self.nimbus.idle_inhibitors.insert(surface);
-        self.nimbus.idle_notifier_state.set_is_inhibited(true);
+        self.nimbus.refresh_idle_inhibit();
     }
 
     fn uninhibit(&mut self, surface: WlSurface) {
         self.nimbus.idle_inhibitors.remove(&surface);
-        let inhibited = self.nimbus.idle_inhibited();
-        self.nimbus.idle_notifier_state.set_is_inhibited(inhibited);
+        self.nimbus.refresh_idle_inhibit();
     }
 }
 
@@ -124,12 +134,25 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
+        // A new locker may replace one that died, but never a live one.
+        if self.nimbus.is_session_locked()
+            && self.nimbus.lock_owner.as_ref().is_some_and(|l| l.is_alive())
+        {
+            // Dropping the locker sends `finished`.
+            tracing::warn!("refusing a second session lock");
+            return;
+        }
+        self.nimbus.lock_surfaces.clear();
+        self.nimbus.lock_owner = Some(confirmation.ext_session_lock().clone());
         self.nimbus.session_lock = SessionLock::Pending(confirmation);
+        self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
     }
 
+    /// Only the confirmed lock holder gets here; see the `ExtSessionLockV1` dispatch below.
     fn unlock(&mut self) {
         self.nimbus.session_lock = SessionLock::Unlocked;
+        self.nimbus.lock_owner = None;
         self.nimbus.lock_surfaces.clear();
         self.nimbus.queue_redraw_all();
     }
@@ -138,6 +161,13 @@ impl SessionLockHandler for State {
         let Some(output) = Output::from_resource(&output) else {
             return;
         };
+        let owner = self.nimbus.lock_owner.as_ref().and_then(|l| l.client());
+        if owner.is_none() || surface.wl_surface().client() != owner {
+            tracing::warn!(
+                "ignoring a lock surface from a client that doesn't hold the session lock"
+            );
+            return;
+        }
         if let Some(geo) = self.nimbus.output_geometry(&output) {
             let size: Size<u32, Logical> =
                 (u32::try_from(geo.size.w).unwrap_or(0), u32::try_from(geo.size.h).unwrap_or(0))
@@ -165,5 +195,59 @@ delegate_fractional_scale!(State);
 delegate_single_pixel_buffer!(State);
 delegate_idle_notify!(State);
 delegate_idle_inhibit!(State);
-delegate_session_lock!(State);
+delegate_global_dispatch!(State: [ExtSessionLockManagerV1: SessionLockManagerGlobalData] => SessionLockManagerState);
+delegate_dispatch!(State: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
+delegate_dispatch!(State: [ExtSessionLockSurfaceV1: ExtLockSurfaceUserData] => SessionLockManagerState);
+
+/// Smithay lets any lock unlock the session and claim outputs, so requests from locks other than
+/// the confirmed holder are refused here before they reach it.
+impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        lock: &ExtSessionLockV1,
+        request: ext_session_lock_v1::Request,
+        data: &SessionLockState,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let owner = state.nimbus.lock_owner.as_ref() == Some(lock);
+        match &request {
+            ext_session_lock_v1::Request::UnlockAndDestroy
+                if !(owner && matches!(state.nimbus.session_lock, SessionLock::Locked)) =>
+            {
+                tracing::warn!(
+                    "refusing an unlock from a client that doesn't hold the session lock"
+                );
+                lock.post_error(
+                    ext_session_lock_v1::Error::InvalidUnlock,
+                    "this lock doesn't hold the session",
+                );
+                return;
+            }
+            ext_session_lock_v1::Request::GetLockSurface { .. } if !owner => {
+                lock.post_error(
+                    ext_session_lock_v1::Error::DuplicateOutput,
+                    "another client holds the session lock",
+                );
+                return;
+            }
+            _ => {}
+        }
+        <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::request(
+            state, client, lock, request, data, dh, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        lock: &ExtSessionLockV1,
+        data: &SessionLockState,
+    ) {
+        <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::destroyed(
+            state, client, lock, data,
+        );
+    }
+}
 delegate_foreign_toplevel_list!(State);

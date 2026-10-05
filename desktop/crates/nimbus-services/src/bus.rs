@@ -207,9 +207,19 @@ pub(crate) async fn next_wake<C>(
     signals: &mut Signals,
     commands: &mut UnboundedReceiver<C>,
 ) -> zbus::Result<Option<Wake<C>>> {
+    next_wake_where(signals, commands, |_| true).await
+}
+
+/// Like [`next_wake`], but ignores signals for which `relevant` returns `false`.
+pub(crate) async fn next_wake_where<C>(
+    signals: &mut Signals,
+    commands: &mut UnboundedReceiver<C>,
+    relevant: impl Fn(&Message) -> bool,
+) -> zbus::Result<Option<Wake<C>>> {
+    let mut signals = signals.filter(|message| std::future::ready(relevant(message)));
     tokio::select! {
         message = signals.next() => {
-            if message.is_some() && settle(signals).await {
+            if message.is_some() && settle(&mut signals).await {
                 Ok(Some(Wake::Signal))
             } else {
                 Err(stream_ended())
@@ -409,5 +419,33 @@ async fn idle<S: BusService>(
             },
             () = retry => return Idle::Retry,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn changed(path: &str) -> Message {
+        Message::signal(path, PROPERTIES, "PropertiesChanged").unwrap().build(&()).unwrap()
+    }
+
+    fn stream(paths: &[&str]) -> Signals {
+        let messages: Vec<Message> = paths.iter().map(|path| changed(path)).collect();
+        futures_util::stream::iter(messages).chain(futures_util::stream::pending()).boxed()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wakes_only_for_relevant_signals() {
+        let (_sender, mut commands) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let relevant = |message: &Message| message.header().path().is_some_and(|p| p == "/a");
+
+        let mut signals = stream(&["/b", "/c", "/b"]);
+        let wake = next_wake_where(&mut signals, &mut commands, relevant);
+        assert!(timeout(Duration::from_secs(5), wake).await.is_err());
+
+        let mut signals = stream(&["/b", "/a", "/c"]);
+        let wake = next_wake_where(&mut signals, &mut commands, relevant).await;
+        assert!(matches!(wake, Ok(Some(Wake::Signal))));
     }
 }

@@ -14,7 +14,7 @@ use smithay::backend::input::{
     InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     PointerMotionEvent,
 };
-use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
+use smithay::desktop::{PopupManager, WindowSurfaceType, layer_map_for_output};
 use smithay::input::keyboard::{FilterResult, Keysym, KeysymHandle, ModifiersState, keysyms};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, Focus, GestureHoldBeginEvent, GestureHoldEndEvent,
@@ -47,6 +47,27 @@ pub struct InputState {
     /// A button press went to the shell on this output; motion and release follow it there.
     shell_grab: Option<(String, u32)>,
     shell_repeat: Option<(u32, RegistrationToken)>,
+}
+
+impl InputState {
+    fn repeating_key(&self) -> Option<u32> {
+        self.shell_repeat.as_ref().map(|(keycode, _)| *keycode)
+    }
+
+    fn stop_repeat<T>(&mut self, handle: &smithay::reexports::calloop::LoopHandle<'_, T>) {
+        if let Some((_, token)) = self.shell_repeat.take() {
+            handle.remove(token);
+        }
+    }
+}
+
+/// Whether a shell key event ends the key repeat of `repeating`.
+fn repeat_stops(repeating: Option<u32>, keycode: u32, pressed: bool, is_modifier: bool) -> bool {
+    match repeating {
+        None => false,
+        Some(_) if pressed => !is_modifier,
+        Some(key) => key == keycode,
+    }
 }
 
 /// What a key press does after filtering.
@@ -115,7 +136,7 @@ impl Nimbus {
 
         let fullscreen = self.wm.fullscreen_on(&name).map(|w| w.window.clone());
         let shell_on_top =
-            fullscreen.is_none() || self.shell.as_ref().is_some_and(|s| s.wants_keyboard());
+            fullscreen.is_none() || self.shell.as_ref().is_some_and(|s| s.wants_keyboard_on(&name));
         if shell_on_top && self.shell.as_ref().is_some_and(|s| s.accepts_pointer(&name, local)) {
             return shell(&name);
         }
@@ -151,6 +172,31 @@ impl Nimbus {
             .map(|w| w.id)
     }
 
+    /// Whether a lock screen is up, either an ext-session-lock client or the shell's.
+    pub fn is_locked(&self) -> bool {
+        self.is_session_locked() || self.is_shell_locked()
+    }
+
+    /// Sends `popup_done` to every popup of every window and layer surface.
+    fn dismiss_all_popups(&self) {
+        let mut roots: Vec<WlSurface> = self
+            .wm
+            .space
+            .elements()
+            .filter_map(|w| w.toplevel().map(|t| t.wl_surface().clone()))
+            .collect();
+        for output in self.outputs() {
+            roots.extend(layer_map_for_output(output).layers().map(|l| l.wl_surface().clone()));
+        }
+        for root in roots {
+            for (popup, _) in PopupManager::popups_for_surface(&root) {
+                if let Err(err) = PopupManager::dismiss_popup(&root, &popup) {
+                    tracing::debug!("cannot dismiss a popup: {err}");
+                }
+            }
+        }
+    }
+
     pub fn notify_activity(&mut self) {
         self.last_activity = std::time::Instant::now();
         let seat = self.seat.clone();
@@ -161,6 +207,9 @@ impl Nimbus {
 impl State {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
         self.nimbus.notify_activity();
+        if self.nimbus.is_locked() && self.has_grabs() {
+            self.break_grabs_for_lock();
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -242,6 +291,39 @@ impl State {
         }
     }
 
+    fn has_grabs(&self) -> bool {
+        self.nimbus.pointer.is_grabbed()
+            || self.nimbus.keyboard.as_ref().is_some_and(|k| k.is_grabbed())
+            || (self.nimbus.is_session_locked() && self.nimbus.input.shell_grab.is_some())
+    }
+
+    /// Ends client grabs and popups once a lock screen is up, so it gets all input.
+    pub fn break_grabs_for_lock(&mut self) {
+        if !self.nimbus.is_locked() {
+            return;
+        }
+        self.nimbus.dismiss_all_popups();
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = u32::try_from(Duration::from(self.nimbus.clock.now()).as_millis() % (1 << 32))
+            .unwrap_or(0);
+        if let Some(keyboard) = self.nimbus.keyboard.clone()
+            && keyboard.is_grabbed()
+        {
+            keyboard.unset_grab(self);
+            keyboard.set_focus(self, None, serial);
+        }
+        let pointer = self.nimbus.pointer.clone();
+        if pointer.is_grabbed() {
+            pointer.unset_grab(self, serial, time);
+        }
+        if self.nimbus.is_session_locked() {
+            self.nimbus.input.shell_grab = None;
+        }
+        // Moves pointer focus off client windows, onto the lock screen.
+        self.pointer_moved(self.nimbus.pointer_location, time, None);
+        self.apply_keyboard_focus();
+    }
+
     fn on_keyboard<B: InputBackend>(&mut self, event: B::KeyboardKeyEvent) {
         let Some(keyboard) = self.nimbus.keyboard.clone() else {
             return;
@@ -299,21 +381,18 @@ impl State {
             self.nimbus.suppressed_keys.insert(code);
             return FilterResult::Intercept(KeyAction::SwitchVt(vt));
         }
-        let is_backspace = raw_syms.iter().any(|s| s.raw() == keysyms::KEY_BackSpace);
-        if modified.raw() == keysyms::KEY_Terminate_Server
-            || (modifiers.ctrl && modifiers.alt && is_backspace)
-        {
-            self.nimbus.suppressed_keys.insert(code);
-            return FilterResult::Intercept(KeyAction::EmergencyQuit);
-        }
         if self.nimbus.is_session_locked() {
             return FilterResult::Forward;
+        }
+        let locked = self.nimbus.is_shell_locked();
+        if is_emergency_quit(modified, &raw_syms, modifiers, locked) {
+            self.nimbus.suppressed_keys.insert(code);
+            return FilterResult::Intercept(KeyAction::EmergencyQuit);
         }
 
         let target = self.nimbus.keyboard_target();
         let inhibited = matches!(target, KeyboardTarget::Surface(_))
             && self.nimbus.seat.keyboard_shortcuts_inhibited();
-        let locked = self.nimbus.is_shell_locked();
         if !inhibited
             && let Some(action) =
                 self.nimbus.bindings.lookup(Mods::from(modifiers), &raw_syms).cloned()
@@ -334,14 +413,14 @@ impl State {
     }
 
     fn shell_key(&mut self, keycode: u32, text: SharedString, pressed: bool) {
-        if let Some((_, token)) = self.nimbus.input.shell_repeat.take() {
-            self.nimbus.loop_handle.remove(token);
+        let is_modifier = text.chars().next().is_some_and(is_modifier_char);
+        if repeat_stops(self.nimbus.input.repeating_key(), keycode, pressed, is_modifier) {
+            self.nimbus.input.stop_repeat(&self.nimbus.loop_handle);
         }
         let Some(shell) = self.nimbus.shell.as_ref() else {
             return;
         };
         shell.dispatch_key(text.clone(), pressed, false);
-        let is_modifier = text.chars().next().is_some_and(is_modifier_char);
         if !pressed || is_modifier {
             return;
         }
@@ -353,6 +432,10 @@ impl State {
         let interval = Duration::from_secs_f64(1.0 / f64::from(input.repeat_rate));
         let timer = Timer::from_duration(delay);
         match self.nimbus.loop_handle.insert_source(timer, move |_, _, state| {
+            if state.nimbus.keyboard_target() != KeyboardTarget::Shell {
+                state.nimbus.input.shell_repeat = None;
+                return TimeoutAction::Drop;
+            }
             if let Some(shell) = state.nimbus.shell.as_ref() {
                 shell.dispatch_key(text.clone(), true, true);
             }
@@ -478,7 +561,7 @@ impl State {
 
         if let Some((output, pressed)) = self.nimbus.input.shell_grab.clone() {
             let local = self.shell_local(&output, location);
-            if let Some(shell) = self.nimbus.shell.as_ref() {
+            if let Some(shell) = self.nimbus.shell.as_mut() {
                 shell.pointer_button(
                     &output,
                     local,
@@ -495,13 +578,14 @@ impl State {
         if state == ButtonState::Pressed && !pointer.is_grabbed() {
             match self.nimbus.pointer_target(location) {
                 PointerTarget::Shell { output, local } => {
-                    if let Some(shell) = self.nimbus.shell.as_ref() {
+                    if let Some(shell) = self.nimbus.shell.as_mut() {
                         shell.pointer_button(&output, local, slint_button(button), true);
                     }
                     self.nimbus.input.shell_grab = Some((output, 1));
                     return;
                 }
                 PointerTarget::Surface { surface, .. } => {
+                    self.unfocus_shell();
                     let logo =
                         self.nimbus.keyboard.as_ref().is_some_and(|k| k.modifier_state().logo);
                     let window = self.nimbus.window_for_surface(&surface);
@@ -519,11 +603,20 @@ impl State {
                         self.click_focus(&surface, window);
                     }
                 }
-                PointerTarget::None => {}
+                PointerTarget::None => self.unfocus_shell(),
             }
         }
         pointer.button(self, &ButtonEvent { button, state, serial, time });
         pointer.frame(self);
+    }
+
+    /// Gives the keyboard back to the windows after a click outside the shell.
+    fn unfocus_shell(&mut self) {
+        if !self.nimbus.is_locked()
+            && let Some(shell) = self.nimbus.shell.as_mut()
+        {
+            shell.focus_output(None);
+        }
     }
 
     fn shell_local(&self, output: &str, location: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -544,7 +637,10 @@ impl State {
         }
         let layer_wants_focus = self.nimbus.outputs().any(|o| {
             layer_map_for_output(o).layer_for_surface(surface, WindowSurfaceType::ALL).is_some_and(
-                |l| l.cached_state().keyboard_interactivity != KeyboardInteractivity::None,
+                |l| {
+                    l.cached_state().keyboard_interactivity != KeyboardInteractivity::None
+                        && crate::state::is_mapped(l.wl_surface())
+                },
             )
         });
         if layer_wants_focus {
@@ -673,12 +769,25 @@ impl State {
     }
 }
 
-fn root_surface(surface: &WlSurface) -> WlSurface {
+pub fn root_surface(surface: &WlSurface) -> WlSurface {
     let mut root = surface.clone();
     while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
         root = parent;
     }
     root
+}
+
+/// Ctrl+Alt+Backspace or `XF86Terminate_Server`, as in Xorg, except on a lock screen.
+fn is_emergency_quit(
+    modified: Keysym,
+    raw_syms: &[Keysym],
+    modifiers: &ModifiersState,
+    locked: bool,
+) -> bool {
+    let is_backspace = raw_syms.iter().any(|s| s.raw() == keysyms::KEY_BackSpace);
+    !locked
+        && (modified.raw() == keysyms::KEY_Terminate_Server
+            || (modifiers.ctrl && modifiers.alt && is_backspace))
 }
 
 fn vt_for_keysym(sym: Keysym) -> Option<i32> {
@@ -827,6 +936,31 @@ mod tests {
         assert_eq!(slint_button(BTN_LEFT), PointerEventButton::Left);
         assert_eq!(slint_button(BTN_EXTRA), PointerEventButton::Forward);
         assert_eq!(slint_button(0x200), PointerEventButton::Other);
+    }
+
+    #[test]
+    fn emergency_quit_is_ignored_on_the_lock_screen() {
+        let ctrl_alt = ModifiersState { ctrl: true, alt: true, ..ModifiersState::default() };
+        let backspace = [Keysym::new(keysyms::KEY_BackSpace)];
+        let terminate = Keysym::new(keysyms::KEY_Terminate_Server);
+        assert!(is_emergency_quit(backspace[0], &backspace, &ctrl_alt, false));
+        assert!(is_emergency_quit(terminate, &[terminate], &ModifiersState::default(), false));
+        assert!(!is_emergency_quit(backspace[0], &backspace, &ctrl_alt, true));
+        assert!(!is_emergency_quit(terminate, &[terminate], &ModifiersState::default(), true));
+    }
+
+    #[test]
+    fn key_repeat_survives_unrelated_releases_and_modifiers() {
+        const A: u32 = 30;
+        const B: u32 = 48;
+        // Press 'a', press 'b' (restarts the repeat for 'b'), release 'a': 'b' keeps repeating.
+        assert!(repeat_stops(Some(A), B, true, false));
+        assert!(!repeat_stops(Some(B), A, false, false));
+        assert!(repeat_stops(Some(B), B, false, false));
+        // A modifier press or release leaves a held key repeating.
+        assert!(!repeat_stops(Some(B), 42, true, true));
+        assert!(!repeat_stops(Some(B), 42, false, true));
+        assert!(!repeat_stops(None, A, true, false));
     }
 
     #[test]

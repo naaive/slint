@@ -133,8 +133,9 @@ pub enum ServiceEvent {
     /// A new notification, or one that replaces the notification with the same `id`.
     /// It arrives even with [`SystemState::do_not_disturb`] set; the shell decides whether to show a toast.
     Notification(Notification),
-    /// The notification closed; [`CloseReason::Expired`] means its timeout elapsed,
-    /// so the shell may keep it in its history.
+    /// The notification closed; [`CloseReason::Expired`] means its timeout elapsed.
+    /// The shell may keep an expired notification that isn't transient in its history.
+    /// Its actions keep working until the shell sends [`ServiceCommand::CloseNotification`] for it.
     NotificationClosed {
         id: u32,
         reason: CloseReason,
@@ -159,9 +160,25 @@ pub enum ServiceCommand {
     MediaPlayPause,
     MediaNext,
     MediaPrevious,
-    InvokeNotificationAction { id: u32, action: String },
-    CloseNotification { id: u32, reason: CloseReason },
+    InvokeNotificationAction {
+        id: u32,
+        action: String,
+    },
+    /// Like [`ServiceCommand::InvokeNotificationAction`],
+    /// with an xdg-activation token the client uses to raise its window.
+    InvokeNotificationActionWithToken {
+        id: u32,
+        action: String,
+        activation_token: String,
+    },
+    CloseNotification {
+        id: u32,
+        reason: CloseReason,
+    },
     LockSession,
+    /// Every output has presented a frame of the lock screen after [`ServiceEvent::LockRequested`].
+    /// A pending suspend waits for this, or for a short timeout.
+    LockPresented,
     Suspend,
     Reboot,
     PowerOff,

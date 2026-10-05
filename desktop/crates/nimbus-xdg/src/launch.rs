@@ -18,7 +18,7 @@ pub enum LaunchError {
 /// Terminal emulators tried in order when `$TERMINAL` isn't set,
 /// with the argument that precedes the command, if any.
 const TERMINALS: [(&str, Option<&str>); 7] = [
-    ("nimbus-terminal", Some("-e")),
+    ("nimbus-terminal", Some("--")),
     ("foot", None),
     ("alacritty", Some("-e")),
     ("kitty", None),
@@ -260,7 +260,7 @@ mod tests {
         executable(bin.path(), "nimbus-terminal");
         assert_eq!(
             terminal_prefix(None, &path),
-            Some(vec!["nimbus-terminal".to_owned(), "-e".to_owned()])
+            Some(vec!["nimbus-terminal".to_owned(), "--".to_owned()])
         );
         assert_eq!(
             terminal_prefix(Some("wezterm"), &path),
@@ -273,7 +273,11 @@ mod tests {
         );
         assert_eq!(
             terminal_prefix(Some("  "), &path),
-            Some(vec!["nimbus-terminal".to_owned(), "-e".to_owned()])
+            Some(vec!["nimbus-terminal".to_owned(), "--".to_owned()])
+        );
+        assert_eq!(
+            terminal_prefix(Some("/usr/bin/nimbus-terminal"), &path),
+            Some(vec!["/usr/bin/nimbus-terminal".to_owned(), "--".to_owned()])
         );
     }
 
@@ -292,6 +296,12 @@ mod tests {
         assert_eq!(argv(&cmds[0]), vec!["alacritty", "-e", "htop"]);
         let err = commands(&entry, &[], None, None, &[]).err();
         assert!(matches!(err, Some(LaunchError::Spawn { .. })), "{err:?}");
+
+        executable(bin.path(), "nimbus-terminal");
+        let spaced = DesktopEntry { exec: "\"/opt/My Tools/monitor\"".into(), ..entry };
+        let cmds =
+            commands(&spaced, &[], None, None, &[bin.path().to_path_buf()]).expect("commands");
+        assert_eq!(argv(&cmds[0]), vec!["nimbus-terminal", "--", "/opt/My Tools/monitor"]);
     }
 
     #[test]

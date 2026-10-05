@@ -77,7 +77,7 @@ impl ConfigManager {
 }
 
 impl State {
-    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, scale, wallpaper, and the shell.
+    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, scale, wallpaper, icon theme, and the shell.
     pub fn apply_config(&mut self, config: Config) {
         let old = self.nimbus.config.replace(config.clone());
         if old.input != config.input {
@@ -126,6 +126,9 @@ impl State {
         }
         if let Some(shell) = self.nimbus.shell.as_ref() {
             shell.set_config(&config);
+            if old.appearance.icon_theme != config.appearance.icon_theme {
+                shell.reload_apps(config.appearance.icon_theme.clone());
+            }
         }
         self.nimbus.arrange();
     }

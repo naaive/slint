@@ -2934,6 +2934,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit",
  "tracing",
 ]
 
@@ -2953,6 +2954,7 @@ dependencies = [
  "mime_guess",
  "nimbus-config",
  "nimbus-theme",
+ "nimbus-xdg",
  "notify",
  "percent-encoding",
  "png",
@@ -3055,9 +3057,11 @@ dependencies = [
  "slint-build",
  "tempfile",
  "thiserror 2.0.21",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "xkbcommon",
 ]
 
 [[package]]

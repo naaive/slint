@@ -9,12 +9,14 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use futures_channel::mpsc::UnboundedSender;
+use nimbus_xdg::{DesktopEntry, MimeLookup};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use crate::core::apps::{self, AppInfo};
+use crate::core::apps;
 use crate::core::entry::{self, FileEntry, ListOptions};
 use crate::core::ops::{self, Conflict, Decision, Operation, Outcome, Progress};
 use crate::core::places::{self, Mount, Place};
+use crate::core::prefs::Preferences;
 use crate::core::properties;
 use crate::core::search::{self, SearchEnd};
 use crate::core::sort::NameFilter;
@@ -74,7 +76,7 @@ pub enum Msg {
     },
     Apps {
         id: u64,
-        apps: Vec<AppInfo>,
+        apps: Vec<DesktopEntry>,
         default: Option<String>,
     },
     PlacesChanged,
@@ -94,6 +96,37 @@ pub fn send(tx: &Sender, msg: Msg) {
 fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
     if let Err(error) = std::thread::Builder::new().name(name.into()).spawn(work) {
         tracing::error!("couldn't start the {name} thread: {error}");
+    }
+}
+
+/// Saves preferences in order on one thread, skipping versions that a newer one replaced.
+pub struct PrefsWriter {
+    requests: Option<mpsc::Sender<Preferences>>,
+}
+
+impl PrefsWriter {
+    pub fn start(path: Option<PathBuf>) -> Self {
+        let Some(path) = path else {
+            return Self { requests: None };
+        };
+        let (tx, rx) = mpsc::channel::<Preferences>();
+        spawn("nimbus-files-prefs", move || {
+            while let Ok(mut prefs) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    prefs = newer;
+                }
+                if let Err(error) = prefs.save_to(&path) {
+                    tracing::warn!("couldn't save preferences: {error}");
+                }
+            }
+        });
+        Self { requests: Some(tx) }
+    }
+
+    pub fn save(&self, prefs: &Preferences) {
+        if let Some(requests) = &self.requests {
+            let _ = requests.send(prefs.clone());
+        }
     }
 }
 
@@ -306,8 +339,7 @@ pub fn set_bookmark(tx: Sender, file: PathBuf, dir: PathBuf, bookmarked: bool) {
 /// Finds applications for "Open With" in the background.
 pub fn find_apps(tx: Sender, id: u64, mime: String) {
     spawn("nimbus-files-apps", move || {
-        let default = apps::default_app_id(&mime);
-        let found = apps::apps_for_mime(&mime, &apps::data_dirs(), default.as_deref());
+        let (found, default) = apps::apps_for_mime(&MimeLookup::from_env(), &mime);
         send(&tx, Msg::Apps { id, apps: found, default });
     });
 }

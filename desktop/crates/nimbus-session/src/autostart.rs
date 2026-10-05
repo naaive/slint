@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Session autostart: the configuration's command lines and XDG autostart entries.
+//! Session autostart of XDG autostart entries.
+//! The compositor runs the configuration's `autostart` commands itself.
 //!
 //! Follows the Desktop Application Autostart Specification and the parts of the
 //! Desktop Entry Specification it relies on.
@@ -224,28 +225,22 @@ pub fn discover(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
         .collect()
 }
 
-/// Lists everything to start: the configuration's command lines first, then the XDG entries that apply.
+/// Lists the XDG entries in `dirs` that apply.
 pub fn plan(
-    commands: &[String],
     dirs: &[PathBuf],
     desktops: &[&str],
     program_exists: impl Fn(&str) -> bool,
 ) -> Vec<Launch> {
-    let configured = commands.iter().filter(|c| !c.trim().is_empty()).map(|command| Launch {
-        label: command.clone(),
-        argv: vec!["sh".into(), "-c".into(), command.clone()],
-        working_dir: None,
-    });
-    let xdg = discover(dirs).into_iter().filter_map(|entry| {
-        match evaluate(&entry, desktops, &program_exists) {
+    discover(dirs)
+        .into_iter()
+        .filter_map(|entry| match evaluate(&entry, desktops, &program_exists) {
             Ok(launch) => Some(launch),
             Err(reason) => {
                 tracing::debug!("not autostarting {}: {reason}", entry.path.display());
                 None
             }
-        }
-    });
-    configured.chain(xdg).collect()
+        })
+        .collect()
 }
 
 /// Applies the string escapes `\s`, `\n`, `\t`, `\r`, and `\\`.
@@ -478,15 +473,9 @@ mod tests {
 
         let dirs =
             [user.path().to_path_buf(), PathBuf::from("/nonexistent"), system.path().to_path_buf()];
-        let plan = plan(&["swaybg -c '#000'".into(), "  ".into()], &dirs, &["Nimbus"], |_| true);
+        let plan = plan(&dirs, &["Nimbus"], |_| true);
         let argvs: Vec<_> = plan.iter().map(|l| l.argv.clone()).collect();
-        assert_eq!(
-            argvs,
-            vec![
-                vec!["sh".to_string(), "-c".into(), "swaybg -c '#000'".into()],
-                vec!["shown".into()]
-            ]
-        );
+        assert_eq!(argvs, vec![vec!["shown".to_string()]]);
     }
 
     #[test]

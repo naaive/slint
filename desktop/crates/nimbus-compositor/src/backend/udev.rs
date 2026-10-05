@@ -19,6 +19,7 @@ use smithay::backend::drm::{
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::renderer::element::RenderElementStates;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::utils::import_surface_tree;
 use smithay::backend::renderer::{ImportDma, ImportEgl};
@@ -27,6 +28,7 @@ use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{UdevBackend as UdevMonitor, UdevEvent, all_gpus, primary_gpu};
 use smithay::desktop::utils::OutputPresentationFeedback;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
 use smithay::reexports::input::{self as libinput, Libinput};
@@ -52,6 +54,17 @@ struct Surface {
     drm_output: DrmOutput<Allocator, Exporter, Feedback, DrmDeviceFd>,
     connector: connector::Handle,
     waiting_for_vblank: bool,
+    /// `waiting_for_vblank` was set by an estimated-vblank timer rather than a queued page flip.
+    estimated_vblank: bool,
+}
+
+/// The refresh interval of `output`, or 60 Hz when its mode doesn't say.
+fn frame_interval(output: &Output) -> Duration {
+    output
+        .current_mode()
+        .and_then(|m| u64::try_from(m.refresh).ok())
+        .filter(|&mhz| mhz > 0)
+        .map_or(Duration::from_micros(16_667), |mhz| Duration::from_nanos(1_000_000_000_000 / mhz))
 }
 
 struct Gpu {
@@ -343,7 +356,13 @@ impl UdevBackend {
             nimbus.queue_redraw(&output);
             gpu.surfaces.insert(
                 crtc,
-                Surface { output, drm_output, connector: info.handle(), waiting_for_vblank: false },
+                Surface {
+                    output,
+                    drm_output,
+                    connector: info.handle(),
+                    waiting_for_vblank: false,
+                    estimated_vblank: false,
+                },
             );
         }
     }
@@ -355,14 +374,59 @@ impl UdevBackend {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
         };
-        for surface in gpu.surfaces.values_mut() {
+        let mut idle = Vec::new();
+        for (&crtc, surface) in &mut gpu.surfaces {
             let name = surface.output.name();
             if surface.waiting_for_vblank || !nimbus.pending_redraws.remove(&name) {
                 continue;
             }
-            if let Err(err) = render_surface(&mut gpu.renderer, surface, nimbus) {
-                tracing::warn!(output = %name, "rendering failed: {err:#}");
+            match render_surface(&mut gpu.renderer, surface, nimbus) {
+                Ok(true) => {}
+                Ok(false) => idle.push((crtc, frame_interval(&surface.output))),
+                Err(err) => {
+                    tracing::warn!(output = %name, "rendering failed: {err:#}");
+                    // Clients still get their frame callbacks, and the frame is retried.
+                    let time = nimbus.clock.now();
+                    render::post_repaint(
+                        &surface.output,
+                        &RenderElementStates::default(),
+                        nimbus,
+                        time.into(),
+                    );
+                    nimbus.pending_redraws.insert(name);
+                    idle.push((crtc, frame_interval(&surface.output)));
+                }
             }
+        }
+        for (crtc, interval) in idle {
+            self.estimate_vblank(crtc, interval);
+        }
+    }
+
+    /// Holds the output's next frame back for one refresh interval without a page flip,
+    /// so frame callbacks for frames with nothing to present stay paced at the refresh rate.
+    fn estimate_vblank(&mut self, crtc: crtc::Handle, interval: Duration) {
+        let Some(surface) = self.gpu.as_mut().and_then(|gpu| gpu.surfaces.get_mut(&crtc)) else {
+            return;
+        };
+        surface.waiting_for_vblank = true;
+        surface.estimated_vblank = true;
+        let inserted =
+            self.handle.insert_source(Timer::from_duration(interval), move |_, _, state| {
+                if let Some((udev, _)) = state.udev_parts()
+                    && let Some(surface) =
+                        udev.gpu.as_mut().and_then(|gpu| gpu.surfaces.get_mut(&crtc))
+                    && surface.estimated_vblank
+                {
+                    surface.estimated_vblank = false;
+                    surface.waiting_for_vblank = false;
+                }
+                TimeoutAction::Drop
+            });
+        if let Err(err) = inserted {
+            tracing::warn!("cannot schedule the next frame: {err}");
+            surface.waiting_for_vblank = false;
+            surface.estimated_vblank = false;
         }
     }
 
@@ -426,6 +490,7 @@ impl UdevBackend {
             }
             for surface in gpu.surfaces.values_mut() {
                 surface.waiting_for_vblank = false;
+                surface.estimated_vblank = false;
             }
         }
         self.active = true;
@@ -503,11 +568,12 @@ fn configure_device(device: &mut libinput::Device, input: &nimbus_config::Input)
     }
 }
 
+/// Renders and queues a frame; returns `false` when there was nothing new to present.
 fn render_surface(
     renderer: &mut GlesRenderer,
     surface: &mut Surface,
     nimbus: &mut Nimbus,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let output = surface.output.clone();
     let elements =
         render::output_elements(renderer, nimbus, &output, SceneOptions { cursor: true });
@@ -518,12 +584,13 @@ fn render_surface(
     let time = nimbus.clock.now();
     render::post_repaint(&output, &frame.states, nimbus, time.into());
     if frame.is_empty {
-        return Ok(());
+        return Ok(false);
     }
     let feedback = render::take_presentation_feedback(&output, nimbus, &frame.states);
     surface.drm_output.queue_frame(Some(feedback)).map_err(|e| anyhow!("{e}"))?;
     surface.waiting_for_vblank = true;
-    Ok(())
+    surface.estimated_vblank = false;
+    Ok(true)
 }
 
 impl State {

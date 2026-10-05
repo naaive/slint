@@ -318,7 +318,13 @@ fn dispatch(routes: &Routes, command: ServiceCommand) -> Dispatch {
             route(&routes.media, MediaCommand::Previous);
         }
         C::InvokeNotificationAction { id, action } => {
-            route(&routes.notifications, NotificationCommand::InvokeAction { id, action });
+            let command = NotificationCommand::InvokeAction { id, action, activation_token: None };
+            route(&routes.notifications, command);
+        }
+        C::InvokeNotificationActionWithToken { id, action, activation_token } => {
+            let activation_token = Some(activation_token);
+            let command = NotificationCommand::InvokeAction { id, action, activation_token };
+            route(&routes.notifications, command);
         }
         C::CloseNotification { id, reason } => {
             route(&routes.notifications, NotificationCommand::Close { id, reason });
@@ -327,6 +333,9 @@ fn dispatch(routes: &Routes, command: ServiceCommand) -> Dispatch {
             if !route(&routes.login, LoginCommand::Lock) {
                 return Dispatch::Emit(ServiceEvent::LockRequested);
             }
+        }
+        C::LockPresented => {
+            route(&routes.login, LoginCommand::LockPresented);
         }
         C::Suspend => {
             route(&routes.login, LoginCommand::Suspend);

@@ -13,7 +13,7 @@ use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_to
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::utils::{Rectangle, Serial};
+use smithay::utils::{Logical, Rectangle, Serial};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState};
 use smithay::{delegate_xdg_decoration, delegate_xdg_shell};
@@ -74,6 +74,10 @@ impl XdgShellHandler for State {
         let Ok(mut grab) = self.nimbus.popups.grab_popup(root, kind, &seat, serial) else {
             return;
         };
+        if self.nimbus.is_locked() {
+            grab.ungrab(PopupUngrabStrategy::All);
+            return;
+        }
         if let Some(keyboard) = seat.get_keyboard() {
             if keyboard.is_grabbed()
                 && !(keyboard.has_grab(serial)
@@ -195,14 +199,9 @@ impl Nimbus {
             .and_then(|id| self.wm.get(id))
             .and_then(|w| self.wm.space.element_geometry(&w.window))
         {
-            let Some(output_geo) = self
-                .wm
-                .space
-                .output_under(window_geo.loc.to_f64())
-                .next()
-                .or_else(|| self.outputs().next())
-                .and_then(|o| self.wm.space.output_geometry(o))
-            else {
+            let outputs: Vec<Rectangle<i32, Logical>> =
+                self.outputs().filter_map(|o| self.wm.space.output_geometry(o)).collect();
+            let Some(output_geo) = best_output(&outputs, window_geo) else {
                 return;
             };
             let mut target = output_geo;
@@ -235,6 +234,21 @@ impl Nimbus {
     }
 }
 
+/// The output that shows most of `window`, or the first one when it's on none.
+fn best_output(
+    outputs: &[Rectangle<i32, Logical>],
+    window: Rectangle<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    outputs
+        .iter()
+        .filter_map(|g| {
+            g.intersection(window).map(|i| (*g, i64::from(i.size.w) * i64::from(i.size.h)))
+        })
+        .max_by_key(|(_, area)| *area)
+        .map(|(g, _)| g)
+        .or_else(|| outputs.first().copied())
+}
+
 impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         toplevel
@@ -255,3 +269,18 @@ impl XdgDecorationHandler for State {
 
 delegate_xdg_shell!(State);
 delegate_xdg_decoration!(State);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popups_unconstrain_to_the_output_with_most_of_the_window() {
+        let a = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        let b = Rectangle::new((1920, 0).into(), (1920, 1080).into());
+        let window = Rectangle::new((1820, 100).into(), (800, 600).into());
+        assert_eq!(best_output(&[a, b], window), Some(b));
+        let off_screen = Rectangle::new((-900, -900).into(), (100, 100).into());
+        assert_eq!(best_output(&[a, b], off_screen), Some(a));
+    }
+}

@@ -50,7 +50,8 @@ struct Cli {
     /// Run the compositor without the desktop shell.
     #[arg(long)]
     no_shell: bool,
-    /// Skip autostart commands and XDG autostart entries.
+    /// Skip XDG autostart entries.
+    /// The compositor still runs the configuration's `autostart` commands.
     #[arg(long)]
     no_autostart: bool,
     /// Compositor executable instead of the one next to nimbus-session or on PATH.
@@ -133,23 +134,12 @@ fn main() -> ExitCode {
         tracing::warn!("XDG_RUNTIME_DIR isn't set; the compositor may fail to create its sockets");
     }
 
-    let config_path = cli.config.clone().or_else(|| nimbus_config::default_path().ok());
-    let config = match config_path.as_deref().map(nimbus_config::Config::load_from) {
-        Some(Ok(config)) => config,
-        Some(Err(error)) => {
-            tracing::warn!("{error}; using the default configuration");
-            nimbus_config::Config::default()
-        }
-        None => nimbus_config::Config::default(),
-    };
-
     let backend = cli.backend.unwrap_or_else(|| default_backend(lookup_env));
     let program = cli
         .compositor
         .clone()
         .unwrap_or_else(|| env::compositor_program(std::env::current_exe().ok().as_deref()));
     let run_autostart = !cli.no_autostart;
-    let autostart_commands = config.autostart;
     let desktops: Vec<String> = session_env
         .get("XDG_CURRENT_DESKTOP")
         .unwrap_or_default()
@@ -166,14 +156,13 @@ fn main() -> ExitCode {
             }
             let desktops: Vec<&str> = desktops.iter().map(String::as_str).collect();
             let path = std::env::var_os("PATH");
-            autostart::plan(
-                &autostart_commands,
-                &autostart::autostart_dirs(lookup_env),
-                &desktops,
-                |program| env::find_in_path(program, path.clone()).is_some(),
-            )
+            autostart::plan(&autostart::autostart_dirs(lookup_env), &desktops, |program| {
+                env::find_in_path(program, path.clone()).is_some()
+            })
         }),
         ready_timeout: Duration::from_secs(cli.ready_timeout),
+        lock_marker: lookup_env("XDG_RUNTIME_DIR")
+            .map(|dir| supervisor::lock_marker(std::path::Path::new(&dir))),
     };
 
     match supervisor::run(plan) {

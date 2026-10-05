@@ -91,8 +91,6 @@ pub const ENTRIES: &[Entry] = &[
     entry(Page::Input, "Pointer speed", "mouse touchpad acceleration sensitivity cursor"),
     entry(Page::Shortcuts, "Keyboard shortcuts", "keybindings hotkeys keys bindings chord"),
     entry(Page::Power, "Automatic screen lock", "lock screen idle timeout security"),
-    entry(Page::Power, "Blank screen", "screen off idle timeout dpms"),
-    entry(Page::Power, "Suspend when lid is closed", "laptop lid sleep"),
     entry(Page::Displays, "Displays", "monitors screens resolution refresh rate scale outputs"),
     entry(Page::Notifications, "Do not disturb", "notifications banners popups quiet"),
     entry(
@@ -145,6 +143,8 @@ mod tests {
         assert_eq!(search("keybindings")[0].page, Page::Shortcuts);
         assert_eq!(search("kernel")[0].page, Page::About);
         assert!(search("zzzz").is_empty());
+        assert!(search("suspend").is_empty(), "lid suspend isn't implemented");
+        assert!(search("dpms").is_empty(), "screen blanking isn't implemented");
         for page in Page::ALL {
             assert!(ENTRIES.iter().any(|e| e.page == page), "{page} has no search entries");
         }

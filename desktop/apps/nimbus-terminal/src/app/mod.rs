@@ -75,14 +75,7 @@ pub fn run(options: cli::Options) -> anyhow::Result<()> {
         None => nimbus_config::Config::default(),
     };
     let prefs_path = crate::prefs::default_path().ok();
-    let prefs = match prefs_path.as_deref().map(Prefs::load_from) {
-        Some(Ok(prefs)) => prefs,
-        Some(Err(error)) => {
-            tracing::warn!("{error}");
-            Prefs::default()
-        }
-        None => Prefs::default(),
-    };
+    let prefs = prefs_path.as_deref().map_or_else(Prefs::default, Prefs::load_or_default);
 
     let window = crate::AppWindow::new()?;
     if let Err(error) = slint::set_xdg_app_id(crate::APP_ID) {

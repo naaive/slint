@@ -53,6 +53,12 @@ pub fn clamp_location(rect: Rect, area: Rect) -> Point<i32, Logical> {
     ))
 }
 
+/// Moves a floating window along with its output, by `delta`, and back inside the output's `usable` area.
+pub fn refit(rect: Rect, delta: Point<i32, Logical>, usable: Rect) -> Rect {
+    let moved = Rect::new(rect.loc + delta, rect.size);
+    Rect::new(clamp_location(moved, usable), rect.size)
+}
+
 /// Keeps at least `margin` pixels of a dragged window's title area reachable inside `area`.
 pub fn keep_reachable(rect: Rect, area: Rect, margin: i32) -> Point<i32, Logical> {
     let min_x = area.loc.x - rect.size.w + margin;
@@ -71,6 +77,24 @@ mod tests {
 
     fn area() -> Rect {
         Rect::new((0, 32).into(), (1280, 688).into())
+    }
+
+    #[test]
+    fn refit_follows_a_moved_output() {
+        // Output B moves from x=1920 to x=0 after output A to its left is removed.
+        let usable = Rect::new((0, 0).into(), (1920, 1080).into());
+        let rect = Rect::new((2100, 100).into(), (400, 300).into());
+        let refit = refit(rect, (-1920, 0).into(), usable);
+        assert_eq!(refit, Rect::new((180, 100).into(), (400, 300).into()));
+        assert!(usable.contains_rect(refit));
+    }
+
+    #[test]
+    fn refit_clamps_into_a_shrunk_output() {
+        let usable = Rect::new((0, 0).into(), (1280, 720).into());
+        let rect = Rect::new((1500, 600).into(), (400, 300).into());
+        let refit = refit(rect, (0, 0).into(), usable);
+        assert_eq!(refit, Rect::new((880, 420).into(), (400, 300).into()));
     }
 
     #[test]

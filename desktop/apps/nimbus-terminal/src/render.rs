@@ -123,13 +123,30 @@ struct OverlayKey {
     colors: u64,
 }
 
+/// A pixel buffer and the rows drawn into it.
+struct Surface {
+    pixels: SharedPixelBuffer<Rgb8Pixel>,
+    rows: Vec<Option<RowSnapshot>>,
+}
+
+impl Surface {
+    fn new(width: u32, height: u32, lines: usize) -> Self {
+        Self { pixels: SharedPixelBuffer::new(width, height), rows: vec![None; lines] }
+    }
+}
+
 /// Renders a terminal's visible grid with a glyph cache.
+///
+/// It draws into two surfaces in turn,
+/// because the window keeps showing the last image, and writing to a shared buffer copies it whole.
 pub struct Renderer {
     glyphs: GlyphCache,
     columns: usize,
     lines: usize,
-    buffer: SharedPixelBuffer<Rgb8Pixel>,
-    rows: Vec<Option<RowSnapshot>>,
+    front: Surface,
+    back: Surface,
+    /// The lines drawn into `front` that `back` doesn't have yet.
+    stale: Vec<usize>,
     overlay: Option<OverlayKey>,
     cursor_line: Option<usize>,
     blink_on: bool,
@@ -151,8 +168,9 @@ impl Renderer {
             glyphs,
             columns: 0,
             lines: 0,
-            buffer: SharedPixelBuffer::new(1, 1),
-            rows: Vec::new(),
+            front: Surface::new(1, 1, 0),
+            back: Surface::new(1, 1, 0),
+            stale: Vec::new(),
             overlay: None,
             cursor_line: None,
             blink_on: true,
@@ -177,13 +195,16 @@ impl Renderer {
 
     /// Forgets the last frame, so the next one draws every row, such as after switching tabs.
     pub fn invalidate(&mut self) {
-        self.rows.iter_mut().for_each(|row| *row = None);
+        for surface in [&mut self.front, &mut self.back] {
+            surface.rows.iter_mut().for_each(|row| *row = None);
+        }
+        self.stale.clear();
         self.overlay = None;
     }
 
     /// The rendered image.
     pub fn image(&self) -> SharedPixelBuffer<Rgb8Pixel> {
-        self.buffer.clone()
+        self.front.pixels.clone()
     }
 
     /// Copies the rows of `term` that may have changed, and clears its damage.
@@ -195,8 +216,9 @@ impl Renderer {
             self.lines = lines;
             let width = (columns as u32 * metrics.width).max(1);
             let height = (lines as u32 * metrics.height).max(1);
-            self.buffer = SharedPixelBuffer::new(width, height);
-            self.rows = vec![None; lines];
+            self.front = Surface::new(width, height, lines);
+            self.back = Surface::new(width, height, lines);
+            self.stale.clear();
             self.overlay = None;
         }
 
@@ -248,7 +270,7 @@ impl Renderer {
         }
         self.cursor_line = cursor_line;
         self.blink_on = view.blink_on;
-        for (d, row) in dirty.iter_mut().zip(&self.rows) {
+        for (d, row) in dirty.iter_mut().zip(&self.front.rows) {
             *d |= row.is_none();
         }
 
@@ -350,27 +372,41 @@ impl Renderer {
     /// Rasterizes the rows of `frame` that differ from the last frame. Returns whether any pixels changed.
     pub fn draw(&mut self, frame: Frame) -> bool {
         let metrics = self.glyphs.metrics();
-        let width = self.buffer.width() as usize;
-        let height = self.buffer.height() as usize;
-        let mut changed = false;
-        for (line, row) in frame.rows {
-            if self.rows.get(line).is_some_and(|old| old.as_ref() == Some(&row)) {
-                continue;
+        let changed: Vec<_> = frame
+            .rows
+            .into_iter()
+            .filter(|(line, row)| {
+                !self.front.rows.get(*line).is_some_and(|old| old.as_ref() == Some(row))
+            })
+            .collect();
+        if changed.is_empty() {
+            return false;
+        }
+
+        let width = self.back.pixels.width() as usize;
+        let height = self.back.pixels.height() as usize;
+        let row_len = width * metrics.height as usize;
+        let pixels = self.back.pixels.make_mut_slice();
+        let front = self.front.pixels.as_slice();
+        for line in self.stale.drain(..) {
+            let start = (line * row_len).min(pixels.len());
+            let end = (start + row_len).min(pixels.len());
+            pixels[start..end].copy_from_slice(&front[start..end]);
+            if let Some(slot) = self.back.rows.get_mut(line) {
+                *slot = self.front.rows.get(line).cloned().flatten();
             }
-            let mut target = Target {
-                pixels: self.buffer.make_mut_slice(),
-                width,
-                height,
-                clip_top: 0,
-                clip_bottom: 0,
-            };
+        }
+
+        let mut target = Target { pixels, width, height, clip_top: 0, clip_bottom: 0 };
+        for (line, row) in changed {
             draw_row(&mut target, &mut self.glyphs, metrics, line, &row);
-            if let Some(slot) = self.rows.get_mut(line) {
+            if let Some(slot) = self.back.rows.get_mut(line) {
                 *slot = Some(row);
             }
-            changed = true;
+            self.stale.push(line);
         }
-        changed
+        std::mem::swap(&mut self.front, &mut self.back);
+        true
     }
 }
 
@@ -581,7 +617,7 @@ mod tests {
     }
 
     fn at(r: &Renderer, x: u32, y: u32) -> Rgb {
-        let p = r.buffer.as_slice()[(y * r.buffer.width() + x) as usize];
+        let p = r.front.pixels.as_slice()[(y * r.front.pixels.width() + x) as usize];
         Rgb { r: p.r, g: p.g, b: p.b }
     }
 
@@ -691,6 +727,40 @@ mod tests {
         assert_eq!(lines_of(&frame), [1]);
         r.draw(frame);
         assert_eq!(at(&r, 1, m.height + 1), scheme.background);
+    }
+
+    #[test]
+    fn draws_into_two_buffers_in_turn() {
+        let Some(mut r) = renderer() else { return };
+        let scheme = resolve_scheme("nimbus-dark", true);
+        let mut term = test_term(10, 3);
+        feed(&mut term, b"\x1b[?25l");
+        let frame = r.snapshot(&mut term, &view(scheme));
+        assert!(r.draw(frame));
+        let mut shown = r.image();
+        let mut addresses = vec![shown.as_slice().as_ptr()];
+        for text in [&b"\x1b[1;1Ha"[..], b"\x1b[2;1Hb", b"\x1b[3;1Hc", b"\x1b[1;2Hd"] {
+            feed(&mut term, text);
+            let frame = r.snapshot(&mut term, &view(scheme));
+            assert!(r.draw(frame));
+            shown = r.image();
+            addresses.push(shown.as_slice().as_ptr());
+        }
+        assert_ne!(addresses[0], addresses[1]);
+        for pair in addresses.windows(3) {
+            assert_eq!(pair[0], pair[2], "{addresses:?}");
+        }
+
+        // Each buffer catches up on the rows drawn into the other.
+        for (column, line) in [(0, 0), (0, 1), (0, 2), (1, 0)] {
+            assert!(cell_colors(&r, column, line).contains(&tuple(scheme.foreground)));
+        }
+        let previous = std::mem::replace(&mut r.front, Surface::new(1, 1, 0));
+        r.front = std::mem::replace(&mut r.back, previous);
+        for (column, line) in [(0, 0), (0, 1), (0, 2)] {
+            assert!(cell_colors(&r, column, line).contains(&tuple(scheme.foreground)));
+        }
+        assert_eq!(cell_colors(&r, 1, 0), HashSet::from([tuple(scheme.background)]));
     }
 
     #[test]

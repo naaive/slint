@@ -48,6 +48,46 @@ pub struct Options {
     pub title: Option<String>,
 }
 
+/// How a tab's program ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitReason {
+    Code(i32),
+    Signal(i32),
+    /// The terminal hung up without an exit status.
+    Unknown,
+}
+
+impl ExitReason {
+    fn of(status: std::process::ExitStatus) -> Self {
+        if let Some(code) = status.code() {
+            return Self::Code(code);
+        }
+        #[cfg(unix)]
+        if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+            return Self::Signal(signal);
+        }
+        Self::Unknown
+    }
+
+    /// What went wrong, for the note in the tab, or `None` when the program finished cleanly.
+    fn failure(self) -> Option<String> {
+        match self {
+            Self::Code(0) | Self::Unknown => None,
+            Self::Code(code) => Some(format!("exited with code {code}")),
+            Self::Signal(signal) => Some(format!("was terminated by signal {signal}")),
+        }
+    }
+
+    /// The exit code a shell reports, which is 128 plus the number of a fatal signal.
+    fn code(self) -> i32 {
+        match self {
+            Self::Code(code) => code,
+            Self::Signal(signal) => 128 + signal,
+            Self::Unknown => 0,
+        }
+    }
+}
+
 pub(super) struct Tab {
     pub(super) session: Session,
     /// The title set by the program, or its name.
@@ -614,28 +654,24 @@ impl Controller {
                 });
             }
             Event::CursorBlinkingChange => self.restart_blink(),
-            Event::ChildExit(status) => self.child_exited(id, status.code()),
-            Event::Exit => self.child_exited(id, None),
+            Event::ChildExit(status) => self.child_exited(id, ExitReason::of(status)),
+            Event::Exit => self.child_exited(id, ExitReason::Unknown),
             Event::MouseCursorDirty => {}
         }
     }
 
     /// Closes a tab whose program finished cleanly; keeps it with a note when it failed.
-    fn child_exited(&self, id: SessionId, code: Option<i32>) {
+    fn child_exited(&self, id: SessionId, reason: ExitReason) {
         let close = self.with_state(|st| {
             let tab = st.tabs.iter_mut().find(|t| t.session.id == id)?;
             if tab.exited.is_some() {
                 return Some(false);
             }
             tab.session.stopped();
-            let code = code.unwrap_or(0);
-            if code == 0 {
-                return Some(true);
-            }
-            tab.exited = Some(code);
-            let note = format!(
-                "\r\n\x1b[0;2m[The program exited with code {code}. Press Enter to close the tab.]\x1b[0m"
-            );
+            let Some(how) = reason.failure() else { return Some(true) };
+            tab.exited = Some(reason.code());
+            let note =
+                format!("\r\n\x1b[0;2m[The program {how}. Press Enter to close the tab.]\x1b[0m");
             feed(&mut *tab.session.term.lock(), note.as_bytes());
             Some(false)
         });
@@ -1107,5 +1143,27 @@ fn rebuild_glyphs(st: &mut State) {
     match st.renderer.as_mut() {
         Some(renderer) => renderer.set_glyphs(glyphs),
         None => st.renderer = Some(Renderer::new(glyphs)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExitReason;
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_deaths_are_failures() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+
+        let killed = ExitReason::of(ExitStatus::from_raw(9));
+        assert_eq!(killed, ExitReason::Signal(9));
+        assert_eq!(killed.failure().as_deref(), Some("was terminated by signal 9"));
+        assert_eq!(killed.code(), 137);
+
+        let failed = ExitReason::of(ExitStatus::from_raw(3 << 8));
+        assert_eq!(failed.failure().as_deref(), Some("exited with code 3"));
+        assert_eq!(ExitReason::of(ExitStatus::from_raw(0)).failure(), None);
+        assert_eq!(ExitReason::Unknown.failure(), None);
     }
 }

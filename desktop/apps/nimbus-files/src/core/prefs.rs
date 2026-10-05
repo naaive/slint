@@ -4,6 +4,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +59,9 @@ impl Preferences {
         let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
         let dir = path.parent().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         std::fs::create_dir_all(dir)?;
-        let temp = dir.join(format!(".files.toml.{}.tmp", std::process::id()));
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temp = dir.join(format!(".files.toml.{}.{n}.tmp", std::process::id()));
         std::fs::write(&temp, text)?;
         std::fs::rename(&temp, path).inspect_err(|_| {
             let _ = std::fs::remove_file(&temp);
@@ -96,5 +99,34 @@ mod tests {
 
         std::fs::write(&path, "view = 3").expect("write");
         assert_eq!(Preferences::load_from(&path), Preferences::default());
+    }
+
+    #[test]
+    fn concurrent_saves_never_mix() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("files.toml");
+        let snapshots: Vec<Preferences> = (0..16)
+            .map(|i| Preferences {
+                show_hidden: i % 2 == 0,
+                zoom: (i % 3) as u8,
+                view: if i % 4 < 2 { ViewMode::List } else { ViewMode::Grid },
+                sort: SortOptions {
+                    key: if i % 5 == 0 { SortKey::Modified } else { SortKey::Name },
+                    descending: i % 3 == 0,
+                    folders_first: i % 7 != 0,
+                },
+            })
+            .collect();
+        std::thread::scope(|scope| {
+            for prefs in &snapshots {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        prefs.save_to(path).expect("saved");
+                    }
+                });
+            }
+        });
+        assert!(snapshots.contains(&Preferences::load_from(&path)));
     }
 }

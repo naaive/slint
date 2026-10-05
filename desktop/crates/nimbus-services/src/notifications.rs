@@ -21,10 +21,12 @@ pub(crate) const PATH: &str = "/org/freedesktop/Notifications";
 const SPEC_VERSION: &str = "1.2";
 /// How long low and normal urgency notifications stay when the client leaves it to the server.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many expired notifications stay open for the shell's history, which holds at most 100.
+const MAX_EXPIRED: usize = 128;
 
 #[derive(Debug)]
 pub(crate) enum NotificationCommand {
-    InvokeAction { id: u32, action: String },
+    InvokeAction { id: u32, action: String, activation_token: Option<String> },
     Close { id: u32, reason: CloseReason },
 }
 
@@ -137,8 +139,11 @@ pub(crate) fn expiry(notification: &Notification) -> Option<Duration> {
 struct Entry {
     generation: u64,
     resident: bool,
+    transient: bool,
     action_keys: Vec<String>,
     expiry: Option<AbortHandle>,
+    /// The timeout elapsed, but the notification stays open while the shell shows it in its history.
+    expired: bool,
 }
 
 #[derive(Default)]
@@ -149,6 +154,17 @@ struct Registry {
 }
 
 impl Registry {
+    /// Removes and returns the oldest expired notification once more than [`MAX_EXPIRED`] are open.
+    fn evict_expired(&mut self) -> Option<u32> {
+        let expired = self.active.iter().filter(|(_, entry)| entry.expired);
+        if expired.clone().count() <= MAX_EXPIRED {
+            return None;
+        }
+        let id = expired.min_by_key(|(_, entry)| entry.generation).map(|(id, _)| *id)?;
+        self.active.remove(&id);
+        Some(id)
+    }
+
     fn allocate(&mut self) -> u32 {
         loop {
             self.last_id = self.last_id.wrapping_add(1);
@@ -174,11 +190,7 @@ impl Core {
     fn notify(&self, args: NotifyArgs) -> u32 {
         let notification = {
             let mut registry = self.registry();
-            let id = if args.replaces_id != 0 && registry.active.contains_key(&args.replaces_id) {
-                args.replaces_id
-            } else {
-                registry.allocate()
-            };
+            let id = if args.replaces_id != 0 { args.replaces_id } else { registry.allocate() };
             if let Some(handle) = registry.active.remove(&id).and_then(|entry| entry.expiry) {
                 handle.abort();
             }
@@ -194,9 +206,15 @@ impl Core {
                 .abort_handle()
             });
             let action_keys = notification.actions.iter().map(|(key, _)| key.clone()).collect();
-            registry
-                .active
-                .insert(id, Entry { generation, resident: behavior.resident, action_keys, expiry });
+            let entry = Entry {
+                generation,
+                resident: behavior.resident,
+                transient: notification.transient,
+                action_keys,
+                expiry,
+                expired: false,
+            };
+            registry.active.insert(id, entry);
             notification
         };
         let id = notification.id;
@@ -214,21 +232,42 @@ impl Core {
         }
     }
 
-    /// Closes `id` from its own expiry timer, unless it was replaced meanwhile.
+    /// Handles the expiry timer of `id`, unless it was replaced meanwhile.
+    /// Transient notifications close; others only leave the screen and stay open for the shell's history.
     async fn expire(&self, id: u32, generation: u64) {
-        let expired = {
+        let (close, evicted) = {
             let mut registry = self.registry();
-            let current =
-                registry.active.get(&id).is_some_and(|entry| entry.generation == generation);
-            current && registry.active.remove(&id).is_some()
+            match registry.active.get_mut(&id) {
+                Some(entry) if entry.generation == generation => {
+                    entry.expiry = None;
+                    if entry.transient {
+                        registry.active.remove(&id);
+                        (true, None)
+                    } else {
+                        entry.expired = true;
+                        (false, registry.evict_expired())
+                    }
+                }
+                _ => return,
+            }
         };
-        if expired {
+        if close {
             self.closed(id, CloseReason::Expired).await;
+        } else {
+            self.updates
+                .event(ServiceEvent::NotificationClosed { id, reason: CloseReason::Expired });
+        }
+        if let Some(evicted) = evicted {
+            self.emit_closed(evicted, CloseReason::Expired).await;
         }
     }
 
     async fn closed(&self, id: u32, reason: CloseReason) {
         self.updates.event(ServiceEvent::NotificationClosed { id, reason });
+        self.emit_closed(id, reason).await;
+    }
+
+    async fn emit_closed(&self, id: u32, reason: CloseReason) {
         let result = match SignalEmitter::new(&self.conn, PATH) {
             Ok(emitter) => Server::notification_closed(&emitter, id, reason as u32).await,
             Err(err) => Err(err),
@@ -238,7 +277,7 @@ impl Core {
         }
     }
 
-    async fn invoke_action(&self, id: u32, action: &str) {
+    async fn invoke_action(&self, id: u32, action: &str, activation_token: Option<&str>) {
         let resident = {
             let registry = self.registry();
             match registry.active.get(&id) {
@@ -253,12 +292,19 @@ impl Core {
                 }
             }
         };
-        let result = match SignalEmitter::new(&self.conn, PATH) {
-            Ok(emitter) => Server::action_invoked(&emitter, id, action).await,
-            Err(err) => Err(err),
-        };
-        if let Err(err) = result {
-            tracing::debug!("Can't emit ActionInvoked for {id}: {err}");
+        match SignalEmitter::new(&self.conn, PATH) {
+            Ok(emitter) => {
+                // The specification sends ActivationToken ahead of ActionInvoked.
+                if let Some(token) = activation_token
+                    && let Err(err) = Server::activation_token(&emitter, id, token).await
+                {
+                    tracing::debug!("Can't emit ActivationToken for {id}: {err}");
+                }
+                if let Err(err) = Server::action_invoked(&emitter, id, action).await {
+                    tracing::debug!("Can't emit ActionInvoked for {id}: {err}");
+                }
+            }
+            Err(err) => tracing::debug!("Can't emit ActionInvoked for {id}: {err}"),
         }
         if !resident {
             self.close(id, CloseReason::Dismissed).await;
@@ -322,6 +368,13 @@ impl Server {
         id: u32,
         action_key: &str,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn activation_token(
+        emitter: &SignalEmitter<'_>,
+        id: u32,
+        activation_token: &str,
+    ) -> zbus::Result<()>;
 }
 
 pub(crate) async fn run(
@@ -351,8 +404,8 @@ pub(crate) async fn run(
     }
     while let Some(command) = commands.recv().await {
         match command {
-            NotificationCommand::InvokeAction { id, action } => {
-                core.invoke_action(id, &action).await
+            NotificationCommand::InvokeAction { id, action, activation_token } => {
+                core.invoke_action(id, &action, activation_token.as_deref()).await
             }
             NotificationCommand::Close { id, reason } => core.close(id, reason).await,
         }
@@ -471,9 +524,38 @@ mod tests {
         let mut registry = Registry { last_id: u32::MAX - 1, ..Default::default() };
         registry.active.insert(
             1,
-            Entry { generation: 0, resident: false, action_keys: Vec::new(), expiry: None },
+            Entry {
+                generation: 0,
+                resident: false,
+                transient: false,
+                action_keys: Vec::new(),
+                expiry: None,
+                expired: false,
+            },
         );
         assert_eq!(registry.allocate(), u32::MAX);
         assert_eq!(registry.allocate(), 2);
+    }
+
+    #[test]
+    fn evicts_the_oldest_expired() {
+        let mut registry = Registry::default();
+        let entry = |generation, expired| Entry {
+            generation,
+            resident: false,
+            transient: false,
+            action_keys: Vec::new(),
+            expiry: None,
+            expired,
+        };
+        registry.active.insert(1, entry(1, false));
+        for id in 2..=(MAX_EXPIRED as u32 + 1) {
+            registry.active.insert(id, entry(u64::from(id), true));
+        }
+        assert_eq!(registry.evict_expired(), None);
+        registry.active.insert(1000, entry(1000, true));
+        assert_eq!(registry.evict_expired(), Some(2));
+        assert_eq!(registry.evict_expired(), None);
+        assert!(registry.active.contains_key(&1));
     }
 }

@@ -274,3 +274,54 @@ fn headless_screenshots_and_quit() {
     assert!(compositor.wait_exit(TIMEOUT), "the compositor didn't exit");
     assert!(!compositor.control.exists(), "the control socket was removed");
 }
+
+#[test]
+fn autostart_is_left_to_the_session() {
+    let markers = tempfile::tempdir().unwrap();
+    let autostarted = markers.path().join("autostarted");
+    let spawned = markers.path().join("spawned");
+    let config = format!("autostart = [\"touch '{}'\"]\n", autostarted.display());
+    let compositor = Compositor::start(&config, &[]);
+    // A spawned command marks the point by which an autostart would have run too.
+    compositor.request(Request::Spawn { command: format!("touch '{}'", spawned.display()) });
+    let deadline = Instant::now() + TIMEOUT;
+    while !spawned.exists() {
+        assert!(Instant::now() < deadline, "the spawned command never ran");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!autostarted.exists(), "the compositor ran an autostart entry nimbus-session runs");
+}
+
+#[test]
+fn responses_survive_a_half_closed_connection() {
+    let compositor = Compositor::start(CONFIG, &[]);
+    let mut stream = UnixStream::connect(&compositor.control).expect("connect");
+    // Far more output than a socket buffer holds, written before the client reads anything.
+    let count = 4000;
+    let requests = "{\"request\":\"get-state\"}\n".repeat(count);
+    stream.write_all(requests.as_bytes()).expect("write requests");
+    stream.shutdown(std::net::Shutdown::Write).expect("half-close");
+    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let mut lines = 0;
+    for line in BufReader::new(stream).lines() {
+        let line = line.expect("read a response");
+        assert!(
+            matches!(serde_json::from_str::<Response>(&line), Ok(Response::State(_))),
+            "unexpected line: {line}"
+        );
+        lines += 1;
+    }
+    assert_eq!(lines, count);
+}
+
+#[test]
+fn screenshots_into_a_fifo_fail_without_blocking() {
+    let compositor = Compositor::start(CONFIG, &[]);
+    let fifo = compositor.dir.path().join("fifo");
+    let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: `c_path` is a valid, NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0, "mkfifo");
+    let result = compositor.ipc().request(&Request::Screenshot { output: None, path: Some(fifo) });
+    assert!(matches!(result, Err(nimbus_ipc::Error::Rejected(_))), "{result:?}");
+    assert_eq!(compositor.state().outputs.len(), 1, "the compositor still answers");
+}

@@ -14,12 +14,21 @@ pub const SERVICE: &str = "nimbus";
 /// The service used when `nimbus` isn't installed; every distribution has it.
 pub const FALLBACK_SERVICE: &str = "login";
 
-/// `nimbus` when its PAM configuration is installed, otherwise `login`.
+/// `nimbus` when its PAM configuration is installed with an account section, otherwise `login`.
+/// Without an account section, `pam_acct_mgmt` falls through to the `other` service, which usually denies.
 pub fn service_name() -> &'static str {
-    let installed = ["/etc/pam.d", "/usr/lib/pam.d", "/usr/local/etc/pam.d"]
-        .iter()
-        .any(|dir| Path::new(dir).join(SERVICE).is_file());
+    let installed = ["/etc/pam.d", "/usr/lib/pam.d", "/usr/local/etc/pam.d"].iter().any(|dir| {
+        std::fs::read_to_string(Path::new(dir).join(SERVICE)).is_ok_and(|c| has_account_section(&c))
+    });
     if installed { SERVICE } else { FALLBACK_SERVICE }
+}
+
+/// Whether a PAM service file configures the account management group, directly or through an include.
+fn has_account_section(config: &str) -> bool {
+    config.lines().map(str::trim_start).any(|line| {
+        let first = line.split_whitespace().next().unwrap_or_default();
+        matches!(first.trim_start_matches('-'), "account" | "@include")
+    })
 }
 
 /// The login name of the user running the compositor.
@@ -81,6 +90,7 @@ mod ffi {
     pub const PAM_SUCCESS: c_int = 0;
     pub const PAM_BUF_ERR: c_int = 5;
     pub const PAM_CONV_ERR: c_int = 19;
+    pub const PAM_NEW_AUTHTOK_REQD: c_int = 12;
     pub const PAM_PROMPT_ECHO_OFF: c_int = 1;
     pub const PAM_PROMPT_ECHO_ON: c_int = 2;
     pub const PAM_ERROR_MSG: c_int = 3;
@@ -128,6 +138,7 @@ mod ffi {
             pamh: *mut *mut PamHandle,
         ) -> c_int;
         pub fn pam_authenticate(pamh: *mut PamHandle, flags: c_int) -> c_int;
+        pub fn pam_acct_mgmt(pamh: *mut PamHandle, flags: c_int) -> c_int;
         pub fn pam_setcred(pamh: *mut PamHandle, flags: c_int) -> c_int;
         pub fn pam_end(pamh: *mut PamHandle, pam_status: c_int) -> c_int;
         pub fn pam_strerror(pamh: *mut PamHandle, errnum: c_int) -> *const c_char;
@@ -265,6 +276,16 @@ impl Authenticator for PamAuthenticator {
         let mut status = unsafe {
             ffi::pam_authenticate(handle, ffi::PAM_SILENT | ffi::PAM_DISALLOW_NULL_AUTHTOK)
         };
+        if status == ffi::PAM_SUCCESS {
+            // Applies account policies such as expiry, pam_access, and pam_time.
+            // SAFETY: as above.
+            status = unsafe { ffi::pam_acct_mgmt(handle, ffi::PAM_SILENT) };
+            if status == ffi::PAM_NEW_AUTHTOK_REQD {
+                // A lock screen can't run a password change; the session already belongs to this user.
+                tracing::info!("PAM asks for a new password; unlocking anyway");
+                status = ffi::PAM_SUCCESS;
+            }
+        }
         let result = if status == ffi::PAM_SUCCESS {
             // Refreshes credentials such as Kerberos tickets; a failure doesn't undo a correct password.
             // SAFETY: as above.
@@ -438,6 +459,15 @@ mod tests {
             unsafe { conversation(0, bad.as_mut_ptr(), &mut responses, appdata) },
             ffi::PAM_CONV_ERR
         );
+    }
+
+    #[test]
+    fn account_sections_are_recognized() {
+        assert!(!has_account_section("# comment\nauth include login\n"));
+        assert!(has_account_section("auth include login\naccount include login\n"));
+        assert!(has_account_section("-account optional pam_foo.so\n"));
+        assert!(has_account_section("@include common-account\n"));
+        assert!(!has_account_section("# account include login\n"));
     }
 
     #[test]

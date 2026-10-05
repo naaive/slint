@@ -9,9 +9,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::event::Event;
 use futures_channel::mpsc::UnboundedReceiver;
 use nimbus_config::{Appearance, ColorScheme};
 use nimbus_terminal::app::{self, AppEvent, Controller, Options};
+use nimbus_terminal::engine::SessionEvent;
 use nimbus_terminal::fonts::FontSet;
 use nimbus_terminal::keys::Modifiers;
 use nimbus_terminal::prefs::Prefs;
@@ -120,6 +122,15 @@ fn tabs_shortcuts_search_and_preferences() {
         assert!(window.get_screen_height() != before || before == 0.0);
     }
     assert!(controller.key("0", Modifiers::CTRL));
+
+    // A program killed by a signal leaves its tab open with a note.
+    controller.open_detached_tab("crashed", b"");
+    let killed = std::os::unix::process::ExitStatusExt::from_raw(9);
+    // Tabs get consecutive session ids, and this is the fourth tab opened.
+    let event = SessionEvent::Term(Event::ChildExit(killed));
+    controller.handle(AppEvent::Session(4, event));
+    assert_eq!(tab_titles(&window), ["first", "second", "crashed"]);
+    assert!(window.get_tabs().row_data(2).is_some_and(|t| t.exited));
 
     window.hide().expect("the window hides");
     controller.shutdown();

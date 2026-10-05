@@ -3,8 +3,10 @@
 //! End-to-end tests against a private `dbus-daemon`, with fake system daemons where needed.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -208,9 +210,9 @@ async fn next_signal(stream: &mut MessageStream) -> (String, u32, Value<'static>
             let (id, reason): (u32, u32) = body.deserialize().unwrap();
             return (member, id, Value::U32(reason));
         }
-        "ActionInvoked" => {
-            let (id, key): (u32, String) = body.deserialize().unwrap();
-            return (member, id, Value::from(key));
+        "ActionInvoked" | "ActivationToken" => {
+            let (id, value): (u32, String) = body.deserialize().unwrap();
+            return (member, id, Value::from(value));
         }
         _ => Value::U32(0),
     };
@@ -300,8 +302,18 @@ async fn notification_server() {
     // Closing again is harmless and silent.
     call_close(&client, id).await;
 
-    // Expiry.
-    let expiring = notify(&client, 0, &[], HashMap::new(), 100).await;
+    // Replacing a closed notification keeps its id.
+    assert_eq!(notify(&client, id, &[], HashMap::new(), 0).await, id);
+    assert!(
+        matches!(next_non_state(&mut events).await, ServiceEvent::Notification(n) if n.id == id)
+    );
+    call_close(&client, id).await;
+    assert_eq!(next_signal(&mut signals).await, ("NotificationClosed".into(), id, Value::U32(3)));
+    assert!(matches!(next_non_state(&mut events).await, ServiceEvent::NotificationClosed { .. }));
+
+    // Transient notifications close on expiry.
+    let transient = HashMap::from([("transient", Value::Bool(true))]);
+    let expiring = notify(&client, 0, &[], transient, 100).await;
     assert_ne!(expiring, id);
     assert!(
         matches!(next_non_state(&mut events).await, ServiceEvent::Notification(n) if n.id == expiring)
@@ -314,6 +326,52 @@ async fn notification_server() {
         next_non_state(&mut events).await,
         ServiceEvent::NotificationClosed { id: expiring, reason: CloseReason::Expired }
     );
+
+    // Others stay open for the shell's history after expiry, and their actions still work.
+    let expiring = notify(&client, 0, &["default", "Open"], HashMap::new(), 100).await;
+    assert!(
+        matches!(next_non_state(&mut events).await, ServiceEvent::Notification(n) if n.id == expiring)
+    );
+    assert_eq!(
+        next_non_state(&mut events).await,
+        ServiceEvent::NotificationClosed { id: expiring, reason: CloseReason::Expired }
+    );
+    services
+        .send(ServiceCommand::InvokeNotificationAction { id: expiring, action: "default".into() });
+    assert_eq!(
+        next_signal(&mut signals).await,
+        ("ActionInvoked".into(), expiring, Value::from("default"))
+    );
+    assert_eq!(
+        next_signal(&mut signals).await,
+        ("NotificationClosed".into(), expiring, Value::U32(2))
+    );
+    assert_eq!(
+        next_non_state(&mut events).await,
+        ServiceEvent::NotificationClosed { id: expiring, reason: CloseReason::Dismissed }
+    );
+
+    // An activation token arrives ahead of ActionInvoked.
+    let with_token = notify(&client, 0, &["reply", "Reply"], HashMap::new(), 0).await;
+    assert!(matches!(next_non_state(&mut events).await, ServiceEvent::Notification(_)));
+    services.send(ServiceCommand::InvokeNotificationActionWithToken {
+        id: with_token,
+        action: "reply".into(),
+        activation_token: "token-1".into(),
+    });
+    assert_eq!(
+        next_signal(&mut signals).await,
+        ("ActivationToken".into(), with_token, Value::from("token-1"))
+    );
+    assert_eq!(
+        next_signal(&mut signals).await,
+        ("ActionInvoked".into(), with_token, Value::from("reply"))
+    );
+    assert_eq!(
+        next_signal(&mut signals).await,
+        ("NotificationClosed".into(), with_token, Value::U32(2))
+    );
+    assert!(matches!(next_non_state(&mut events).await, ServiceEvent::NotificationClosed { .. }));
 
     // Invoking an action emits ActionInvoked and dismisses the notification.
     let with_action = notify(&client, 0, &["default", "Open"], HashMap::new(), 0).await;
@@ -482,7 +540,34 @@ async fn upower_appears_changes_and_leaves() {
     state_where(&mut events, |state| state.battery.is_none()).await;
 }
 
-struct FakeManager;
+/// Holds our end of every inhibitor handed out; it reads EOF once the services close theirs.
+#[derive(Clone, Default)]
+struct FakeManager {
+    inhibitors: Arc<Mutex<Vec<UnixStream>>>,
+}
+
+impl FakeManager {
+    fn count(&self) -> usize {
+        self.inhibitors.lock().unwrap().len()
+    }
+
+    fn latest_closed(&self) -> bool {
+        let inhibitors = self.inhibitors.lock().unwrap();
+        let mut latest = inhibitors.last().expect("no inhibitor");
+        latest.set_nonblocking(true).unwrap();
+        matches!(latest.read(&mut [0]), Ok(0))
+    }
+
+    async fn wait_until_latest_closed(&self) {
+        timeout(WAIT, async {
+            while !self.latest_closed() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for the inhibitor to close");
+    }
+}
 
 #[interface(name = "org.freedesktop.login1.Manager")]
 impl FakeManager {
@@ -498,9 +583,10 @@ impl FakeManager {
         _why: &str,
         _mode: &str,
     ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
-        let file = std::fs::File::open("/dev/null")
-            .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
-        Ok(std::os::fd::OwnedFd::from(file).into())
+        let (ours, theirs) =
+            UnixStream::pair().map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
+        self.inhibitors.lock().unwrap().push(ours);
+        Ok(std::os::fd::OwnedFd::from(theirs).into())
     }
 
     async fn emit_sleep(
@@ -550,7 +636,8 @@ async fn logind_lock_unlock_and_sleep() {
     let Some(bus) = Bus::start() else { return };
     let daemon = bus.connect().await;
     let server = daemon.object_server();
-    server.at("/org/freedesktop/login1", FakeManager).await.unwrap();
+    let manager = FakeManager::default();
+    server.at("/org/freedesktop/login1", manager.clone()).await.unwrap();
     server.at("/org/freedesktop/login1/session/auto", FakeSession).await.unwrap();
     server.at("/org/freedesktop/login1/session/c1", FakeSession).await.unwrap();
     daemon.request_name("org.freedesktop.login1").await.unwrap();
@@ -606,12 +693,31 @@ async fn logind_lock_unlock_and_sleep() {
     )
     .await;
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::UnlockRequested);
+    // Suspend waits until the compositor presents the lock screen.
+    assert_eq!(manager.count(), 1);
     call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(true))
         .await;
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!manager.latest_closed());
+    services.send(ServiceCommand::LockPresented);
+    manager.wait_until_latest_closed().await;
+
     call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(false))
         .await;
     assert!(timeout(Duration::from_millis(200), next_non_state(&mut events)).await.is_err());
+    assert_eq!(manager.count(), 2);
+    assert!(!manager.latest_closed());
+
+    // Without that report, suspend proceeds after a timeout.
+    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(true))
+        .await;
+    assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!manager.latest_closed());
+    manager.wait_until_latest_closed().await;
+    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(false))
+        .await;
 
     // Without logind, locking still reaches the shell.
     drop(daemon);

@@ -940,7 +940,7 @@ impl Controller {
         };
         self.close_dialog();
         if let Some((app, paths)) = chosen
-            && let Err(error) = apps::launch(&app, &paths)
+            && let Err(error) = nimbus_xdg::launch(&app, &paths, None)
         {
             self.show_toast(
                 format!("Couldn't start {}: {error}", app.name),
