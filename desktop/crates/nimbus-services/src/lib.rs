@@ -107,6 +107,10 @@ pub enum ServiceEvent {
     State(SystemState),
     Notification(Notification),
     NotificationClosed { id: u32, reason: CloseReason },
+    /// logind asked the session to lock, for example before suspend or from `loginctl lock-session`.
+    LockRequested,
+    /// logind asked the session to unlock, from `loginctl unlock-session`.
+    UnlockRequested,
 }
 
 #[derive(Clone, Debug, PartialEq)]

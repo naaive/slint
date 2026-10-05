@@ -67,6 +67,18 @@ Modules in `crates/nimbus-compositor/src`:
   forwards input inside `Shell::input_region()`, and maps `ShellAction`s to compositor requests, services, and launches.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 
+Command line, which `nimbus-session` relies on:
+
+```text
+nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell]
+```
+
+When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
+for its children and prints exactly one line to standard output:
+`NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`.
+All logging goes to standard error.
+The headless backend creates one 1920x1080 virtual output, or the sizes listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
+
 Slint's platform is process-global and must be set before the first component is created.
 Its timers and animations advance from the `calloop` loop through `slint::platform::update_timers_and_animations()`,
 and the loop wakes at `slint::platform::duration_until_next_timer_update()`.
