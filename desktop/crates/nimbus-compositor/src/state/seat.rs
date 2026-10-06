@@ -43,7 +43,8 @@ impl SeatHandler for State {
         let client = focused.and_then(|surface| dh.get_client(surface.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
-        self.update_pointer_constraint(focused);
+        // Smithay may hold the pointer's lock here, as when a click ends a popup grab.
+        self.nimbus.loop_handle.insert_idle(|state| state.refresh_pointer_constraint());
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {

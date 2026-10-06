@@ -50,9 +50,7 @@ impl State {
     }
 
     /// Activates or deactivates the constraint on the pointer focus for the new `keyboard_focus`.
-    ///
-    /// Smithay holds the keyboard's lock while it reports a focus change, so this takes the focus instead of asking for it.
-    pub fn update_pointer_constraint(&mut self, keyboard_focus: Option<&WlSurface>) {
+    fn update_pointer_constraint(&mut self, keyboard_focus: Option<&WlSurface>) {
         let Some((surface, _)) = self.constrainable_focus() else {
             return;
         };
