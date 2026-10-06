@@ -7,7 +7,10 @@ use nimbus_config::{Action, ColorScheme, Config};
 use nimbus_settings::page::Page;
 use nimbus_settings::screenshot::sample_app;
 use nimbus_settings::view::App;
-use nimbus_settings::{BluetoothModel, Nav, NetworkModel, Picker, Prefs, ShortcutsModel};
+use nimbus_settings::{
+    BluetoothModel, DefaultAppsModel, Nav, NetworkModel, Picker, Prefs, ShortcutsModel, SoundModel,
+    TimeModel,
+};
 use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model, SharedString};
 
@@ -397,4 +400,110 @@ fn bluetooth_page_discovers_pairs_and_manages_devices() {
     nav.set_page(Page::Bluetooth.index() as i32);
     slint::platform::update_timers_and_animations();
     assert!(!bluetooth.get_discovering(), "a powered-off adapter doesn't look");
+}
+
+#[test]
+fn sound_page_chooses_devices_and_changes_volume() {
+    let f = Fixture::new(Page::Sound);
+    let sound = f.app.window().global::<SoundModel>();
+    let output = |row: usize| sound.get_outputs().row_data(row).expect("an output");
+    assert_eq!(sound.get_state(), 1);
+    assert_eq!(sound.get_outputs().row_count(), 3);
+    assert_eq!(sound.get_inputs().row_count(), 2);
+    let names: Vec<SharedString> = sound.get_output_names().iter().collect();
+    assert_eq!(names, ["Speakers", "WH-1000XM5", "DELL U2720Q (HDMI)"]);
+    assert_eq!(sound.get_output_index(), 0);
+    let speakers = output(0);
+    assert_eq!((speakers.volume, speakers.muted, speakers.level), (62.0, false, 2));
+
+    sound.invoke_choose_default(false, 1);
+    assert_eq!(sound.get_output_index(), 1);
+
+    // The slider writes its row before it reports the change, as a drag does.
+    let mut headphones = output(1);
+    headphones.volume = 85.0;
+    sound.get_outputs().set_row_data(1, headphones);
+    sound.invoke_set_volume(false, 1, 85.0);
+    assert_eq!((output(1).volume, output(1).level), (85.0, 3));
+
+    sound.invoke_set_muted(false, 1, true);
+    assert!(output(1).muted);
+    assert_eq!(output(1).level, 0, "a muted device shows the muted icon");
+    assert_eq!(output(0).volume, 62.0, "other devices keep their volume");
+
+    sound.invoke_choose_default(true, 1);
+    assert_eq!(sound.get_input_index(), 1);
+    sound.invoke_set_muted(true, 0, true);
+    assert!(sound.get_inputs().row_data(0).expect("an input").muted);
+}
+
+#[test]
+fn date_time_page_picks_time_zones_and_switches_the_clock() {
+    let f = Fixture::new(Page::DateTime);
+    let window = f.app.window();
+    let time = window.global::<TimeModel>();
+    let picker = window.global::<Picker>();
+    let prefs = window.global::<Prefs>();
+    assert_eq!(time.get_state(), 1);
+    assert_eq!(
+        (time.get_timezone().as_str(), time.get_timezone_city().as_str()),
+        ("Europe/Berlin", "Berlin")
+    );
+    assert!(time.get_can_pick_timezone() && time.get_can_sync() && time.get_sync());
+    assert_eq!(time.get_sync_status(), "Synchronized with network time servers");
+    assert_eq!(time.get_now(), "Monday, October 5, 09:41");
+
+    time.invoke_set_sync(false);
+    assert!(!time.get_sync());
+    assert_eq!(time.get_sync_status(), "Set by hand");
+
+    time.invoke_pick_timezone();
+    assert!(picker.get_open());
+    assert_eq!(picker.get_title(), "Time Zone");
+    let current =
+        picker.get_items().row_data(picker.get_current_index() as usize).expect("the current zone");
+    assert_eq!(current.id, "Europe/Berlin");
+    picker.invoke_query_edited("buenos".into());
+    let found = picker.get_items().row_data(0).expect("a match");
+    assert_eq!(
+        (found.title.as_str(), found.id.as_str()),
+        ("Buenos Aires", "America/Argentina/Buenos_Aires")
+    );
+    picker.invoke_chosen(found.id);
+    assert!(!picker.get_open());
+    assert_eq!(time.get_timezone(), "America/Argentina/Buenos_Aires");
+    assert_eq!(time.get_timezone_city(), "Buenos Aires");
+
+    // The 24-hour switch changes the panel's clock format.
+    assert!(prefs.get_clock_24_hour());
+    prefs.invoke_set_clock_24_hour(false);
+    assert_eq!(f.saved().panel.clock_format, "%a %d %b  %I:%M %p");
+    assert!(!prefs.get_clock_24_hour());
+    assert_eq!(prefs.get_clock_preset_index(), 4);
+    assert_eq!(time.get_now(), "Monday, October 5, 9:41 AM");
+    prefs.invoke_set_clock_24_hour(true);
+    assert_eq!(f.saved().panel.clock_format, "%a %d %b  %H:%M");
+}
+
+#[test]
+fn default_apps_page_chooses_applications() {
+    let f = Fixture::new(Page::DefaultApps);
+    let model = f.app.window().global::<DefaultAppsModel>();
+    let item = |row: usize| model.get_items().row_data(row).expect("a category");
+    assert!(!model.get_loading());
+    assert_eq!(model.get_items().row_count(), 8);
+    let web = item(0);
+    assert_eq!(web.title, "Web browser");
+    let choices: Vec<SharedString> = web.choices.iter().collect();
+    assert_eq!(choices, ["Chromium", "Firefox"]);
+    assert_eq!(web.current, 1);
+
+    model.invoke_chosen(0, 0);
+    assert_eq!(item(0).current, 0);
+    model.invoke_chosen(3, 0);
+    assert_eq!((item(3).title.as_str(), item(3).current), ("Terminal", 0));
+
+    let music = item(7);
+    assert!(!music.available);
+    assert_eq!(music.choices.row_data(0).as_deref(), Some("None installed"));
 }

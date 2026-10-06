@@ -54,6 +54,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   which apps can run on a thread of its own.
 - The session's polkit authentication agent, which checks responses through polkit's setuid `polkit-agent-helper-1`, never in process.
 - NetworkManager and BlueZ clients for network and Bluetooth settings, with a BlueZ pairing agent, which apps run on a thread of their own.
+- Clients for sound settings, through `pactl`, and date and time settings, through systemd-timedated.
 - Each service degrades on its own: a missing daemon hides its feature and is picked up again when it appears.
 
 ### Portal (`nimbus-portal`)
@@ -67,6 +68,9 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   Join Wi-Fi networks with a password, forget them, and see the addresses of each connection, wired ones too, through NetworkManager.
   Pair Bluetooth devices by confirming or entering a code, then connect, disconnect, or remove them, through BlueZ.
   Quick settings open these pages from the Wi-Fi and Bluetooth tiles.
+  Choose the output and input device, and set each device's volume and mute, through PipeWire or PulseAudio.
+  Pick the time zone from a searchable list, turn network time on or off through systemd-timedated, and switch the clock to 24 hours.
+  Choose the default browser, mail client, file manager, terminal, text editor, and image, video, and music players.
 - **Files** (`nimbus-files`): grid and list views, search, a freedesktop trash, thumbnails, and copy and move with conflict handling and undo.
   The sidebar lists drives and partitions from udisks: open one to mount it,
   and unmount, eject, or safely remove it from its menu or eject button.
@@ -297,5 +301,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Settings can't join enterprise or hidden Wi-Fi networks, and doesn't edit IP settings, VPNs, or proxies.
   It saves Wi-Fi passwords with the connection, for every user, as `nmcli` does, and isn't a NetworkManager secret agent.
 - Settings is BlueZ's pairing agent only while it runs; with it closed, a device that asks to pair needs another agent.
+- The Sound page needs `pactl` 16 or later, which `pipewire-pulse` serves on PipeWire, and has only run against a script standing in for it.
+  It doesn't choose ports, profiles, or per-app volumes.
+- The Date & Time page has only run against a fake timedated, and can't set the date or time by hand.
+  Dismissing polkit's dialog shows the refusal in a banner.
+- Settings writes the default terminal to `xdg-terminals.list`, which `xdg-terminal-exec` reads; the Super+Return shortcut still starts `nimbus-terminal`.
 - The UI is English only.
 - Each crate's README lists its own gaps.

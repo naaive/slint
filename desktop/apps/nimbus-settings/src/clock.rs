@@ -31,6 +31,44 @@ pub fn preset_index(format: &str) -> usize {
     PRESETS.iter().position(|(f, _)| *f == format).unwrap_or(PRESETS.len())
 }
 
+/// The `strftime` fields of the 12-hour clock.
+const TWELVE_HOUR: [&str; 5] = ["%I", "%l", "%r", "%p", "%P"];
+
+/// Whether `format` shows no 12-hour field.
+pub fn is_24_hour(format: &str) -> bool {
+    !TWELVE_HOUR.iter().any(|field| format.contains(field))
+}
+
+/// `format` with its hours on the 24-hour clock, or on the 12-hour clock with AM or PM after the time.
+/// A format without hours stays as it is.
+pub fn with_24_hour(format: &str, on: bool) -> String {
+    if on == is_24_hour(format) {
+        return format.to_owned();
+    }
+    if on {
+        return format
+            .replace(" %p", "")
+            .replace(" %P", "")
+            .replace("%p", "")
+            .replace("%P", "")
+            .replace("%I", "%H")
+            .replace("%l", "%k")
+            .replace("%r", "%T");
+    }
+    let switched =
+        format.replace("%H", "%I").replace("%k", "%l").replace("%R", "%I:%M").replace("%T", "%r");
+    if switched == format || switched.contains("%r") {
+        return switched;
+    }
+    // AM or PM goes right after the minutes or seconds.
+    let end = ["%M", "%S"]
+        .iter()
+        .filter_map(|field| switched.rfind(field).map(|at| at + field.len()))
+        .max()
+        .unwrap_or(switched.len());
+    format!("{} %p{}", &switched[..end], &switched[end..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +89,27 @@ mod tests {
         for (format, _) in PRESETS {
             assert!(is_valid_format(format), "{format}");
         }
+    }
+
+    #[test]
+    fn switches_between_12_and_24_hours() {
+        for (twelve, twenty_four) in [
+            ("%I:%M %p", "%H:%M"),
+            ("%a %d %b  %I:%M %p", "%a %d %b  %H:%M"),
+            ("%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M"),
+            ("%l:%M:%S %p today", "%k:%M:%S today"),
+            ("%r", "%T"),
+        ] {
+            assert!(!is_24_hour(twelve) && is_24_hour(twenty_four), "{twelve}");
+            assert_eq!(with_24_hour(twelve, true), twenty_four);
+            assert_eq!(with_24_hour(twenty_four, false), twelve);
+            assert_eq!(with_24_hour(twelve, false), twelve);
+        }
+        assert_eq!(with_24_hour("%R", false), "%I:%M %p");
+        assert_eq!(with_24_hour("%a %d %b", false), "%a %d %b", "no hours to switch");
+        // Each preset switches to its counterpart.
+        assert_eq!(with_24_hour(PRESETS[0].0, false), PRESETS[1].0);
+        assert_eq!(with_24_hour(PRESETS[3].0, false), PRESETS[4].0);
     }
 
     #[test]

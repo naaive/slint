@@ -115,6 +115,8 @@ impl Inner {
         }
         prefs.set_clock_valid(clock::is_valid_format(&prefs.get_clock_format()));
         prefs.set_clock_preview(clock::preview(format, now).unwrap_or_default().into());
+        prefs.set_clock_24_hour(clock::is_24_hour(format));
+        self.show_time();
     }
 
     fn sync_input(&self, prefs: &Prefs<'_>, config: &Config) {

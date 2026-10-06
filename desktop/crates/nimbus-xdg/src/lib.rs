@@ -3,8 +3,10 @@
 //! Freedesktop.org integration: desktop entries, icon themes, application search, and launching.
 //!
 //! Implements the Desktop Entry Specification 1.5, the Icon Theme Specification 0.13,
-//! and the MIME Applications Associations Specification 1.0.1.
+//! and the MIME Applications Associations Specification 1.0.1,
+//! and chooses default applications, including the terminal of the xdg-terminal-exec proposal.
 
+mod defaults;
 mod entry;
 mod exec;
 mod icons;

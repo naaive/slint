@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Label, Spinner } from "@nimbus/theme.slint";
+import { DefaultAppsModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, ChoiceRow } from "../widgets.slint";
+
+export component DefaultAppsPage inherits PageScroll {
+    if DefaultAppsModel.loading: HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xxl;
+
+        Spinner {
+            size: 20px;
+        }
+
+        Label {
+            text: "Looking for applications…";
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    if !DefaultAppsModel.loading: Group {
+        title: "Default Applications";
+        description: "Links and files open with these applications.";
+
+        for item[index] in DefaultAppsModel.items: VerticalLayout {
+            if index > 0: RowDivider { }
+
+            ChoiceRow {
+                title: item.title;
+                model: item.choices;
+                current-index: item.current;
+                enabled: item.available;
+                chosen(choice) => {
+                    DefaultAppsModel.chosen(index, choice);
+                }
+            }
+        }
+    }
+}

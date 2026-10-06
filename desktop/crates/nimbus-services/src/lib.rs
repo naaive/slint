@@ -7,7 +7,8 @@
 //! and to PipeWire or PulseAudio through `wpctl`/`pactl`.
 //! Every service degrades gracefully: a missing bus or daemon leaves its part of [`SystemState`] at `None` or default.
 //!
-//! [`nm`] and [`bluez`] are clients for network and Bluetooth settings, each on a thread of its own.
+//! [`nm`], [`bluez`], [`sound`], and [`timedate`] are clients for network, Bluetooth, sound, and date and time settings,
+//! each on a thread of its own.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -28,6 +29,8 @@ mod worker;
 
 pub mod bluez;
 pub mod nm;
+pub mod sound;
+pub mod timedate;
 pub mod udisks;
 
 pub use notifications::DEFAULT_TIMEOUT as DEFAULT_NOTIFICATION_TIMEOUT;

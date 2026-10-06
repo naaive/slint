@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-//! A client of one system daemon on a thread of its own, for apps that need the daemon without the rest of [`crate::Services`].
+//! A client of one system daemon, or another background task, on a thread of its own,
+//! for apps that need it without the rest of [`crate::Services`].
 
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
 use crate::BusAddress;
@@ -14,7 +15,7 @@ use crate::bus::{self, BusKind, BusService};
 /// How long dropping a [`Worker`] waits for its thread to finish.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Runs a [`BusService`] on the system bus until dropped.
+/// Runs a [`BusService`] on the system bus, or another task taking commands, until dropped.
 pub(crate) struct Worker<C> {
     commands: UnboundedSender<C>,
     shutdown: Option<oneshot::Sender<()>>,
@@ -29,27 +30,33 @@ impl<C: std::fmt::Debug + Send + 'static> Worker<C> {
         S: BusService<Command = C>,
         F: FnOnce() -> S + Send + 'static,
     {
-        let (commands, receiver) = mpsc::unbounded_channel();
-        let (shutdown, shutdown_receiver) = oneshot::channel();
-        let run = async move {
+        Self::run(name, move |receiver| async move {
             let mut service = make();
             match bus::connect(&system_bus, BusKind::System).await {
-                Some(conn) => {
-                    run_until(shutdown_receiver, bus::supervise(service, conn, receiver)).await;
-                }
+                Some(conn) => bus::supervise(service, conn, receiver).await,
                 None => {
                     service.unavailable();
-                    run_until(shutdown_receiver, bus::reject_all(service, receiver)).await;
+                    bus::reject_all(service, receiver).await;
                 }
             }
-        };
+        })
+    }
+
+    /// Runs the future that `make` returns for the command receiver, on a new thread named `name`, until dropped.
+    pub(crate) fn run<F, Fut>(name: &str, make: F) -> Self
+    where
+        F: FnOnce(UnboundedReceiver<C>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()>,
+    {
+        let (commands, receiver) = mpsc::unbounded_channel();
+        let (shutdown, shutdown_receiver) = oneshot::channel();
         let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
             match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => {
-                    runtime.block_on(run);
+                    runtime.block_on(run_until(shutdown_receiver, make(receiver)));
                     runtime.shutdown_timeout(SHUTDOWN_TIMEOUT / 4);
                 }
-                Err(err) => tracing::error!("Can't start a D-Bus runtime: {err}"),
+                Err(err) => tracing::error!("Can't start a Tokio runtime: {err}"),
             }
         });
         let thread =

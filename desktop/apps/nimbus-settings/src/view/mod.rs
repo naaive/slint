@@ -4,10 +4,13 @@
 
 mod bluetooth;
 mod data;
+mod date_time;
+mod default_apps;
 mod displays;
 mod network;
 mod picker;
 mod shortcuts;
+mod sound;
 mod sync;
 
 use std::cell::RefCell;
@@ -23,7 +26,7 @@ use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedStrin
 use crate::dispatch::Dispatch;
 use crate::page::Page;
 use crate::settings::{self, Key, Value};
-use crate::sources::{Sources, SystemSources};
+use crate::sources::{Events, Sources, SystemSources};
 use crate::store::{ConfigStore, SaveStatus};
 use crate::wallpapers::Wallpaper;
 use crate::{AppWindow, Nav, Prefs, Theme};
@@ -80,6 +83,11 @@ pub(crate) enum Message {
     Display(crate::displays::DisplayEvent),
     Network(nimbus_services::nm::Event),
     Bluetooth(nimbus_services::bluez::Event),
+    Sound(nimbus_services::sound::Event),
+    Time(nimbus_services::timedate::Event),
+    DefaultApps(Vec<crate::default_apps::Choices>),
+    /// The outcome of choosing a default application, as its name and the error, and the choices after it.
+    DefaultAppSet(Result<(), (String, String)>, Vec<crate::default_apps::Choices>),
 }
 
 thread_local! {
@@ -122,6 +130,9 @@ pub(crate) struct State {
     pub displays: displays::Displays,
     pub network: network::Network,
     pub bluetooth: bluetooth::Bluetooth,
+    pub sound: sound::Sound,
+    pub time: date_time::Time,
+    pub default_apps: Vec<crate::default_apps::Choices>,
     pub applied_appearance: Option<Appearance>,
     /// Plain copies of the last pushed list models, to skip pushes that change nothing.
     pub pushed_sources: Vec<(String, String, bool)>,
@@ -286,12 +297,28 @@ impl Inner {
         }
     }
 
-    /// Refreshes what a page shows when it opens: networks are scanned, and Bluetooth looks for devices.
+    /// Refreshes what a page shows when it opens: networks are scanned, Bluetooth looks for devices,
+    /// and sound devices, the time, and default applications are read again.
     pub fn page_shown(&self, page: Page) {
-        if page == Page::Network {
-            self.send_network(nimbus_services::nm::Command::Scan);
+        match page {
+            Page::Network => self.send_network(nimbus_services::nm::Command::Scan),
+            Page::Sound => self.send_sound(nimbus_services::sound::Command::Refresh),
+            Page::DateTime => {
+                self.show_time();
+                self.send_time(nimbus_services::timedate::Command::Refresh);
+            }
+            Page::DefaultApps => self.load_default_apps(),
+            _ => {}
         }
         self.show_bluetooth_page(page == Page::Bluetooth);
+    }
+
+    /// Where a client of a system service reports its events, wrapped by `wrap`.
+    pub(crate) fn events<E: Send + 'static>(&self, wrap: fn(E) -> Message) -> Events<E> {
+        match self.dispatch {
+            Dispatch::Threaded => Box::new(move |event| post(wrap(event))),
+            Dispatch::Inline => Box::new(move |event| deliver(wrap(event))),
+        }
     }
 
     pub fn handle(&self, message: Message) {
@@ -388,6 +415,9 @@ fn wire(ui: &AppWindow, inner: &Rc<Inner>) {
     displays::wire(ui, &with);
     network::wire(ui, &with);
     bluetooth::wire(ui, &with);
+    sound::wire(ui, &with);
+    date_time::wire(ui, &with);
+    default_apps::wire(ui, &with);
 }
 
 /// A UI index as `usize`; negative indices, which name nothing, become `usize::MAX`.

@@ -103,6 +103,23 @@ export struct BluetoothDeviceItem {
     busy: bool,
 }
 
+export struct SoundDeviceItem {
+    name: string,
+    // In percent, from 0 to 150.
+    volume: float,
+    muted: bool,
+    // The bars of the volume icon, from 0 to 3.
+    level: int,
+}
+
+export struct DefaultAppItem {
+    title: string,
+    choices: [string],
+    current: int,
+    // Whether any application of this kind is installed.
+    available: bool,
+}
+
 // Navigation, search, and the status banner.
 export global Nav {
     in-out property <int> page;
@@ -143,6 +160,7 @@ export global Prefs {
     in-out property <string> clock-format;
     in property <string> clock-preview;
     in property <bool> clock-valid: true;
+    in-out property <bool> clock-24-hour: true;
     in-out property <bool> battery-percentage: true;
 
     in-out property <int> workspace-count: 4;
@@ -171,6 +189,7 @@ export global Prefs {
     pure callback is-color(text: string) -> bool;
 
     callback choose-clock-preset(index: int);
+    callback set-clock-24-hour(on: bool);
     callback choose-timeout(key: string, index: int);
     callback choose-option(group: int, index: int);
     callback pick-font();
@@ -324,4 +343,43 @@ export global BluetoothModel {
     pure callback pairing-input-valid(text: string) -> bool;
     callback pairing-accept();
     callback pairing-cancel();
+}
+
+export global SoundModel {
+    // 0: loading, 1: ready, 2: no sound server.
+    in property <int> state;
+    in property <[SoundDeviceItem]> outputs;
+    in property <[SoundDeviceItem]> inputs;
+    // The names of `outputs` and `inputs`, and the default of each.
+    in property <[string]> output-names;
+    in-out property <int> output-index;
+    in property <[string]> input-names;
+    in-out property <int> input-index;
+
+    callback choose-default(input: bool, index: int);
+    // The volume in percent.
+    callback set-volume(input: bool, index: int, volume: float);
+    callback set-muted(input: bool, index: int, muted: bool);
+}
+
+export global TimeModel {
+    // 0: loading, 1: ready, 2: timedated isn't available.
+    in property <int> state;
+    in property <string> now;
+    in property <string> timezone;
+    in property <string> timezone-city;
+    in property <bool> can-pick-timezone;
+    in property <bool> can-sync;
+    in-out property <bool> sync;
+    in property <string> sync-status;
+
+    callback set-sync(on: bool);
+    callback pick-timezone();
+}
+
+export global DefaultAppsModel {
+    in property <bool> loading: true;
+    in property <[DefaultAppItem]> items;
+
+    callback chosen(category: int, index: int);
 }

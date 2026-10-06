@@ -2,12 +2,16 @@
 
 import { Palette } from "std-widgets.slint";
 import { Theme, Icons, IconButton, HeaderBar } from "@nimbus/theme.slint";
-import { Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel } from "globals.slint";
+import {
+    Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel, SoundModel, TimeModel,
+    DefaultAppsModel,
+} from "globals.slint";
 import { Banner } from "widgets.slint";
 import { Sidebar, PageList } from "sidebar.slint";
 import { PickerDialog, CaptureDialog, KeepDisplaysDialog, WifiPasswordDialog, PairingDialog } from "dialogs.slint";
 import { NetworkPage } from "pages/network.slint";
 import { BluetoothPage } from "pages/bluetooth.slint";
+import { SoundPage } from "pages/sound.slint";
 import { AppearancePage } from "pages/appearance.slint";
 import { PanelPage } from "pages/panel.slint";
 import { WorkspacesPage } from "pages/workspaces.slint";
@@ -16,9 +20,14 @@ import { ShortcutsPage } from "pages/shortcuts.slint";
 import { PowerPage } from "pages/power.slint";
 import { DisplaysPage } from "pages/displays.slint";
 import { NotificationsPage } from "pages/notifications.slint";
+import { DefaultAppsPage } from "pages/default-apps.slint";
+import { DateTimePage } from "pages/date-time.slint";
 import { AboutPage } from "pages/about.slint";
 
-export { Theme, Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel }
+export {
+    Theme, Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel, SoundModel, TimeModel,
+    DefaultAppsModel,
+}
 
 export component AppWindow inherits Window {
     private property <bool> dark: Theme.dark;
@@ -93,7 +102,7 @@ export component AppWindow inherits Window {
                     title: PageList.pages[Nav.page].title;
                     background: Theme.background;
 
-                    if Nav.page == 8 && !DisplaysModel.editable: IconButton {
+                    if Nav.page == 9 && !DisplaysModel.editable: IconButton {
                         icon: Icons.refresh;
                         accessible-label: "Refresh displays";
                         clicked => {
@@ -120,15 +129,18 @@ export component AppWindow inherits Window {
 
                     if Nav.page == 0: NetworkPage { }
                     if Nav.page == 1: BluetoothPage { }
-                    if Nav.page == 2: AppearancePage { }
-                    if Nav.page == 3: PanelPage { }
-                    if Nav.page == 4: WorkspacesPage { }
-                    if Nav.page == 5: InputPage { }
-                    if Nav.page == 6: ShortcutsPage { }
-                    if Nav.page == 7: PowerPage { }
-                    if Nav.page == 8: DisplaysPage { }
-                    if Nav.page == 9: NotificationsPage { }
-                    if Nav.page == 10: AboutPage { }
+                    if Nav.page == 2: SoundPage { }
+                    if Nav.page == 3: AppearancePage { }
+                    if Nav.page == 4: PanelPage { }
+                    if Nav.page == 5: WorkspacesPage { }
+                    if Nav.page == 6: InputPage { }
+                    if Nav.page == 7: ShortcutsPage { }
+                    if Nav.page == 8: PowerPage { }
+                    if Nav.page == 9: DisplaysPage { }
+                    if Nav.page == 10: NotificationsPage { }
+                    if Nav.page == 11: DefaultAppsPage { }
+                    if Nav.page == 12: DateTimePage { }
+                    if Nav.page == 13: AboutPage { }
                 }
             }
         }

@@ -4,13 +4,15 @@
 //! Every method may block, so callers run them through [`crate::dispatch::Dispatch`].
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use image::RgbaImage;
 use nimbus_ipc::OutputInfo;
-use nimbus_services::{BusAddress, bluez, nm};
+use nimbus_services::{BusAddress, bluez, nm, sound, timedate};
 
 use crate::about::{Probe, SystemInfo};
+use crate::default_apps::{AppDefaults, SampleDefaults, XdgDefaults};
 use crate::displays::{DisplayControl, DisplayEvent, DisplayEvents, Head, HeadConfig, HeadMode};
 use crate::wallpapers::{self, Wallpaper};
 use crate::xkb;
@@ -35,6 +37,18 @@ impl Control<bluez::Command> for bluez::Client {
     }
 }
 
+impl Control<sound::Command> for sound::Client {
+    fn send(&self, command: sound::Command) {
+        sound::Client::send(self, command);
+    }
+}
+
+impl Control<timedate::Command> for timedate::Client {
+    fn send(&self, command: timedate::Command) {
+        timedate::Client::send(self, command);
+    }
+}
+
 pub trait Sources: Send + Sync + 'static {
     fn wallpapers(&self) -> Vec<Wallpaper>;
     fn thumbnail(&self, path: &Path) -> Option<RgbaImage>;
@@ -52,6 +66,12 @@ pub trait Sources: Send + Sync + 'static {
     fn network(&self, events: Events<nm::Event>) -> Box<dyn Control<nm::Command>>;
     /// Starts reporting Bluetooth devices and pairing requests to `events`, with a way to manage them.
     fn bluetooth(&self, events: Events<bluez::Event>) -> Box<dyn Control<bluez::Command>>;
+    /// Starts reporting sound devices to `events`, with a way to change them.
+    fn sound(&self, events: Events<sound::Event>) -> Box<dyn Control<sound::Command>>;
+    /// Starts reporting the time zone and synchronization to `events`, with a way to change them.
+    fn time(&self, events: Events<timedate::Event>) -> Box<dyn Control<timedate::Command>>;
+    /// Where default applications are read and chosen.
+    fn default_apps(&self) -> Arc<dyn AppDefaults>;
     /// The time used for clock previews.
     fn now(&self) -> NaiveDateTime;
 }
@@ -119,6 +139,18 @@ impl Sources for SystemSources {
         Box::new(bluez::Client::spawn(BusAddress::Default, events))
     }
 
+    fn sound(&self, events: Events<sound::Event>) -> Box<dyn Control<sound::Command>> {
+        Box::new(sound::Client::spawn(events))
+    }
+
+    fn time(&self, events: Events<timedate::Event>) -> Box<dyn Control<timedate::Command>> {
+        Box::new(timedate::Client::spawn(BusAddress::Default, events))
+    }
+
+    fn default_apps(&self) -> Arc<dyn AppDefaults> {
+        Arc::new(XdgDefaults { lookup: nimbus_xdg::MimeLookup::from_env() })
+    }
+
     fn now(&self) -> NaiveDateTime {
         chrono::Local::now().naive_local()
     }
@@ -126,7 +158,9 @@ impl Sources for SystemSources {
 
 /// Deterministic data that doesn't depend on the machine.
 #[derive(Default)]
-pub struct SampleSources;
+pub struct SampleSources {
+    default_apps: Arc<SampleDefaults>,
+}
 
 const SAMPLE_WALLPAPERS: [(&str, [u8; 3], [u8; 3]); 8] = [
     ("Aurora", [38, 52, 110], [180, 70, 150]),
@@ -232,6 +266,18 @@ impl Sources for SampleSources {
         Box::new(crate::bluetooth::SampleBluetooth::new(events))
     }
 
+    fn sound(&self, events: Events<sound::Event>) -> Box<dyn Control<sound::Command>> {
+        Box::new(crate::sound::SampleSound::new(events))
+    }
+
+    fn time(&self, events: Events<timedate::Event>) -> Box<dyn Control<timedate::Command>> {
+        Box::new(crate::date_time::SampleTime::new(events))
+    }
+
+    fn default_apps(&self) -> Arc<dyn AppDefaults> {
+        self.default_apps.clone()
+    }
+
     fn now(&self) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 10, 5)
             .and_then(|d| d.and_hms_opt(9, 41, 0))
@@ -312,7 +358,7 @@ mod tests {
 
     #[test]
     fn sample_data_is_complete() {
-        let sample = SampleSources;
+        let sample = SampleSources::default();
         let wallpapers = sample.wallpapers();
         assert_eq!(wallpapers.len(), SAMPLE_WALLPAPERS.len());
         for wallpaper in &wallpapers {

@@ -18,6 +18,7 @@ nimbus-theme = { workspace = true, features = ["headless"] }
 nimbus-config = { workspace = true }
 nimbus-ipc = { workspace = true }
 nimbus-services = { workspace = true }
+nimbus-xdg = { workspace = true }
 slint = { workspace = true, features = ["backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts"] }
 # Decodes the embedded SVG icons when rendering with the software renderer, as in `--screenshot`.
 i-slint-core = { path = "../../../internal/core", default-features = false, features = ["image-decoders", "svg"] }

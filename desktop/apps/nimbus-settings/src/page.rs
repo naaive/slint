@@ -9,6 +9,7 @@ use std::str::FromStr;
 pub enum Page {
     Network,
     Bluetooth,
+    Sound,
     #[default]
     Appearance,
     Panel,
@@ -18,13 +19,16 @@ pub enum Page {
     Power,
     Displays,
     Notifications,
+    DefaultApps,
+    DateTime,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 11] = [
+    pub const ALL: [Page; 14] = [
         Page::Network,
         Page::Bluetooth,
+        Page::Sound,
         Page::Appearance,
         Page::Panel,
         Page::Workspaces,
@@ -33,6 +37,8 @@ impl Page {
         Page::Power,
         Page::Displays,
         Page::Notifications,
+        Page::DefaultApps,
+        Page::DateTime,
         Page::About,
     ];
 
@@ -41,6 +47,7 @@ impl Page {
         match self {
             Page::Network => "network",
             Page::Bluetooth => "bluetooth",
+            Page::Sound => "sound",
             Page::Appearance => "appearance",
             Page::Panel => "panel",
             Page::Workspaces => "workspaces",
@@ -49,6 +56,8 @@ impl Page {
             Page::Power => "power",
             Page::Displays => "displays",
             Page::Notifications => "notifications",
+            Page::DefaultApps => "default-apps",
+            Page::DateTime => "date-time",
             Page::About => "about",
         }
     }
@@ -57,6 +66,7 @@ impl Page {
         match self {
             Page::Network => "Network",
             Page::Bluetooth => "Bluetooth",
+            Page::Sound => "Sound",
             Page::Appearance => "Appearance",
             Page::Panel => "Panel & Dock",
             Page::Workspaces => "Workspaces & Windows",
@@ -65,6 +75,8 @@ impl Page {
             Page::Power => "Power",
             Page::Displays => "Displays",
             Page::Notifications => "Notifications",
+            Page::DefaultApps => "Default Applications",
+            Page::DateTime => "Date & Time",
             Page::About => "About",
         }
     }
@@ -87,7 +99,7 @@ impl fmt::Display for Page {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown page '{0}'; expected one of: network, bluetooth, appearance, panel, workspaces, input, shortcuts, power, displays, notifications, about"
+    "unknown page '{0}'; expected one of: network, bluetooth, sound, appearance, panel, workspaces, input, shortcuts, power, displays, notifications, default-apps, date-time, about"
 )]
 pub struct UnknownPage(pub String);
 
@@ -112,8 +124,9 @@ mod tests {
             assert_eq!(Page::from_index(i as i32), Some(page));
         }
         assert_eq!(" About ".parse::<Page>(), Ok(Page::About));
-        assert!("sound".parse::<Page>().is_err());
+        assert_eq!("Date-Time".parse::<Page>(), Ok(Page::DateTime));
+        assert!("audio".parse::<Page>().is_err());
         assert_eq!(Page::from_index(-1), None);
-        assert_eq!(Page::from_index(11), None);
+        assert_eq!(Page::from_index(14), None);
     }
 }

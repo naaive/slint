@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Label, ListRow, Button } from "@nimbus/theme.slint";
+import { Prefs, TimeModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, SwitchRow } from "../widgets.slint";
+
+export component DateTimePage inherits PageScroll {
+    VerticalLayout {
+        spacing: Theme.spacing-xxs;
+
+        Label {
+            text: TimeModel.now;
+            style: Theme.title;
+        }
+
+        Label {
+            text: TimeModel.timezone;
+            color: Theme.text-secondary;
+        }
+    }
+
+    Group {
+        description: TimeModel.state == 2 ? "Changing the time zone and synchronization needs systemd-timedated, which isn't available." : "";
+
+        SwitchRow {
+            icon: Icons.clock;
+            title: "Set time automatically";
+            subtitle: TimeModel.sync-status;
+            checked <=> TimeModel.sync;
+            enabled: TimeModel.state == 1 && TimeModel.can-sync;
+            toggled(checked) => {
+                TimeModel.set-sync(checked);
+            }
+        }
+
+        RowDivider { }
+
+        ListRow {
+            icon: Icons.calendar;
+            title: "Time zone";
+            subtitle: TimeModel.timezone-city;
+            enabled: TimeModel.can-pick-timezone;
+            clicked => {
+                TimeModel.pick-timezone();
+            }
+
+            Button {
+                text: "Change…";
+                compact: true;
+                enabled: TimeModel.can-pick-timezone;
+                clicked => {
+                    TimeModel.pick-timezone();
+                }
+            }
+        }
+    }
+
+    Group {
+        title: "Clock";
+
+        SwitchRow {
+            title: "24-hour clock";
+            subtitle: "The panel shows " + Prefs.clock-preview;
+            checked <=> Prefs.clock-24-hour;
+            toggled(checked) => {
+                Prefs.set-clock-24-hour(checked);
+            }
+        }
+    }
+}

@@ -11,8 +11,9 @@ pub const USAGE: &str = "\
 Usage: nimbus-settings [--page <page>] [--config <path>]
 
 Options:
-  --page <page>     Open a page: network, bluetooth, appearance, panel, workspaces,
-                    input, shortcuts, power, displays, notifications, or about
+  --page <page>     Open a page: network, bluetooth, sound, appearance, panel,
+                    workspaces, input, shortcuts, power, displays, notifications,
+                    default-apps, date-time, or about
   --config <path>   Edit this file instead of $XDG_CONFIG_HOME/nimbus/config.toml
   -h, --help        Print this help
   -V, --version     Print the version";
@@ -110,7 +111,12 @@ mod tests {
         assert_eq!(options.screenshot, Some(PathBuf::from("out.png")));
         assert!(options.screenshot_light);
         // The shell's quick settings open these.
-        for (id, page) in [("network", Page::Network), ("bluetooth", Page::Bluetooth)] {
+        for (id, page) in [
+            ("network", Page::Network),
+            ("bluetooth", Page::Bluetooth),
+            ("sound", Page::Sound),
+            ("date-time", Page::DateTime),
+        ] {
             let Ok(Command::Run(options)) = run(&["--page", id]) else {
                 panic!("expected options")
             };
@@ -123,7 +129,7 @@ mod tests {
         assert_eq!(run(&["--help", "--bogus"]), Ok(Command::Help));
         assert_eq!(run(&["-V"]), Ok(Command::Version));
         assert_eq!(run(&["--page"]), Err(CliError::MissingValue("--page")));
-        assert!(matches!(run(&["--page", "sound"]), Err(CliError::Page(_))));
+        assert!(matches!(run(&["--page", "audio"]), Err(CliError::Page(_))));
         assert_eq!(run(&["--bogus"]), Err(CliError::Unknown("--bogus".into())));
         assert_eq!(run(&["--screenshot-scheme=sepia"]), Err(CliError::Scheme("sepia".into())));
     }

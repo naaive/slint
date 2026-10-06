@@ -72,6 +72,9 @@ pub const ENTRIES: &[Entry] = &[
     entry(Page::Bluetooth, "Bluetooth", "wireless devices headphones speaker keyboard mouse"),
     entry(Page::Bluetooth, "Pair a device", "pairing connect discover passkey pin"),
     entry(Page::Bluetooth, "Visible to other devices", "discoverable bluetooth name"),
+    entry(Page::Sound, "Output device", "audio sound speakers headphones sink default"),
+    entry(Page::Sound, "Volume", "audio sound loudness mute level"),
+    entry(Page::Sound, "Input device", "audio microphone mic recording source"),
     entry(Page::Appearance, "Style", "color scheme dark light mode theme night system"),
     entry(Page::Appearance, "Accent color", "colour highlight tint hex custom"),
     entry(Page::Appearance, "Background", "wallpaper picture image desktop background"),
@@ -103,6 +106,14 @@ pub const ENTRIES: &[Entry] = &[
         "monitors screens resolution refresh rate scale rotation arrangement outputs",
     ),
     entry(Page::Notifications, "Do not disturb", "notifications banners popups quiet"),
+    entry(
+        Page::DefaultApps,
+        "Default applications",
+        "apps browser web mail email files terminal text editor images video music open with",
+    ),
+    entry(Page::DateTime, "Time zone", "date time city region location"),
+    entry(Page::DateTime, "Set time automatically", "ntp network time synchronization clock"),
+    entry(Page::DateTime, "24-hour clock", "time format am pm 12-hour"),
     entry(
         Page::About,
         "About this system",
@@ -154,6 +165,9 @@ mod tests {
         assert_eq!(search("kernel")[0].page, Page::About);
         assert_eq!(search("wifi password")[0].page, Page::Network);
         assert_eq!(search("headphones")[0].page, Page::Bluetooth);
+        assert_eq!(search("microphone")[0].page, Page::Sound);
+        assert_eq!(search("browser")[0].page, Page::DefaultApps);
+        assert_eq!(search("time zone")[0].page, Page::DateTime);
         assert!(search("zzzz").is_empty());
         assert!(search("suspend").is_empty(), "lid suspend isn't implemented");
         assert!(search("dpms").is_empty(), "screen blanking isn't implemented");

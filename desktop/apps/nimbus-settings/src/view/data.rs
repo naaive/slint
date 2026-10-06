@@ -87,6 +87,9 @@ impl Inner {
         self.start_displays();
         self.start_network();
         self.start_bluetooth();
+        self.start_sound();
+        self.start_time();
+        self.load_default_apps();
     }
 
     pub(super) fn handle_data(&self, message: Message) {
@@ -129,6 +132,10 @@ impl Inner {
             Message::Display(event) => self.handle_display(event),
             Message::Network(event) => self.handle_network(event),
             Message::Bluetooth(event) => self.handle_bluetooth(event),
+            Message::Sound(event) => self.handle_sound(event),
+            Message::Time(event) => self.handle_time(event),
+            Message::DefaultApps(choices) => self.show_default_apps(choices),
+            Message::DefaultAppSet(result, choices) => self.default_app_set(result, choices),
             other @ (Message::ExternalConfig(_) | Message::Saved(_) | Message::Theme(_)) => {
                 self.handle(other)
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The searchable picker dialog for fonts, keyboard layouts, and layout variants.
+//! The searchable picker dialog for fonts, keyboard layouts, layout variants, and time zones.
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -17,6 +17,7 @@ pub enum PickerKind {
     Layout,
     /// The variant of the input source at this index.
     Variant(usize),
+    Timezone,
 }
 
 /// An entry: the id passed back when chosen, a title, and a subtitle.
@@ -91,6 +92,19 @@ impl Inner {
                     .collect();
                 (rules.layout_description(&source.layout), entries, source.variant.clone())
             }
+            PickerKind::Timezone => {
+                let entries = state
+                    .time
+                    .zones
+                    .iter()
+                    .map(|zone| Entry {
+                        id: zone.clone(),
+                        title: crate::date_time::city(zone),
+                        subtitle: zone.clone(),
+                    })
+                    .collect();
+                ("Time Zone".into(), entries, state.time.state.timezone.clone())
+            }
         })
     }
 
@@ -105,6 +119,7 @@ impl Inner {
                     PickerKind::Font => "Search fonts",
                     PickerKind::Layout => "Search languages and layouts",
                     PickerKind::Variant(_) => "Search variants",
+                    PickerKind::Timezone => "Search cities and time zones",
                 }
                 .into(),
             );
@@ -173,6 +188,9 @@ impl Inner {
         match kind {
             PickerKind::Font => self.edit(Key::FontFamily.name(), Value::Text(id.into())),
             PickerKind::Layout => self.edit_sources(|sources| xkb::add_source(sources, id, "")),
+            PickerKind::Timezone => {
+                self.send_time(nimbus_services::timedate::Command::SetTimezone(id.into()))
+            }
             PickerKind::Variant(index) => {
                 self.edit_sources(|sources| match sources.get_mut(index) {
                     Some(source) if source.variant != id => {

@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Label, ListRow, IconButton, Slider, Spinner } from "@nimbus/theme.slint";
+import { SoundModel, SoundDeviceItem } from "../globals.slint";
+import { PageScroll, Group, RowDivider, EmptyState, ChoiceRow } from "../widgets.slint";
+
+// A device with its mute button and volume slider.
+component VolumeRow inherits ListRow {
+    in property <bool> input;
+    in-out property <float> volume;
+    in property <bool> muted;
+    in property <int> level;
+
+    callback volume-changed(volume: float);
+    callback mute-toggled(muted: bool);
+
+    clickable: false;
+
+    IconButton {
+        icon: root.input ? (root.muted ? Icons.microphone-off : Icons.microphone)
+            : root.level == 0 ? Icons.volume-muted : root.level == 1 ? Icons.volume-low
+            : root.level == 2 ? Icons.volume-medium : Icons.volume-high;
+        checked: root.muted;
+        size: Theme.control-height-small + 4px;
+        accessible-label: (root.muted ? "Unmute " : "Mute ") + root.title;
+        clicked => {
+            root.mute-toggled(!root.muted);
+        }
+    }
+
+    Slider {
+        width: 200px;
+        minimum: 0;
+        maximum: max(100, root.volume);
+        step: 5;
+        enabled: !root.muted;
+        value <=> root.volume;
+        accessible-label: root.title + " volume";
+        changed(value) => {
+            root.volume-changed(value);
+        }
+        released(value) => {
+            root.volume-changed(value);
+        }
+    }
+
+    Label {
+        min-width: 48px;
+        text: round(root.volume) + "%";
+        color: Theme.text-secondary;
+        horizontal-alignment: right;
+    }
+}
+
+// The devices of one direction: the default device, then each device's volume.
+component DeviceGroup inherits Group {
+    in property <bool> input;
+    in property <[SoundDeviceItem]> devices;
+    in property <[string]> names;
+    in-out property <int> current-index;
+
+    if root.devices.length == 0: ListRow {
+        title: root.input ? "No input devices" : "No output devices";
+        subtitle: root.input ? "Connect a microphone or headset" : "Connect speakers or headphones";
+        clickable: false;
+    }
+
+    if root.devices.length > 0: ChoiceRow {
+        title: root.input ? "Input device" : "Output device";
+        subtitle: root.input ? "Apps record from this device" : "Apps play sound on this device";
+        model: root.names;
+        current-index <=> root.current-index;
+        chosen(index) => {
+            SoundModel.choose-default(root.input, index);
+        }
+    }
+
+    for device[index] in root.devices: VerticalLayout {
+        RowDivider { }
+
+        VolumeRow {
+            input: root.input;
+            title: device.name;
+            volume <=> device.volume;
+            muted: device.muted;
+            level: device.level;
+            volume-changed(volume) => {
+                SoundModel.set-volume(root.input, index, volume);
+            }
+            mute-toggled(muted) => {
+                SoundModel.set-muted(root.input, index, muted);
+            }
+        }
+    }
+}
+
+export component SoundPage inherits PageScroll {
+    if SoundModel.state == 0: HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xxl;
+
+        Spinner {
+            size: 20px;
+        }
+
+        Label {
+            text: "Looking for sound devices…";
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    if SoundModel.state == 2: EmptyState {
+        icon: Icons.volume-muted;
+        title: "Sound Isn't Available";
+        description: "Nimbus controls sound through pactl, which needs PipeWire with pipewire-pulse, or PulseAudio.";
+    }
+
+    if SoundModel.state == 1: DeviceGroup {
+        title: "Output";
+        input: false;
+        devices: SoundModel.outputs;
+        names: SoundModel.output-names;
+        current-index <=> SoundModel.output-index;
+    }
+
+    if SoundModel.state == 1: DeviceGroup {
+        title: "Input";
+        input: true;
+        devices: SoundModel.inputs;
+        names: SoundModel.input-names;
+        current-index <=> SoundModel.input-index;
+    }
+}

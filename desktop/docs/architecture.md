@@ -25,15 +25,15 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | --- | --- | --- |
 | `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker; the compositor's ready line (`Ready`). |
 | `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`) and its edge-to-edge geometry (`geometry`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
-| `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
-| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, udisks, and the polkit authentication agent. |
+| `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching, choosing default applications. |
+| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, udisks, timedated, sound devices through `pactl`, and the polkit authentication agent. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output, in a window per part. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, makes sure there's a Secret Service, and runs autostart; `nimbusctl` is the command-line client. |
-| `nimbus-settings` | app | System settings, editing `nimbus-config`; display configuration through wlr-output-management; networks and Bluetooth through `nimbus-services`. |
+| `nimbus-settings` | app | System settings, editing `nimbus-config`; display configuration through wlr-output-management; networks, Bluetooth, sound, and the time zone through `nimbus-services`; default applications through `nimbus-xdg`. |
 | `nimbus-files` | app | File manager, with the volumes udisks can mount in its sidebar. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
 | `nimbus-monitor` | app | System monitor on `sysinfo`. |
@@ -50,7 +50,7 @@ nimbus-shell-host ──> nimbus-shell ──> nimbus-theme ──> nimbus-confi
 nimbus-compositor ──> nimbus-ipc, nimbus-config, nimbus-xdg
 apps ──> nimbus-theme[headless], nimbus-config
 nimbus-files ──> nimbus-xdg, nimbus-services
-nimbus-settings ──> nimbus-ipc, nimbus-services
+nimbus-settings ──> nimbus-ipc, nimbus-services, nimbus-xdg
 nimbus-session ──> nimbus-ipc, nimbus-config
 nimbus-portal ──> nimbus-theme, nimbus-config
 ```
@@ -225,6 +225,30 @@ a device that paired is trusted and connected.
 The Network page scans when it opens, and the Bluetooth page looks for devices while it shows and the adapter is on.
 Both report failures in the banner.
 The shell's quick settings open the pages with `nimbus-settings --page network` and `--page bluetooth`.
+
+## Sound, Date and Time, and Default Applications
+
+The Sound and Date & Time pages in Settings use two more clients in `nimbus-services`, each on a thread of its own.
+`sound::Client` runs `pactl --format=json`, which needs `pactl` 16 or later, and `pipewire-pulse` on PipeWire.
+It lists sinks and sources, leaving out monitors, with the default of each from `pactl info`.
+It reads them again after each burst of `pactl subscribe` events, or every 2 seconds without it.
+Commands set the default, the volume of every channel, or mute through `pactl`; consecutive volumes for one device collapse into the last.
+Without `pactl` or a sound server, the page says sound isn't available.
+The page keeps a slider's value for a second after the user moves it, since the server's reports lag behind a drag.
+
+`timedate::Client` talks to `org.freedesktop.timedate1`, which starts by D-Bus activation and exits when idle.
+So the client calls it whenever it needs it, and follows `PropertiesChanged` on its path from any sender, instead of following its name.
+It lists time zones once with `ListTimezones`, or from `tzdata.zi` before systemd 251.
+`SetTimezone` and `SetNTP` are interactive, so polkit may ask; they run in the background with a 2-minute timeout.
+Settings reads the state again when the page opens, since timedated doesn't signal `NTPSynchronized`.
+The 24-hour switch rewrites `panel.clock_format` between `%H` and `%I` with `%p`.
+
+The Default Applications page reads and writes through `nimbus-xdg`.
+The choices of each kind are the handlers of its first MIME type, such as `x-scheme-handler/http` for the browser.
+Choosing one sets it as the default in `$XDG_CONFIG_HOME/mimeapps.list` for that type and the kind's other types it declares,
+and removes those types from desktop-specific lists there, such as `nimbus-mimeapps.list`, which would take precedence.
+The terminal is the first installed `TerminalEmulator` in `xdg-terminals.list`, from the xdg-terminal-exec proposal;
+choosing one moves it to the top of that file.
 
 ## Shell
 
@@ -557,6 +581,8 @@ The release profile aborts on panic, because every process is supervised or rest
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
   The Settings behavior tests drive the Network and Bluetooth pages against in-process sample clients:
   passwords, saved networks, forgetting, pairing by confirming a code, and discovery that follows the page.
+  The Sound, Date & Time, and Default Applications behavior tests choose devices, volumes, mute, time zones, synchronization,
+  the 24-hour clock, and default applications against sample sources.
 - `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` toast test run against a private `dbus-daemon`,
   and skip with a message when it's missing.
   The polkit test registers the agent with a fake polkitd and logind there, and calls `BeginAuthentication` and `CancelAuthentication`;
@@ -568,6 +594,8 @@ The release profile aborts on panic, because every process is supervised or rest
   `nimbus-test-support` has a fake udisks with one removable drive.
   The udisks tests list, mount, add, and power off volumes on it, and check failures and dismissed dialogs.
   A `nimbus-shell` test mounts a stick inserted into it and shows its toast, and a Files test mounts a volume from the sidebar and powers its drive off.
+  The timedated test reads, changes, and follows a fake timedated that appears after the client starts.
+- The sound client test runs against a shell script standing in for `pactl`, which keeps its devices in files and follows them with `tail -f` for `subscribe`.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running

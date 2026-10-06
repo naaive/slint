@@ -43,7 +43,7 @@ pub fn sample_app(dir: &Path, page: Page, light: bool) -> anyhow::Result<App> {
     let app = App::new(AppOptions {
         config_path,
         page,
-        sources: Arc::new(SampleSources),
+        sources: Arc::new(SampleSources::default()),
         dispatch: Dispatch::Inline,
         system_scheme: SystemScheme::Fixed { dark: !light },
         watch: false,
