@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+
+import { RectData, WorkspaceItem, WindowItem, DockMenuWindow, AppItem, Popup, PowerAction } from "models.slint";
+
+// What the parts of the shell on one output show alike, and what they ask for.
+// Each window holds its own copy of a global, so Rust sets this on every part of the output and handles the callbacks of each; see `src/view.rs`.
+export global ShellOutput {
+    // Windows and workspaces on this output.
+    in property <[WorkspaceItem]> workspaces;
+    in property <[WindowItem]> windows;
+    in property <int> active-count;
+    // A fullscreen window is focused on this output, so the panel and dock step aside.
+    in property <bool> fullscreen-active;
+
+    in property <Popup> popup: Popup.none;
+    in property <bool> launcher-open;
+    in property <[AppItem]> launcher-apps;
+    in property <bool> overview-open;
+    in property <PowerAction> power-action: PowerAction.none;
+
+    // Dock menu.
+    in property <int> dock-menu-index: -1;
+    in property <string> dock-menu-title;
+    in property <[DockMenuWindow]> dock-menu-windows;
+    in property <bool> dock-menu-favorite;
+    in property <bool> dock-menu-running;
+
+    callback overview-requested(open: bool);
+    callback launcher-requested(open: bool);
+    // `anchor` is the rectangle of what asked, in its window's coordinates, which the popup opens next to.
+    callback popup-requested(popup: Popup, anchor: RectData);
+    callback workspace-clicked(index: int);
+    callback dock-clicked(index: int);
+    callback dock-menu-requested(index: int, anchor: RectData);
+    callback dock-menu-window(row: int);
+    callback dock-menu-new-window;
+    callback dock-menu-toggle-pin;
+    callback dock-menu-quit;
+    callback launcher-query-edited(text: string);
+    callback launcher-activated(index: int);
+    callback window-activated(row: int);
+    callback window-closed(row: int);
+    callback window-moved(row: int, workspace: int);
+    callback overview-key-typed(text: string) -> bool;
+    callback volume-changed(value: float);
+    callback mute-toggled;
+    callback brightness-changed(value: float);
+    callback wifi-toggled;
+    callback bluetooth-toggled;
+    callback do-not-disturb-toggled(on: bool);
+    callback dark-style-toggled;
+    callback settings-requested(page: string);
+    callback media-previous;
+    callback media-play-pause;
+    callback media-next;
+    callback lock-requested;
+    callback suspend-requested;
+    callback power-requested(action: PowerAction);
+    callback power-confirmed(action: PowerAction);
+    callback month-changed(delta: int);
+    callback notification-activated(id: int);
+    callback notification-dismissed(id: int);
+    callback notification-action(id: int, key: string);
+    callback clear-notifications;
+}

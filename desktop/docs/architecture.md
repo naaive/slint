@@ -6,7 +6,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 ## Design Principles
 
 - **Wayland only.** There's no X11 session; XWayland is optional and runs on demand.
-- **The shell is a client.** `nimbus-shell` shows the shell on `wlr-layer-shell` and `ext-session-lock` surfaces,
+- **The shell is a client.** `nimbus-shell` shows the shell on `wlr-layer-shell`, `xdg_popup`, and `ext-session-lock` surfaces,
   and talks to the compositor over the control socket, so a crashed shell never takes windows down.
   The compositor has no Slint, no system services, and no PAM; it speaks Wayland protocols and the control socket.
 - **Crates are boundaries.** Domain crates (`nimbus-ipc`, `nimbus-config`, `nimbus-xdg`, `nimbus-services`) have no UI.
@@ -28,7 +28,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
-| `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output. |
+| `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output, in a window per part. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
@@ -96,6 +96,7 @@ Modules in `crates/nimbus-compositor/src`:
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
 - `actions.rs`: control requests and keybinding actions.
   Shortcuts aimed at the shell become `Event::ShellCommand`s; see [Shell](#shell).
+  On the headless backend, `Request::Click` and `Request::PressKey` feed input as if a user made it, for tests.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 - `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshots.
 
@@ -161,15 +162,33 @@ Without the protocol, it lists the outputs that the control socket reports, read
 The shell is one `ShellModel`, the single source of truth, shown by lightweight views.
 Data flows into the model, and every view emits `ShellAction`s through it; see `crates/nimbus-shell/src/lib.rs`.
 
-- `ShellView`: a transparent, full-output overlay per output.
+- `ShellView`: the shell on one output.
   It keeps only what's particular to its output, such as its open popup, launcher, and the windows on it.
-  Everything outside `ShellView::input_region()` passes through to client windows.
+  It has no window of its own: `ShellView::parts()` lists the parts to show now,
+  and `ShellView::create()` makes the window of one, which a host shows on a surface of its own.
 - `LockView`: the lock screen for one output, a window of its own,
   so a host can put it on its own surface, such as an `ext-session-lock` surface.
 
+The parts of an output, in the order a host creates their surfaces:
+
+| Part | Window | Where it goes |
+| --- | --- | --- |
+| `Panel` | `PanelWindow` | Along the top or bottom edge, as tall as the panel, reserving its height. It slides away while a fullscreen window is focused. |
+| `Dock` | `DockWindow` | Centered on the bottom edge, sized to the dock with room for its tooltips, reserving the dock and its margins unless it hides automatically. Only the dock, or the strip along the edge that reveals it, takes input. |
+| `Overlay` | `OverlayWindow` | Over the whole output and above fullscreen windows, with the keyboard, while the launcher, overview, or power dialog is open. It draws the panel and dock above them. |
+| `Popup` | `PopupWindow` | The calendar, quick settings, or dock menu, next to the button of the part that opened it, which a host passes as `ShellView::popup_placement()`. |
+| `Toasts` | `ToastWindow` | In the top right corner, below the panel, sized to the toasts, while there are toasts and no popup or power dialog. |
+| `Osd` | `OsdWindow` | Above the bottom edge, while the OSD shows and fades out. It takes no input. |
+
+`PartWindow::placement()` describes where a part goes in terms of output edges, size, margin, exclusive zone, stacking, and keyboard,
+which map directly onto a layer surface.
+Floating parts leave room around them for their shadows: `PartWindow::geometry()` is the part itself, without that room.
+
 What every view shows alike, such as the clock, system status, toasts, and OSD, lives in the model.
+What the parts of one output show alike, such as its workspaces and open popup, lives in its view.
 Each Slint window holds its own copy of a global, so the model sets the `Desktop` global on every window,
-and attaches the shared models, such as toasts, to each.
+and the view sets the `ShellOutput` global on every window of its parts and handles its callbacks.
+The shared models, such as toasts and the output's windows, are attached to each window.
 
 Surfaces:
 
@@ -207,15 +226,22 @@ Modules in `crates/nimbus-shell-host/src`:
 - `surface.rs`: a Slint window on a `wl_surface`.
   It renders at the buffer scale, through a viewport at `wp_fractional_scale_v1` scales or with `set_buffer_scale` otherwise,
   and only when Slint has changes and the previous frame's callback arrived.
-- `output.rs`: per output, the `ShellView` on a transparent top-layer surface anchored to every edge with exclusive zone -1,
-  and a transparent single-pixel strip along the top or bottom edge per zone the panel and dock reserve, whose exclusive zone keeps windows out of them.
-  The view's surface takes pointer input only inside `ShellView::input_region()`.
-  It has no keyboard interactivity until the view wants the keyboard; then it's exclusive and moves to the overlay layer, above fullscreen windows.
+- `output.rs`: per output, a surface for each part of its `ShellView`, created when the part appears and destroyed when it goes.
+  Parts other than popups are layer surfaces set up from `PartWindow::placement()`:
+  on the top layer, or on the overlay layer above fullscreen windows, with exclusive keyboard interactivity for the overlay.
+  Their size, exclusive zone, and margin follow the part's window.
+  The compositor stacks exclusive zones in the order surfaces are created, so the panel comes before the dock.
+  A popup is an `xdg_popup` of the part that opened it, through `zwlr_layer_surface_v1.get_popup`,
+  placed by an `xdg_positioner` next to the button, with the window geometry leaving out its shadow.
+  It grabs the pointer and keyboard with the last press, so the compositor dismisses it with `popup_done` on a click elsewhere.
+  When its content changes size, `xdg_popup.reposition` moves it, or a new popup replaces it before version 3 of `xdg_wm_base`.
+  Each surface takes pointer input only inside `PartWindow::input_region()`.
+  Popups go before the parts below them, so a popup never outlives its parent.
 - `lock.rs`: locking through `ext-session-lock-v1`; see [Locking](#locking).
 - `auth.rs`: checks lock screen passwords through PAM on a worker thread and reports back through a `calloop` channel.
   It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
 - `idle.rs`: an `ext-idle-notify-v1` notification after `power.lock_after_minutes`, which locks.
-- `input.rs`: pointer and keyboard input; keys go through the compositor's XKB keymap, with its repeat rate.
+- `input.rs`: pointer and keyboard input on the first seat; keys go through the compositor's XKB keymap, with its repeat rate.
   Key presses go through the compose table for the locale in `LC_ALL`, `LC_CTYPE`, or `LANG`, for dead keys and Compose sequences.
   Keys in a sequence produce no text and don't repeat, and neither does the composed text.
   Without a compose table, keys go straight to Slint.
@@ -229,6 +255,9 @@ Modules in `crates/nimbus-shell-host/src`:
 ### Rendering
 
 Each Slint window draws onto its `wl_surface` through a `Renderer`, which also requests the frame callback.
+Every part has its own surface and renderer, so buffers are only as large as the parts shown.
+With the software renderer on a 1920x1080 output, the idle panel and dock take 0.66 MiB of `wl_shm` buffers,
+and the overlay adds 15.8 MiB while it's open; at 3840x2160, that's 1.1 MiB and 63.3 MiB.
 
 - `SoftwareRenderer` is Slint's software renderer drawing into two alternating `wl_shm` buffers
   with `RepaintBufferType::SwappedBuffers`, so each frame redraws only what changed.
@@ -358,25 +387,32 @@ The release profile aborts on panic, because every process is supervised or rest
 
 - Domain crates have unit tests with fixture directories.
 - The shell has tests on Slint's testing backend.
-  The shell and apps render reference screenshots off screen through `nimbus_theme::headless`.
+  A stand-in host in `crates/nimbus-shell/tests/support/desk.rs` shows a view's parts on an output of a fixed size,
+  laid out as the compositor arranges layer surfaces and popups, routes input to them, and composites them;
+  the behavior tests, the shell's screenshots, and `nimbus-shell-preview` use it.
+  The apps render reference screenshots off screen through `nimbus_theme::headless`.
 - `nimbus-test-support` holds the shared harness: it starts the headless compositor in a temporary directory,
   provides Wayland test clients, and starts a private `dbus-daemon`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
+  A headless test checks that synthetic clicks focus the window under them and synthetic keys run shortcuts.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.
   The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change,
   that a client locks again after destroying its unconfirmed lock, that a second lock surface on an output is `duplicate_output`,
   and that a refused lock's surfaces are inert.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
-  and check the composited output through `Request::Screenshot`:
-  the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,
-  notifications show toasts, `Request::Lock` shows the lock screen on a lock surface,
+  check the composited output through `Request::Screenshot`, click and type through `Request::Click` and `Request::PressKey`,
+  and follow the shell's log of the surfaces it opens and closes:
+  the panel renders, the launcher and overview open and close an overlay surface through shell command events,
+  the panel and dock reserve their space and an autohidden dock none, the launcher takes typing and closes on Escape,
+  quick settings open in a popup that a click outside dismisses, a toast shows on its own surface until it expires,
+  `Request::Lock` shows the lock screen on a lock surface,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
-- `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` notification test run against a private `dbus-daemon`,
+- `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` toast test run against a private `dbus-daemon`,
   and skip with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 

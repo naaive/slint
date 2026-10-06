@@ -19,7 +19,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::shell::wlr_layer::Layer;
 
-const BTN_LEFT: u32 = 0x110;
+pub(super) const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 /// Logical pixels per discrete wheel step, matching common toolkits.
@@ -128,9 +128,11 @@ impl State {
     }
 
     pub(super) fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
+        self.pointer_button(event.button_code(), event.state(), event.time_msec());
+    }
+
+    pub(super) fn pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
-        let button = event.button_code();
-        let state = event.state();
         let pointer = self.nimbus.pointer.clone();
         let location = self.nimbus.pointer_location;
 
@@ -151,7 +153,7 @@ impl State {
                 _ => self.click_focus(&surface, window),
             }
         }
-        pointer.button(self, &ButtonEvent { button, state, serial, time: event.time_msec() });
+        pointer.button(self, &ButtonEvent { button, state, serial, time });
         pointer.frame(self);
     }
 

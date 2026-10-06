@@ -34,8 +34,9 @@ use crate::system_scheme::SYSTEM;
 use crate::view::View;
 use crate::windows::{DockEntry, Windows, dock_entries, readable_app_id};
 use crate::{
-    AppVisual, CalendarDay, Desktop, DockItem, LockWindow, NotificationAction, NotificationItem,
-    Osd, OsdKind, PanelSettings, ShellAction, ShellWindow, SystemStatus, Theme,
+    AppVisual, CalendarDay, Desktop, DockItem, DockWindow, LockWindow, NotificationAction,
+    NotificationItem, Osd, OsdKind, OsdWindow, OverlayWindow, PanelSettings, PanelWindow,
+    PopupWindow, ShellAction, SystemStatus, Theme, ToastWindow,
 };
 
 /// How long the OSD stays after the last change.
@@ -93,7 +94,7 @@ struct DesktopData {
 
 /// The rows every view shows alike.
 #[derive(Default)]
-struct Models {
+pub struct Models {
     dock: Rc<VecModel<DockItem>>,
     notifications: Rc<VecModel<NotificationItem>>,
     toasts: Rc<VecModel<NotificationItem>>,
@@ -134,7 +135,7 @@ impl DesktopData {
 }
 
 /// A window that shows the shared state.
-trait SharedWindow {
+pub trait SharedWindow {
     fn show_shared(&self, state: &State, models: &Models, theme: bool);
 }
 
@@ -150,7 +151,15 @@ macro_rules! shared_window {
         }
     )*};
 }
-shared_window!(ShellWindow, LockWindow);
+shared_window!(
+    PanelWindow,
+    DockWindow,
+    PopupWindow,
+    OverlayWindow,
+    ToastWindow,
+    OsdWindow,
+    LockWindow
+);
 
 /// How a window shows in every view, resolved once per refresh.
 pub struct WindowRow {
@@ -271,9 +280,12 @@ impl Model {
     /// Starts showing the shared state on a new view.
     pub fn add_view(&self, view: &Rc<View>) {
         self.views.borrow_mut().push(Rc::downgrade(view));
-        let state = self.state.borrow();
-        view.refresh(&state);
-        view.ui().show_shared(&state, &self.models, true);
+        view.refresh(&self.state.borrow());
+    }
+
+    /// Shows the shared state on a window, with the theme when `theme` is set.
+    pub fn show_shared_on(&self, window: &dyn SharedWindow, state: &State, theme: bool) {
+        window.show_shared(state, &self.models, theme);
     }
 
     /// Starts showing the shared state on a new lock screen.
@@ -290,7 +302,7 @@ impl Model {
             *self.shown_theme.borrow_mut() = Some(state.theme.clone());
         }
         for view in self.views() {
-            view.ui().show_shared(&state, &self.models, theme);
+            view.show_shared(&state, theme);
         }
         for lock in self.lock_windows() {
             lock.show_shared(&state, &self.models, theme);
@@ -674,6 +686,18 @@ impl Model {
             self.show_osd(osd);
         }
         Some(command)
+    }
+
+    pub fn shows_dock(&self) -> bool {
+        self.state.borrow().desktop.panel.show_dock
+    }
+
+    pub fn has_toasts(&self) -> bool {
+        self.models.toasts.row_count() > 0
+    }
+
+    pub fn osd_shown(&self) -> bool {
+        self.state.borrow().desktop.osd_shown
     }
 
     /// Clears the unread dot once the user opened the notification history.

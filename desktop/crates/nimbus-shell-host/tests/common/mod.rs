@@ -61,7 +61,8 @@ impl Session {
             .env("XDG_DATA_DIRS", dir.join("data"))
             .env("DBUS_SESSION_BUS_ADDRESS", self.bus.as_deref().unwrap_or(&no_bus))
             .env("DBUS_SYSTEM_BUS_ADDRESS", &no_bus)
-            .env("RUST_LOG", "info")
+            // The surfaces of the shell's parts log when they open and close.
+            .env("RUST_LOG", "info,nimbus_shell::output=debug")
             .env_remove("WAYLAND_SOCKET")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -115,7 +116,39 @@ impl Session {
     }
 
     pub fn wait_log(&self, what: &str, text: &str) {
-        wait_for(what, || self.shell_log().contains(text).then_some(()));
+        self.wait_log_count(what, text, 1);
+    }
+
+    /// Waits until the shell logged `text` at least `count` times.
+    pub fn wait_log_count(&self, what: &str, text: &str, count: usize) {
+        wait_for(what, || (self.shell_log().matches(text).count() >= count).then_some(()));
+    }
+
+    /// Waits until the surface of `part`, such as `Overlay` or `Popup(QuickSettings)`, opened `count` times in all.
+    pub fn wait_opened(&self, part: &str, count: usize) {
+        let text = format!("part opened output={OUTPUT} part={part}\n");
+        self.wait_log_count(&format!("{part} to open"), &text, count);
+    }
+
+    /// Waits until the surface of `part` closed `count` times in all.
+    pub fn wait_closed(&self, part: &str, count: usize) {
+        let text = format!("part closed output={OUTPUT} part={part}\n");
+        self.wait_log_count(&format!("{part} to close"), &text, count);
+    }
+
+    /// How many times the surface of `part` opened so far.
+    pub fn opened(&self, part: &str) -> usize {
+        self.shell_log().matches(&format!("part opened output={OUTPUT} part={part}\n")).count()
+    }
+
+    /// Clicks the left button at a point of the output, in logical pixels.
+    pub fn click(&self, x: f64, y: f64) {
+        self.request(Request::Click { output: OUTPUT.into(), x, y });
+    }
+
+    /// Presses and releases the key with a Linux input event code.
+    pub fn press_key(&self, code: u32) {
+        self.request(Request::PressKey { code });
     }
 }
 
@@ -165,9 +198,39 @@ pub fn changed_fraction(a: &image::RgbaImage, b: &image::RgbaImage) -> f64 {
     changed as f64 / f64::from(a.width() * a.height())
 }
 
-/// Whether the panel is drawn: its strip differs from the backdrop just below it.
+/// How many pixels of a rectangle differ noticeably between two images of the same size.
+pub fn changed_pixels(
+    a: &image::RgbaImage,
+    b: &image::RgbaImage,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+) -> usize {
+    (y..y + h)
+        .flat_map(|py| (x..x + w).map(move |px| (px, py)))
+        .filter(|&(px, py)| {
+            let (p, q) = (a.get_pixel(px, py).0, b.get_pixel(px, py).0);
+            p.iter().zip(q).take(3).map(|(x, y)| u32::from(x.abs_diff(y))).sum::<u32>() > 24
+        })
+        .count()
+}
+
+/// Whether any pixel of a rectangle is light, as text and icons are on the dark shell and backdrop.
+fn light(shot: &image::RgbaImage, x: u32, y: u32, w: u32, h: u32) -> bool {
+    (x..x + w)
+        .flat_map(|x| (y..y + h).map(move |y| (x, y)))
+        .any(|(x, y)| shot.get_pixel(x, y).0[0] > 180)
+}
+
+/// Whether the panel is drawn: the clock in its middle shows light text.
 pub fn panel_visible(shot: &image::RgbaImage) -> bool {
-    distance(mean(shot, 200, 4, 200, 20), mean(shot, 200, 60, 200, 20)) > 12.0
+    light(shot, 560, 6, 160, 20)
+}
+
+/// Whether the panel and the dock are drawn; the dock of the tests shows only the applications button.
+pub fn shell_visible(shot: &image::RgbaImage) -> bool {
+    panel_visible(shot) && light(shot, 625, 665, 30, 30)
 }
 
 /// Whether the whole output is black, as the compositor draws it while locked without a lock surface.

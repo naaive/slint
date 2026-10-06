@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Theme, Motion, Icons, Icon } from "@nimbus/theme.slint";
-import { DockItem, AppVisual } from "models.slint";
+import { DockItem, AppVisual, RectData } from "models.slint";
 import { AppIcon } from "common.slint";
 
 export global DockMetrics {
@@ -11,6 +11,8 @@ export global DockMetrics {
     // The gap between the dock and the output edge or panel.
     out property <length> margin: 8px;
     out property <length> height: self.cell-size + 2 * self.padding;
+    // The space the dock reserves at the output edge: the dock and its margins.
+    out property <length> reserved: self.height + 2 * self.margin;
 }
 
 component Tooltip inherits Rectangle {
@@ -115,8 +117,8 @@ export component Dock inherits Rectangle {
     in property <int> menu-index: -1;
 
     callback item-clicked(index: int);
-    // `center-x` is the item's center relative to the dock.
-    callback item-menu-requested(index: int, center-x: length);
+    // `anchor` is the item's rectangle in window coordinates, which its menu opens next to.
+    callback item-menu-requested(index: int, anchor: RectData);
     callback show-apps;
 
     width: layout.preferred-width;
@@ -159,7 +161,7 @@ export component Dock inherits Rectangle {
                     root.item-clicked(index);
                 }
                 menu-requested => {
-                    root.item-menu-requested(index, self.absolute-position.x - root.absolute-position.x + self.width / 2);
+                    root.item-menu-requested(index, { x: self.absolute-position.x, y: self.absolute-position.y, width: self.width, height: self.height });
                 }
             }
         }

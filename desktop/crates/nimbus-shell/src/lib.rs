@@ -4,8 +4,9 @@
 //!
 //! The shell doesn't know how it's displayed.
 //! One [`ShellModel`] holds the state; data flows in through its methods and user intents flow out as [`ShellAction`]s.
-//! Each output shows the model through a [`ShellView`], a transparent overlay whose input is limited to [`ShellView::input_region`],
-//! and while the session is locked, through a [`LockView`], a window of its own.
+//! Each output shows the model through a [`ShellView`], whose [`Part`]s, such as the panel and the dock,
+//! each have a window that a host shows on a surface of its own;
+//! while the session is locked, each output shows a [`LockView`] instead.
 //!
 //! The lock screen asks the host to check passwords: register a handler with [`ShellModel::on_unlock_attempt`],
 //! then call [`ShellModel::set_locked`] with `false` on success or [`ShellModel::unlock_failed`] on failure.
@@ -27,7 +28,9 @@ mod view;
 mod windows;
 
 pub use lock_view::LockView;
-pub use view::ShellView;
+pub use view::{
+    Align, Edges, Part, PartComponent, PartWindow, Placement, PopupPlacement, ShellView,
+};
 
 slint::include_modules!();
 
@@ -67,19 +70,6 @@ impl Rect {
     pub fn is_empty(&self) -> bool {
         !(self.width > 0.0 && self.height > 0.0)
     }
-}
-
-impl From<RectData> for Rect {
-    fn from(rect: RectData) -> Self {
-        Self { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-    }
-}
-
-/// Space the shell permanently occupies at the output edges; the compositor keeps maximized and tiled windows out of it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Exclusive {
-    pub top: f32,
-    pub bottom: f32,
 }
 
 /// The shell's state, shared by all of its views.

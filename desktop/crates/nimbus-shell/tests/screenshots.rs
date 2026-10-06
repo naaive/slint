@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: MIT
 
-//! Renders the shell with the software renderer at 1280x800 in its main states, over a wallpaper-like gradient,
+//! Renders the shell's parts with the software renderer, composited at 1280x800 in its main states over a wallpaper-like gradient,
 //! and checks that each state draws what it should.
 //! Set `NIMBUS_UPDATE_SCREENSHOTS=1` to write `docs/screenshots/shell-<state>.png`.
 //!
-//! The Slint platform can be set once per thread, so each test thread renders all states in sequence.
+//! The Slint platform can be set once per thread, so the test renders all states in sequence.
 
 mod support;
 
 use std::path::Path;
 use std::rc::Rc;
 
+use i_slint_backend_testing::ElementQuery;
 use nimbus_services::ServiceEvent;
-use nimbus_shell::{LockView, Osd, Popup, ShellAction, ShellModel, ShellView};
-use nimbus_theme::headless::{Frame, Headless};
+use nimbus_shell::{
+    LockView, Osd, Part, PartComponent, Popup, RectData, ShellAction, ShellModel, ShellView,
+};
+use nimbus_theme::headless::Frame;
 use slint::Rgb8Pixel;
-use slint::platform::software_renderer::PremultipliedRgbaColor;
+use slint::platform::software_renderer::MinimalSoftwareWindow;
+use support::desk::{Desk, Software};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -38,24 +42,36 @@ fn backdrop(x: u32, y: u32) -> [f32; 3] {
     rgb
 }
 
-/// Renders the shell over [`backdrop`].
-fn render(headless: &Headless) -> Frame {
-    let pixels = headless
-        .render_pixels::<PremultipliedRgbaColor>()
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let (x, y) = (i as u32 % WIDTH, i as u32 / WIDTH);
-            let under = backdrop(x, y);
-            let alpha = f32::from(p.alpha) / 255.0;
-            let over = [p.red, p.green, p.blue];
-            let [r, g, b] = std::array::from_fn(|c| {
-                (f32::from(over[c]) + under[c] * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8
-            });
-            Rgb8Pixel { r, g, b }
-        })
-        .collect();
+/// Renders the shown parts over [`backdrop`].
+fn render(desk: &Desk) -> Frame {
+    let pixels = desk.render(backdrop).into_iter().map(|[r, g, b]| Rgb8Pixel { r, g, b }).collect();
     Frame { width: WIDTH, height: HEIGHT, pixels }
+}
+
+/// Renders `window`, such as a lock screen's, over the whole output.
+fn render_window(window: &MinimalSoftwareWindow) -> Frame {
+    window.set_size(slint::PhysicalSize::new(WIDTH, HEIGHT));
+    slint::platform::update_timers_and_animations();
+    let mut pixels = vec![Rgb8Pixel::default(); (WIDTH * HEIGHT) as usize];
+    window.request_redraw();
+    window.draw_if_needed(|renderer| {
+        renderer.render(&mut pixels, WIDTH as usize);
+    });
+    Frame { width: WIDTH, height: HEIGHT, pixels }
+}
+
+/// Opens `popup` next to the panel button labeled `label`, as clicking it does.
+fn open_popup(desk: &Desk, popup: Popup, label: &str) {
+    let panel = desk.component(Part::Panel).expect("the panel shows");
+    let PartComponent::Panel(ui) = &panel else { unreachable!() };
+    let button = ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_accessible_label(label)
+        .find_first()
+        .unwrap_or_else(|| panic!("no button labeled {label:?}"));
+    let (position, size) = (button.absolute_position(), button.size());
+    let anchor = RectData { x: position.x, y: position.y, width: size.width, height: size.height };
+    panel.output().invoke_popup_requested(popup, anchor);
 }
 
 fn differs_from_backdrop(frame: &Frame, x: u32, y: u32) -> bool {
@@ -75,7 +91,7 @@ fn save(name: &str, frame: &Frame) {
 
 #[test]
 fn shell_states_render() {
-    let headless = Headless::install(WIDTH, HEIGHT).expect("no platform was set on this thread");
+    let software = Software::install().expect("no platform was set on this thread");
 
     let dir = tempfile::tempdir().expect("temporary directory");
     let (apps, icons) = support::apps(dir.path()).expect("mock apps are written");
@@ -89,69 +105,70 @@ fn shell_states_render() {
     model.set_apps(std::rc::Rc::new(apps), icons);
     model.set_compositor_state(&support::compositor_state());
     model.handle_service_event(&ServiceEvent::State(support::system_state()));
-    let shell = ShellView::new(&model, support::OUTPUT).expect("the view starts");
-    shell.show().expect("the window shows");
+    let view = ShellView::new(&model, support::OUTPUT);
+    let desk = Desk::new(view, WIDTH as f32, HEIGHT as f32, Some(software.clone()));
 
     // Idle: the panel along the top and the dock at the bottom, the rest showing the wallpaper.
-    let idle = render(&headless);
+    let idle = render(&desk);
     assert!(differs_from_backdrop(&idle, 640, 10), "the panel draws");
     assert!(differs_from_backdrop(&idle, 640, HEIGHT - 30), "the dock draws");
     assert!(!differs_from_backdrop(&idle, 640, 400), "the middle stays clear");
     save("idle", &idle);
 
-    shell.toggle_launcher();
-    let launcher = render(&headless);
+    desk.view.toggle_launcher();
+    let launcher = render(&desk);
     assert!(differs_from_backdrop(&launcher, 640, 400), "the launcher covers the output");
     save("launcher", &launcher);
-    shell.toggle_launcher();
+    desk.view.toggle_launcher();
 
-    shell.component().invoke_popup_requested(Popup::QuickSettings);
-    let quick_settings = render(&headless);
+    open_popup(&desk, Popup::QuickSettings, "System menu");
+    let quick_settings = render(&desk);
     assert!(differs_from_backdrop(&quick_settings, WIDTH - 200, 200), "quick settings draw");
     save("quick-settings", &quick_settings);
-    shell.component().invoke_popup_requested(Popup::None);
+    desk.view.close_popup();
 
-    shell.toggle_overview();
-    let overview = render(&headless);
+    desk.view.toggle_overview();
+    let overview = render(&desk);
     assert!(differs_from_backdrop(&overview, 640, 400), "the overview covers the output");
     save("overview", &overview);
-    shell.toggle_overview();
+    desk.view.toggle_overview();
 
     for notification in support::notifications() {
         model.handle_service_event(&ServiceEvent::Notification(notification));
     }
     model.show_osd(Osd::Volume { level: 0.62, muted: false });
-    let toasts = render(&headless);
+    let toasts = render(&desk);
     assert!(differs_from_backdrop(&toasts, WIDTH - 200, 80), "toasts draw");
+    assert!(differs_from_backdrop(&toasts, 640, HEIGHT - 150), "the OSD draws");
     save("toast-osd", &toasts);
 
     // Lets the OSD time out; toasts step aside while a popup is open.
     std::thread::sleep(std::time::Duration::from_millis(1600));
-    shell.component().invoke_popup_requested(Popup::Calendar);
-    let calendar = render(&headless);
+    open_popup(&desk, Popup::Calendar, "Calendar and notifications");
+    let calendar = render(&desk);
     assert!(differs_from_backdrop(&calendar, 640, 300), "the calendar draws");
     save("calendar", &calendar);
-    shell.component().invoke_popup_requested(Popup::None);
+    desk.view.close_popup();
 
-    // The lock screen is a window of its own, which takes the headless window's place.
+    // The lock screen is a window of its own, which a host shows instead of the parts.
     model.set_locked(true);
     let lock = LockView::new(&model).expect("the lock screen starts");
+    let lock_window = software.take_created().expect("the lock screen has a window");
     lock.show().expect("the window shows");
-    let frame = render(&headless);
+    let frame = render_window(&lock_window);
     assert!(
         (0..WIDTH).step_by(40).all(|x| differs_from_backdrop(&frame, x, HEIGHT / 2)),
         "the lock screen is opaque"
     );
     save("lock", &frame);
-    lock.window().hide().expect("the lock screen hides");
+    drop(lock);
     model.set_locked(false);
-    shell.show().expect("the window shows");
 
     let mut light = config.clone();
     light.appearance.color_scheme = nimbus_config::ColorScheme::Light;
     model.set_config(&light);
-    shell.component().invoke_popup_requested(Popup::QuickSettings);
-    let light_settings = render(&headless);
+    open_popup(&desk, Popup::QuickSettings, "System menu");
+    let light_settings = render(&desk);
     save("quick-settings-light", &light_settings);
 
     assert!(actions.borrow().is_empty(), "rendering emits no actions: {:?}", actions.borrow());

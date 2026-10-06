@@ -1,70 +1,73 @@
 // SPDX-License-Identifier: MIT
 
-//! The shell on one output: its view on a full-output layer surface,
-//! and thin layer surfaces along the edges that reserve the panel's and dock's space.
+//! The shell on one output: a surface for each part of its view, sized to what the part shows.
+//! The panel, dock, overlay, toasts, and OSD are layer surfaces; a popup is an `xdg_popup` of the part it belongs to.
 
+use crate::platform::Windows;
 use crate::state::State;
-use crate::surface::SlintSurface;
-use nimbus_shell::{Exclusive, ShellView};
-use smithay_client_toolkit::compositor::{CompositorState, Region};
+use crate::surface::{Scaling, SlintSurface};
+use nimbus_shell::{Align, Part, PartWindow, Placement, PopupPlacement, Rect, ShellView};
+use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::error::GlobalError;
+use smithay_client_toolkit::globals::ProvidesBoundGlobal;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerSurface,
 };
-use wayland_client::QueueHandle;
-use wayland_client::protocol::wl_buffer::WlBuffer;
+use smithay_client_toolkit::shell::xdg::popup::Popup;
+use smithay_client_toolkit::shell::xdg::{XdgPositioner, XdgSurface};
 use wayland_client::protocol::wl_output::WlOutput;
-use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
-use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{Proxy, QueueHandle};
+use wayland_protocols::xdg::shell::client::xdg_positioner::{
+    Anchor as PopupAnchor, ConstraintAdjustment, Gravity,
+};
+use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
+
+/// `xdg_popup.reposition` came with version 3 of `xdg_wm_base`.
+const REPOSITION_VERSION: u32 = 3;
+
+/// `xdg_wm_base`, which popups need, without the toplevel windows of smithay-client-toolkit's `XdgShell`.
+pub struct WmBase(pub XdgWmBase);
+
+impl ProvidesBoundGlobal<XdgWmBase, 5> for WmBase {
+    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
+        Ok(self.0.clone())
+    }
+}
+
+impl ProvidesBoundGlobal<XdgWmBase, 6> for WmBase {
+    fn bound_global(&self) -> Result<XdgWmBase, GlobalError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// What [`OutputShell::update`] needs from the [`State`].
+pub struct Context<'a> {
+    pub qh: &'a QueueHandle<State>,
+    pub compositor: &'a CompositorState,
+    pub layer_shell: &'a LayerShell,
+    pub wm_base: Option<&'a WmBase>,
+    pub windows: &'a Windows,
+    pub scaling: &'a Scaling,
+    /// The integer scale of the output, which new surfaces start with.
+    pub scale: i32,
+    /// The seat and serial of the last press, which a popup grabs input with.
+    pub grab: Option<(&'a WlSeat, u32)>,
+}
 
 pub struct OutputShell {
     output: WlOutput,
     name: String,
     view: ShellView,
-    pub surface: SlintSurface,
-    layer: LayerSurface,
-    reservations: Vec<Reservation>,
-    exclusive: Option<Exclusive>,
-    wants_keyboard: bool,
+    /// Bottom to top, in the order of [`ShellView::parts`].
+    parts: Vec<PartSurface>,
 }
 
 impl OutputShell {
-    /// Creates the view for the output named `name`, on a transparent layer surface over all of it.
-    pub fn new(state: &State, output: &WlOutput, name: String) -> anyhow::Result<Self> {
-        let wl_surface = state.compositor.create_surface(&state.qh);
-        let created = state
-            .windows
-            .create(&wl_surface, || ShellView::new(&state.model, &name))
-            .and_then(|(view, renderer)| {
-                view.show()?;
-                Ok((view, renderer))
-            });
-        let (view, renderer) = created.inspect_err(|_| wl_surface.destroy())?;
-        let layer = state.layer_shell.create_layer_surface(
-            &state.qh,
-            wl_surface.clone(),
-            Layer::Top,
-            Some("nimbus-shell"),
-            Some(output),
-        );
-        layer.set_anchor(Anchor::all());
-        // Covers the whole output, including the space other surfaces reserve.
-        layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        let scale = state.output_scale(output);
-        let mut surface = SlintSurface::new(wl_surface, renderer, &state.scaling, scale, &state.qh);
-        surface.set_input_region(&state.compositor, Vec::new());
-        layer.commit();
-        Ok(Self {
-            output: output.clone(),
-            name,
-            view,
-            surface,
-            layer,
-            reservations: Vec::new(),
-            exclusive: None,
-            wants_keyboard: false,
-        })
+    pub fn new(output: &WlOutput, name: String, view: ShellView) -> Self {
+        Self { output: output.clone(), name, view, parts: Vec::new() }
     }
 
     pub fn output(&self) -> &WlOutput {
@@ -79,125 +82,356 @@ impl OutputShell {
         &self.view
     }
 
-    pub fn is(&self, layer: &LayerSurface) -> bool {
-        &self.layer == layer
+    pub fn surfaces(&self) -> impl Iterator<Item = &SlintSurface> {
+        self.parts.iter().map(|p| &p.surface)
     }
 
-    /// Applies a configure of one of the reservations; returns whether `layer` was one.
-    pub fn configure_reservation(
-        &mut self,
-        layer: &LayerSurface,
-        (width, height): (u32, u32),
-        buffer: Option<&WlBuffer>,
-    ) -> bool {
-        let Some(reservation) = self.reservations.iter().find(|r| &r.layer == layer) else {
+    pub fn surfaces_mut(&mut self) -> impl Iterator<Item = &mut SlintSurface> {
+        self.parts.iter_mut().map(|p| &mut p.surface)
+    }
+
+    /// Whether `layer` is the layer surface of one of the parts.
+    pub fn has_layer(&self, layer: &LayerSurface) -> bool {
+        self.parts.iter().any(|p| p.layer() == Some(layer))
+    }
+
+    /// Applies a configure of a part's layer surface, in logical pixels.
+    pub fn configure_layer(&mut self, layer: &LayerSurface, (width, height): (u32, u32)) {
+        if let Some(part) = self.parts.iter_mut().find(|p| p.layer() == Some(layer)) {
+            part.surface.configure(width, height);
+        }
+    }
+
+    /// Applies a configure of the popup's surface; returns whether `popup` was this output's.
+    pub fn configure_popup(&mut self, popup: &Popup) -> bool {
+        let Some(part) = self.parts.iter_mut().find(|p| p.popup() == Some(popup)) else {
             return false;
         };
-        let size = |v: u32| i32::try_from(v).unwrap_or(i32::MAX);
-        reservation.viewport.set_destination(size(width), size(height));
-        reservation.layer.wl_surface().attach(buffer, 0, 0);
-        reservation.layer.commit();
+        if let Role::Popup { size, .. } = part.role {
+            part.surface.configure(size.0, size.1);
+        }
         true
     }
 
-    /// Forgets a surface the compositor closed; returns whether it was the view's own.
-    pub fn closed(&mut self, layer: &LayerSurface) -> bool {
-        self.reservations.retain(|r| &r.layer != layer);
-        self.is(layer)
+    /// Closes the popup once the compositor dismissed it; returns whether `popup` was this output's.
+    pub fn popup_done(&mut self, popup: &Popup) -> bool {
+        let Some(index) = self.parts.iter().position(|p| p.popup() == Some(popup)) else {
+            return false;
+        };
+        let part = self.parts[index].window.part();
+        tracing::debug!(output = %self.name, part = ?part, "part closed");
+        self.parts.truncate(index);
+        self.view.close_popup();
+        true
     }
 
-    /// Brings the surfaces in line with the view, then draws what changed.
-    pub fn update(&mut self, globals: &Globals) {
-        // Without keyboard interactivity otherwise, clicks on the panel never take the keyboard from windows.
-        let wants_keyboard = self.view.wants_keyboard();
-        let keyboard_changed = wants_keyboard != self.wants_keyboard;
-        if keyboard_changed {
-            self.wants_keyboard = wants_keyboard;
-            let (interactivity, layer) = if wants_keyboard {
-                // The overlay layer is above fullscreen windows.
-                (KeyboardInteractivity::Exclusive, Layer::Overlay)
-            } else {
-                (KeyboardInteractivity::None, Layer::Top)
+    /// Brings the surfaces in line with the view's parts, then draws what changed.
+    pub fn update(&mut self, context: &Context) {
+        let wanted = self.view.parts();
+        let placement = self.view.popup_placement();
+        // Popups go before the parts below them, so a popup's parent never goes first.
+        for index in (0..self.parts.len()).rev() {
+            let part = &self.parts[index];
+            let stale = match &part.role {
+                Role::Popup { placement: shown, .. } => Some(*shown) != placement,
+                Role::Layer { .. } => false,
             };
-            self.layer.set_keyboard_interactivity(interactivity);
-            self.layer.set_layer(layer);
-            self.surface.commit_later();
-        }
-        let rendered = self.surface.render(globals.qh);
-        if rendered || keyboard_changed || self.exclusive.is_none() {
-            let exclusive = self.view.exclusive_zone();
-            if self.exclusive != Some(exclusive) {
-                self.reserve(globals, exclusive);
+            if stale || !wanted.contains(&part.window.part()) {
+                tracing::debug!(output = %self.name, part = ?part.window.part(), "part closed");
+                self.parts.remove(index);
             }
-            // See `ShellView::input_region` for why the region follows rendering.
-            self.surface.set_input_region(globals.compositor, self.view.input_region());
         }
-        self.surface.commit();
-    }
-
-    /// Replaces the reservations with one per edge the view occupies.
-    fn reserve(&mut self, globals: &Globals, exclusive: Exclusive) {
-        self.exclusive = Some(exclusive);
-        self.reservations.clear();
-        let Exclusive { top, bottom } = exclusive;
-        for (edge, zone) in [(Anchor::TOP, top), (Anchor::BOTTOM, bottom)] {
-            let zone = zone.ceil() as i32;
-            if zone > 0 {
-                match Reservation::new(globals, &self.output, edge, zone) {
-                    Some(reservation) => self.reservations.push(reservation),
-                    None => tracing::warn!(
-                        "the compositor lacks viewporter or single-pixel-buffer; windows may cover the panel"
-                    ),
+        for (order, part) in wanted.iter().enumerate() {
+            if self.parts.iter().any(|p| p.window.part() == *part) {
+                continue;
+            }
+            match self.create(context, *part, placement) {
+                Ok(created) => {
+                    tracing::debug!(output = %self.name, part = ?part, "part opened");
+                    let at = self
+                        .parts
+                        .iter()
+                        .filter(|p| wanted[..order].contains(&p.window.part()))
+                        .count();
+                    self.parts.insert(at, created);
+                }
+                Err(err) => {
+                    tracing::warn!(output = %self.name, part = ?part, "cannot show a part: {err:#}");
+                    if matches!(part, Part::Popup(_)) {
+                        self.view.close_popup();
+                    }
                 }
             }
         }
+        let mut reopen = false;
+        for part in &mut self.parts {
+            reopen |= !part.update(context);
+        }
+        if reopen {
+            // The popup changed size without `xdg_popup.reposition`; a new one takes its place.
+            self.parts.retain(|p| !p.reopen);
+        }
+    }
+
+    fn create(
+        &self,
+        context: &Context,
+        part: Part,
+        placement: Option<PopupPlacement>,
+    ) -> anyhow::Result<PartSurface> {
+        let wl_surface = context.compositor.create_surface(context.qh);
+        let created = context.windows.create(&wl_surface, || self.view.create(part)).and_then(
+            |(window, renderer)| {
+                window.show()?;
+                Ok((window, renderer))
+            },
+        );
+        let (window, renderer) = created.inspect_err(|_| wl_surface.destroy())?;
+        let role = match window.placement() {
+            Some(layer) => Role::layer(context, &self.output, &wl_surface, part, &layer),
+            None => {
+                let placement = placement.ok_or_else(|| anyhow::anyhow!("no popup is open"))?;
+                let parent = self
+                    .parts
+                    .iter()
+                    .find(|p| p.window.part() == placement.parent)
+                    .and_then(PartSurface::layer)
+                    .ok_or_else(|| anyhow::anyhow!("the popup's part isn't shown"))?;
+                Role::popup(context, &wl_surface, parent, &window, placement)
+                    .inspect_err(|_| wl_surface.destroy())?
+            }
+        };
+        let surface =
+            SlintSurface::new(wl_surface, renderer, context.scaling, context.scale, context.qh);
+        Ok(PartSurface { surface, window, role, reopen: false })
     }
 }
 
-/// What [`OutputShell::update`] needs from the [`State`].
-pub struct Globals<'a> {
-    pub qh: &'a QueueHandle<State>,
-    pub compositor: &'a CompositorState,
-    pub layer_shell: &'a LayerShell,
-    pub viewporter: Option<&'a WpViewporter>,
-    /// A transparent single-pixel buffer, which the reservations show.
-    pub transparent: Option<&'a WlBuffer>,
+impl Drop for OutputShell {
+    fn drop(&mut self) {
+        // Popups go before the parts below them.
+        while self.parts.pop().is_some() {}
+    }
 }
 
-/// A transparent strip along the top or bottom edge that reserves an exclusive zone, without taking input.
-struct Reservation {
-    viewport: WpViewport,
-    layer: LayerSurface,
+/// The window of one part on its surface.
+struct PartSurface {
+    surface: SlintSurface,
+    window: PartWindow,
+    role: Role,
+    /// The popup changed size, which only a new popup can show.
+    reopen: bool,
 }
 
-impl Reservation {
-    fn new(globals: &Globals, output: &WlOutput, edge: Anchor, zone: i32) -> Option<Self> {
-        let (Some(viewporter), Some(_)) = (globals.viewporter, globals.transparent) else {
-            return None;
+enum Role {
+    Layer {
+        layer: LayerSurface,
+        /// What the layer surface was last set up with.
+        applied: Placement,
+    },
+    Popup {
+        popup: Popup,
+        placement: PopupPlacement,
+        /// The size of its surface, with the room for its shadow, in logical pixels.
+        size: (u32, u32),
+        /// The popup within its surface.
+        geometry: Rect,
+    },
+}
+
+impl Role {
+    fn layer(
+        context: &Context,
+        output: &WlOutput,
+        wl_surface: &WlSurface,
+        part: Part,
+        placement: &Placement,
+    ) -> Self {
+        let namespace = match part {
+            Part::Panel => "nimbus-panel",
+            Part::Dock => "nimbus-dock",
+            Part::Overlay => "nimbus-overlay",
+            Part::Toasts => "nimbus-toasts",
+            Part::Osd => "nimbus-osd",
+            Part::Popup(_) => "nimbus-popup",
         };
-        let wl_surface = globals.compositor.create_surface(globals.qh);
-        let viewport = viewporter.get_viewport(&wl_surface, globals.qh, ());
-        let layer = globals.layer_shell.create_layer_surface(
-            globals.qh,
+        let layer = context.layer_shell.create_layer_surface(
+            context.qh,
             wl_surface.clone(),
-            Layer::Top,
-            Some("nimbus-shell-reservation"),
+            layer_of(placement),
+            Some(namespace),
             Some(output),
         );
-        layer.set_anchor(edge | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, zone.unsigned_abs());
-        layer.set_exclusive_zone(zone);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        if let Ok(region) = Region::new(globals.compositor) {
-            wl_surface.set_input_region(Some(region.wl_region()));
-        }
+        apply(&layer, placement);
         layer.commit();
-        Some(Self { viewport, layer })
+        Self::Layer { layer, applied: *placement }
+    }
+
+    fn popup(
+        context: &Context,
+        wl_surface: &WlSurface,
+        parent: &LayerSurface,
+        window: &PartWindow,
+        placement: PopupPlacement,
+    ) -> anyhow::Result<Self> {
+        let wm_base =
+            context.wm_base.ok_or_else(|| anyhow::anyhow!("the compositor lacks xdg-shell"))?;
+        let geometry = window.geometry();
+        let positioner = positioner(wm_base, &placement, geometry)?;
+        let popup =
+            Popup::from_surface(None, &positioner, context.qh, wl_surface.clone(), wm_base)?;
+        parent.get_popup(popup.xdg_popup());
+        set_geometry(&popup, geometry);
+        if let Some((seat, serial)) = context.grab {
+            popup.xdg_popup().grab(seat, serial);
+        }
+        popup.wl_surface().commit();
+        Ok(Self::Popup { popup, placement, size: surface_size(window), geometry })
     }
 }
 
-impl Drop for Reservation {
-    fn drop(&mut self) {
-        self.viewport.destroy();
+impl PartSurface {
+    fn layer(&self) -> Option<&LayerSurface> {
+        match &self.role {
+            Role::Layer { layer, .. } => Some(layer),
+            Role::Popup { .. } => None,
+        }
     }
+
+    fn popup(&self) -> Option<&Popup> {
+        match &self.role {
+            Role::Popup { popup, .. } => Some(popup),
+            Role::Layer { .. } => None,
+        }
+    }
+
+    /// Brings the role in line with the window, then draws what changed.
+    /// Returns false when the part needs a new surface.
+    fn update(&mut self, context: &Context) -> bool {
+        match &mut self.role {
+            Role::Layer { layer, applied } => {
+                if let Some(placement) = self.window.placement()
+                    && placement != *applied
+                {
+                    if layer_of(&placement) != layer_of(applied) {
+                        layer.set_layer(layer_of(&placement));
+                    }
+                    apply(layer, &placement);
+                    *applied = placement;
+                    self.surface.commit_later();
+                }
+            }
+            Role::Popup { popup, placement, size, geometry } => {
+                let new_size = surface_size(&self.window);
+                let new_geometry = self.window.geometry();
+                if (new_size, new_geometry) != (*size, *geometry) {
+                    let reposition = context
+                        .wm_base
+                        .filter(|_| popup.xdg_popup().version() >= REPOSITION_VERSION);
+                    let Some(positioner) = reposition
+                        .and_then(|wm_base| positioner(wm_base, placement, new_geometry).ok())
+                    else {
+                        self.reopen = true;
+                        return false;
+                    };
+                    popup.reposition(&positioner, 0);
+                    set_geometry(popup, new_geometry);
+                    (*size, *geometry) = (new_size, new_geometry);
+                    self.surface.commit_later();
+                }
+            }
+        }
+        let rendered = self.surface.render(context.qh);
+        if rendered {
+            // Parts lay out what they show while rendering, such as new toasts.
+            self.surface.set_input_region(context.compositor, self.window.input_region());
+        }
+        self.surface.commit();
+        true
+    }
+}
+
+fn layer_of(placement: &Placement) -> Layer {
+    // The overlay layer is above fullscreen windows.
+    if placement.above_fullscreen { Layer::Overlay } else { Layer::Top }
+}
+
+/// A logical length as whole pixels for the protocol, rounded up.
+fn pixels(length: f32) -> u32 {
+    length.max(0.0).ceil() as u32
+}
+
+/// Sets up a layer surface for `placement`; applies with the next commit.
+fn apply(layer: &LayerSurface, placement: &Placement) {
+    let edges = placement.edges;
+    let anchor = [
+        (edges.top, Anchor::TOP),
+        (edges.bottom, Anchor::BOTTOM),
+        (edges.left, Anchor::LEFT),
+        (edges.right, Anchor::RIGHT),
+    ]
+    .into_iter()
+    .filter(|(attached, _)| *attached)
+    .fold(Anchor::empty(), |anchor, (_, edge)| anchor | edge);
+    layer.set_anchor(anchor);
+    // A size of 0 spans the output between two attached edges, and is an error otherwise.
+    let size = |length: f32, spans: bool| if spans { 0 } else { pixels(length).max(1) };
+    layer.set_size(
+        size(placement.width, edges.left && edges.right),
+        size(placement.height, edges.top && edges.bottom),
+    );
+    let margin = placement.margin.round() as i32;
+    layer.set_margin(margin, margin, margin, margin);
+    layer.set_exclusive_zone(placement.exclusive_zone.map_or(-1, |zone| pixels(zone) as i32));
+    layer.set_keyboard_interactivity(if placement.keyboard {
+        KeyboardInteractivity::Exclusive
+    } else {
+        KeyboardInteractivity::None
+    });
+}
+
+fn surface_size(window: &PartWindow) -> (u32, u32) {
+    let (width, height) = window.size();
+    (pixels(width).max(1), pixels(height).max(1))
+}
+
+/// Tells the compositor which part of the popup's surface is the popup, without the room for its shadow.
+fn set_geometry(popup: &Popup, geometry: Rect) {
+    popup.xdg_shell_surface().set_window_geometry(
+        geometry.x.round() as u32,
+        geometry.y.round() as u32,
+        pixels(geometry.width).max(1),
+        pixels(geometry.height).max(1),
+    );
+}
+
+/// Places a popup of `geometry`'s size next to its anchor, as `placement` says, and on the output.
+fn positioner(
+    wm_base: &WmBase,
+    placement: &PopupPlacement,
+    geometry: Rect,
+) -> anyhow::Result<XdgPositioner> {
+    let positioner = XdgPositioner::new(wm_base)?;
+    positioner
+        .set_size(pixels(geometry.width).max(1) as i32, pixels(geometry.height).max(1) as i32);
+    let anchor = placement.anchor;
+    positioner.set_anchor_rect(
+        anchor.x.floor() as i32,
+        anchor.y.floor() as i32,
+        pixels(anchor.width).max(1) as i32,
+        pixels(anchor.height).max(1) as i32,
+    );
+    let (edge, gravity) = match (placement.below, placement.align) {
+        (true, Align::Center) => (PopupAnchor::Bottom, Gravity::Bottom),
+        (true, Align::End) => (PopupAnchor::BottomRight, Gravity::BottomLeft),
+        (false, Align::Center) => (PopupAnchor::Top, Gravity::Top),
+        (false, Align::End) => (PopupAnchor::TopRight, Gravity::TopLeft),
+    };
+    positioner.set_anchor(edge);
+    positioner.set_gravity(gravity);
+    let gap = placement.gap.round() as i32;
+    positioner.set_offset(0, if placement.below { gap } else { -gap });
+    positioner
+        .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::SlideY);
+    Ok(positioner)
 }

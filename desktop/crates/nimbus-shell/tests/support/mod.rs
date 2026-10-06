@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! Realistic mock data for the shell's tests and `nimbus-shell-preview`, which includes this file.
+//! Realistic mock data and a stand-in host ([`desk`]) for the shell's tests and `nimbus-shell-preview`, which includes this file.
 
 #![allow(dead_code)]
+
+pub mod desk;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};

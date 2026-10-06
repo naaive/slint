@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-// The Nimbus shell's views: `ShellWindow`, a transparent, full-output overlay per output,
-// and `LockWindow`, the lock screen for one output.
-// Rust sets what every view shows alike on the `Desktop` global, and per-view data on each window; see `src/lib.rs`.
+// The Nimbus shell's windows, each shown on a surface of its own.
+// Per output: the panel, the dock, a popup, the overlay with the launcher, overview, and power dialog, the toasts, and the OSD;
+// and while locked, the lock screen.
+// Rust sets what every window shows alike on the `Desktop` global, and what the parts of one output show on `ShellOutput`;
+// see `src/model/mod.rs` and `src/view.rs`.
+// Each `surface-*` property is the logical size its surface should have, 0 where the surface spans the output.
 
 import { Theme, Motion, Icons, Icon, Divider } from "@nimbus/theme.slint";
 import {
@@ -11,9 +14,10 @@ import {
     NetworkKind, SystemStatus, PanelSettings,
 } from "models.slint";
 import { Desktop } from "desktop.slint";
+import { ShellOutput } from "output.slint";
 import { ShellPopup, MenuItem } from "common.slint";
-import { Panel } from "panel.slint";
-import { Dock, DockMetrics } from "dock.slint";
+import { PanelBar, DockBar } from "bars.slint";
+import { DockMetrics } from "dock.slint";
 import { Launcher } from "launcher.slint";
 import { Overview } from "overview.slint";
 import { QuickSettings } from "quick-settings.slint";
@@ -23,11 +27,16 @@ import { OsdPill } from "osd.slint";
 import { LockScreen } from "lock-screen.slint";
 import { PowerDialog } from "power-menu.slint";
 
-export { Theme, Desktop }
+export { Theme, Desktop, ShellOutput }
 export {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
     NetworkKind, SystemStatus, PanelSettings,
+}
+
+// The room around a floating part for its drop shadow.
+global ShadowRoom {
+    out property <length> size: Theme.elevation-3.blur + Theme.elevation-3.offset-y;
 }
 
 export component LockWindow inherits Window {
@@ -59,91 +68,237 @@ export component LockWindow inherits Window {
     }
 }
 
-export component ShellWindow inherits Window {
-    // Drawn behind everything when set. The compositor leaves it empty and composites the shell over windows;
-    // `nimbus-shell-preview` shows a wallpaper.
-    in property <image> wallpaper;
+// The panel along the top or bottom edge, which slides away while a fullscreen window is focused.
+export component PanelWindow inherits Window {
+    out property <length> surface-height: Desktop.panel.height;
+    out property <RectData> input-rect: root.shown ? { x: 0, y: 0, width: root.width, height: root.height } : { x: 0, y: 0, width: 0, height: 0 };
 
-    // A fullscreen window is focused on this output, so the panel and dock step aside.
-    in property <bool> fullscreen-active;
+    private property <bool> shown: !ShellOutput.fullscreen-active;
 
-    // Windows and workspaces on this output.
-    in property <[WorkspaceItem]> workspaces;
-    in property <[WindowItem]> windows;
-    in property <int> active-count;
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Panel";
 
-    // Dock menu.
-    in property <int> dock-menu-index: -1;
-    in property <length> dock-menu-x;
-    in property <string> dock-menu-title;
-    in property <[DockMenuWindow]> dock-menu-windows;
-    in property <bool> dock-menu-favorite;
-    in property <bool> dock-menu-running;
+    PanelBar {
+        y: root.shown ? 0 : (Desktop.panel.top ? -root.height : root.height);
+        width: root.width;
+        height: root.height;
+        animate y { duration: Theme.duration-normal; easing: Motion.standard; }
+    }
+}
 
-    // Launcher and overview.
-    in property <bool> launcher-open;
-    in property <[AppItem]> launcher-apps;
+// The dock, centered on the bottom edge, with room above it and at its sides for tooltips.
+export component DockWindow inherits Window {
+    out property <length> surface-width: bar.dock-width + 2 * root.side-room;
+    out property <length> surface-height: DockMetrics.reserved + root.tooltip-room;
+    // The space windows stay out of; an autohidden dock covers them instead.
+    out property <length> exclusive-zone: Desktop.panel.dock-autohide ? 0 : DockMetrics.reserved;
+    out property <RectData> input-rect: bar.input-rect;
+
+    private property <length> side-room: 64px;
+    private property <length> tooltip-room: 40px;
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Dock";
+
+    bar := DockBar {
+        width: root.width;
+        height: root.height;
+    }
+}
+
+// One popup of the panel or the dock, with room around it for its shadow.
+export component PopupWindow inherits Window {
+    in property <Popup> kind;
+    in-out property <bool> power-menu-open;
+    out property <length> surface-width: content.preferred-width + 2 * ShadowRoom.size;
+    out property <length> surface-height: content.preferred-height + 2 * ShadowRoom.size;
+    // The popup itself, without the room for its shadow.
+    out property <RectData> geometry: { x: content.x, y: content.y, width: content.width, height: content.height };
+
+    private property <bool> open;
+
+    init => {
+        root.open = true;
+        keys.focus();
+    }
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Popup";
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                ShellOutput.popup-requested(Popup.none, { x: 0, y: 0, width: 0, height: 0 });
+                return accept;
+            }
+            reject
+        }
+
+        content := VerticalLayout {
+            x: ShadowRoom.size;
+            y: ShadowRoom.size;
+            width: self.preferred-width;
+            height: self.preferred-height;
+
+            if root.kind == Popup.calendar: CalendarPopup {
+                open: root.open;
+                from-top: Desktop.panel.top;
+                notifications: Desktop.notifications;
+                days: Desktop.days;
+                month-title: Desktop.month-title;
+                weekday: Desktop.weekday;
+                date: Desktop.date;
+                do-not-disturb <=> Desktop.do-not-disturb;
+                previous-month => {
+                    ShellOutput.month-changed(-1);
+                }
+                next-month => {
+                    ShellOutput.month-changed(1);
+                }
+                today-requested => {
+                    ShellOutput.month-changed(0);
+                }
+                notification-activated(id) => {
+                    ShellOutput.notification-activated(id);
+                }
+                notification-dismissed(id) => {
+                    ShellOutput.notification-dismissed(id);
+                }
+                notification-action(id, key) => {
+                    ShellOutput.notification-action(id, key);
+                }
+                clear-all => {
+                    ShellOutput.clear-notifications();
+                }
+                do-not-disturb-toggled(on) => {
+                    ShellOutput.do-not-disturb-toggled(on);
+                }
+            }
+
+            if root.kind == Popup.quick-settings: QuickSettings {
+                open: root.open;
+                from-top: Desktop.panel.top;
+                status: Desktop.status;
+                dark-style: Theme.dark;
+                do-not-disturb: Desktop.do-not-disturb;
+                volume <=> Desktop.volume;
+                brightness <=> Desktop.brightness;
+                power-menu-open <=> root.power-menu-open;
+                volume-changed(value) => {
+                    ShellOutput.volume-changed(value);
+                }
+                mute-toggled => {
+                    ShellOutput.mute-toggled();
+                }
+                brightness-changed(value) => {
+                    ShellOutput.brightness-changed(value);
+                }
+                wifi-toggled => {
+                    ShellOutput.wifi-toggled();
+                }
+                bluetooth-toggled => {
+                    ShellOutput.bluetooth-toggled();
+                }
+                do-not-disturb-toggled => {
+                    ShellOutput.do-not-disturb-toggled(!Desktop.do-not-disturb);
+                }
+                dark-style-toggled => {
+                    ShellOutput.dark-style-toggled();
+                }
+                settings-requested(page) => {
+                    ShellOutput.settings-requested(page);
+                }
+                media-previous => {
+                    ShellOutput.media-previous();
+                }
+                media-play-pause => {
+                    ShellOutput.media-play-pause();
+                }
+                media-next => {
+                    ShellOutput.media-next();
+                }
+                lock-requested => {
+                    ShellOutput.lock-requested();
+                }
+                suspend-requested => {
+                    ShellOutput.suspend-requested();
+                }
+                power-requested(action) => {
+                    ShellOutput.power-requested(action);
+                }
+            }
+
+            if root.kind == Popup.dock-menu: ShellPopup {
+                open: root.open;
+                from-top: false;
+                width: 260px;
+                content-padding: Theme.spacing-xs;
+                spacing: 0;
+
+                Text {
+                    height: Theme.control-height;
+                    text: ShellOutput.dock-menu-title;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.caption.font-size;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    x: Theme.spacing-md;
+                }
+                for w[row] in ShellOutput.dock-menu-windows: MenuItem {
+                    icon: Icons.window;
+                    text: w.title;
+                    checked: w.focused;
+                    clicked => {
+                        ShellOutput.dock-menu-window(row);
+                    }
+                }
+                if ShellOutput.dock-menu-windows.length > 0: Rectangle {
+                    height: Theme.spacing-sm + 1px;
+
+                    Divider {
+                        width: parent.width - 2 * Theme.spacing-sm;
+                    }
+                }
+                MenuItem {
+                    icon: Icons.plus;
+                    text: "New Window";
+                    clicked => {
+                        ShellOutput.dock-menu-new-window();
+                    }
+                }
+                MenuItem {
+                    icon: Icons.pin;
+                    text: ShellOutput.dock-menu-favorite ? "Unpin from Dock" : "Pin to Dock";
+                    clicked => {
+                        ShellOutput.dock-menu-toggle-pin();
+                    }
+                }
+                if ShellOutput.dock-menu-running: MenuItem {
+                    icon: Icons.close;
+                    text: ShellOutput.dock-menu-windows.length > 1 ? "Quit " + ShellOutput.dock-menu-windows.length + " Windows" : "Quit";
+                    destructive: true;
+                    clicked => {
+                        ShellOutput.dock-menu-quit();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The launcher, the overview, and the power dialog over the whole output, with the panel and dock above them.
+export component OverlayWindow inherits Window {
     in-out property <string> launcher-query;
     in-out property <int> launcher-selected;
-    in property <bool> overview-open;
-
-    // Popups.
-    in property <Popup> popup: Popup.none;
-    in-out property <bool> power-menu-open;
-    in property <PowerAction> power-action: PowerAction.none;
-
-    // Geometry for the input region and exclusive zone, in logical pixels.
-    out property <RectData> panel-rect: root.panel-visible
-        ? { x: 0, y: panel-bar.y, width: root.width, height: Desktop.panel.height }
-        : { x: 0, y: 0, width: 0, height: 0 };
-    out property <RectData> dock-rect: !root.dock-enabled ? { x: 0, y: 0, width: 0, height: 0 }
-        : root.dock-revealed ? { x: dock-area.x, y: root.dock-base-y, width: dock-area.width, height: DockMetrics.height }
-        : { x: dock-area.x, y: root.dock-edge-y - 2px, width: dock-area.width, height: 2px };
-    out property <RectData> toast-rect: root.toasts-visible && Desktop.toasts.length > 0
-        ? { x: toast-stack.x, y: toast-stack.y, width: toast-stack.width, height: toast-stack.preferred-height }
-        : { x: 0, y: 0, width: 0, height: 0 };
-    out property <length> dock-exclusive: DockMetrics.height + 2 * DockMetrics.margin;
-
-    callback overview-requested(open: bool);
-    callback launcher-requested(open: bool);
-    callback popup-requested(popup: Popup);
-    callback workspace-clicked(index: int);
-    callback dock-clicked(index: int);
-    callback dock-menu-requested(index: int, center-x: length);
-    callback dock-menu-window(row: int);
-    callback dock-menu-new-window;
-    callback dock-menu-toggle-pin;
-    callback dock-menu-quit;
-    callback launcher-query-edited(text: string);
-    callback launcher-activated(index: int);
-    callback window-activated(row: int);
-    callback window-closed(row: int);
-    callback window-moved(row: int, workspace: int);
-    callback overview-key-typed(text: string) -> bool;
-    callback volume-changed(value: float);
-    callback mute-toggled;
-    callback brightness-changed(value: float);
-    callback wifi-toggled;
-    callback bluetooth-toggled;
-    callback do-not-disturb-toggled(on: bool);
-    callback dark-style-toggled;
-    callback settings-requested(page: string);
-    callback media-previous;
-    callback media-play-pause;
-    callback media-next;
-    callback lock-requested;
-    callback suspend-requested;
-    callback power-requested(action: PowerAction);
-    callback power-confirmed(action: PowerAction);
-    callback month-changed(delta: int);
-    callback notification-activated(id: int);
-    callback notification-dismissed(id: int);
-    callback notification-action(id: int, key: string);
-    callback clear-notifications;
-
-    public function focus-launcher() {
-        launcher.focus-search();
-    }
 
     // Focuses the launcher's search with the cursor at `offset` UTF-8 bytes.
     public function focus-launcher-at(offset: int) {
@@ -154,362 +309,144 @@ export component ShellWindow inherits Window {
         overview.focus-keys();
     }
 
-    public function focus-popup() {
-        popup-keys.focus();
-    }
-
     public function focus-power-dialog() {
         power-dialog.focus-keys();
     }
 
-    private property <bool> panel-visible: !root.fullscreen-active || root.overview-open || root.launcher-open || root.popup != Popup.none;
-    private property <length> panel-y: Desktop.panel.top ? 0 : root.height - Desktop.panel.height;
     private property <length> top-inset: Desktop.panel.top ? Desktop.panel.height : 0;
     private property <length> bottom-inset: Desktop.panel.top ? 0 : Desktop.panel.height;
-    private property <bool> dock-enabled: Desktop.panel.show-dock && !root.launcher-open && !Desktop.locked && (!root.fullscreen-active || root.overview-open);
-    private property <length> dock-edge-y: root.height - root.bottom-inset;
-    private property <length> dock-base-y: root.dock-edge-y - DockMetrics.height - DockMetrics.margin;
-    private property <bool> dock-revealed: root.dock-enabled && (!Desktop.panel.dock-autohide || dock-area.has-hover || hot-zone.has-hover || root.overview-open || root.popup == Popup.dock-menu);
-    private property <bool> toasts-visible: !Desktop.locked && root.popup == Popup.none && root.power-action == PowerAction.none;
-    private property <length> popup-gap: 6px;
+    // Lets the launcher and overview fade in.
+    private property <bool> opened;
+
+    init => {
+        root.opened = true;
+    }
 
     background: transparent;
     default-font-family: Theme.font-family;
     default-font-size: Theme.font-size;
-    title: "Nimbus Shell";
-
-    if root.wallpaper.width > 0: Image {
-        width: 100%;
-        height: 100%;
-        source: root.wallpaper;
-        image-fit: cover;
-    }
+    title: "Nimbus Overlay";
 
     overview := Overview {
-        open: root.overview-open;
-        workspaces: root.workspaces;
-        windows: root.windows;
+        open: root.opened && ShellOutput.overview-open;
+        workspaces: ShellOutput.workspaces;
+        windows: ShellOutput.windows;
         active-workspace: Desktop.active-workspace;
-        active-count: root.active-count;
+        active-count: ShellOutput.active-count;
         top-inset: root.top-inset;
-        bottom-inset: root.bottom-inset + (Desktop.panel.show-dock ? root.dock-exclusive : 0);
+        bottom-inset: root.bottom-inset + (Desktop.panel.show-dock ? DockMetrics.reserved : 0);
         window-activated(row) => {
-            root.window-activated(row);
+            ShellOutput.window-activated(row);
         }
         window-closed(row) => {
-            root.window-closed(row);
+            ShellOutput.window-closed(row);
         }
         window-moved(row, workspace) => {
-            root.window-moved(row, workspace);
+            ShellOutput.window-moved(row, workspace);
         }
         workspace-clicked(index) => {
-            root.workspace-clicked(index);
+            ShellOutput.workspace-clicked(index);
         }
         search-clicked => {
-            root.launcher-requested(true);
+            ShellOutput.launcher-requested(true);
         }
         close-requested => {
-            root.overview-requested(false);
+            ShellOutput.overview-requested(false);
         }
         key-typed(text) => {
-            root.overview-key-typed(text)
+            ShellOutput.overview-key-typed(text)
         }
     }
 
     launcher := Launcher {
-        open: root.launcher-open;
-        apps: root.launcher-apps;
+        open: root.opened && ShellOutput.launcher-open;
+        apps: ShellOutput.launcher-apps;
         query <=> root.launcher-query;
         selected <=> root.launcher-selected;
         top-inset: root.top-inset;
         bottom-inset: root.bottom-inset;
         query-edited(text) => {
-            root.launcher-query-edited(text);
+            ShellOutput.launcher-query-edited(text);
         }
         activated(index) => {
-            root.launcher-activated(index);
+            ShellOutput.launcher-activated(index);
         }
         close-requested => {
-            root.launcher-requested(false);
+            ShellOutput.launcher-requested(false);
         }
     }
 
-    // Reveals an autohidden dock when the pointer touches the edge.
-    hot-zone := TouchArea {
-        x: dock-area.x;
-        y: root.dock-edge-y - 2px;
-        width: dock-area.width;
-        height: 2px;
-        enabled: root.dock-enabled && Desktop.panel.dock-autohide;
-    }
-
-    dock-area := TouchArea {
-        x: (root.width - self.width) / 2;
-        y: root.dock-revealed ? root.dock-base-y : root.dock-edge-y + DockMetrics.margin;
-        width: dock.width;
-        height: DockMetrics.height;
-        opacity: root.dock-revealed ? 1 : 0;
-        visible: self.opacity > 0;
-        animate y, opacity {
-            duration: Theme.duration-slow;
-            delay: root.dock-revealed ? 0ms : (Desktop.panel.dock-autohide && root.dock-enabled ? 400ms : 0ms);
-            easing: Motion.standard;
-        }
-
-        dock := Dock {
-            items: Desktop.dock-items;
-            menu-index: root.popup == Popup.dock-menu ? root.dock-menu-index : -1;
-            item-clicked(index) => {
-                root.dock-clicked(index);
-            }
-            item-menu-requested(index, center-x) => {
-                root.dock-menu-requested(index, center-x);
-            }
-            show-apps => {
-                root.launcher-requested(!root.launcher-open);
-            }
-        }
-    }
-
-    // Closes the open popup on a click anywhere outside it and the panel.
-    if root.popup != Popup.none: TouchArea {
-        clicked => {
-            root.popup-requested(Popup.none);
-        }
-        scroll-event => {
-            accept
-        }
-    }
-
-    panel-bar := Panel {
-        y: root.panel-visible ? root.panel-y : (Desktop.panel.top ? -Desktop.panel.height : root.height);
-        height: Desktop.panel.height;
+    DockBar {
         width: root.width;
-        animate y { duration: Theme.duration-normal; easing: Motion.standard; }
-        workspaces: root.workspaces;
-        focused-title: root.overview-open || root.launcher-open ? "" : Desktop.focused-title;
-        focused-visual: Desktop.focused-visual;
-        clock-text: Desktop.clock-text;
-        status: Desktop.status;
-        volume: Desktop.volume;
-        do-not-disturb: Desktop.do-not-disturb;
-        show-battery-percentage: Desktop.panel.show-battery-percentage;
-        has-unread: Desktop.has-unread;
-        overview-open: root.overview-open;
-        calendar-open: root.popup == Popup.calendar;
-        quick-settings-open: root.popup == Popup.quick-settings;
-        overview-clicked => {
-            root.overview-requested(!root.overview-open);
-        }
-        workspace-clicked(index) => {
-            root.workspace-clicked(index);
-        }
-        clock-clicked => {
-            root.popup-requested(root.popup == Popup.calendar ? Popup.none : Popup.calendar);
-        }
-        status-clicked => {
-            root.popup-requested(root.popup == Popup.quick-settings ? Popup.none : Popup.quick-settings);
-        }
+        height: root.height - root.bottom-inset;
     }
 
-    popup-keys := FocusScope {
-        focus-on-click: false;
-        key-pressed(event) => {
-            if event.text == Key.Escape && root.popup != Popup.none {
-                root.popup-requested(Popup.none);
-                return accept;
-            }
-            reject
-        }
-
-        calendar := CalendarPopup {
-            open: root.popup == Popup.calendar;
-            from-top: Desktop.panel.top;
-            x: (root.width - self.width) / 2;
-            y: Desktop.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
-            notifications: Desktop.notifications;
-            days: Desktop.days;
-            month-title: Desktop.month-title;
-            weekday: Desktop.weekday;
-            date: Desktop.date;
-            do-not-disturb <=> Desktop.do-not-disturb;
-            previous-month => {
-                root.month-changed(-1);
-            }
-            next-month => {
-                root.month-changed(1);
-            }
-            today-requested => {
-                root.month-changed(0);
-            }
-            notification-activated(id) => {
-                root.notification-activated(id);
-            }
-            notification-dismissed(id) => {
-                root.notification-dismissed(id);
-            }
-            notification-action(id, key) => {
-                root.notification-action(id, key);
-            }
-            clear-all => {
-                root.clear-notifications();
-            }
-            do-not-disturb-toggled(on) => {
-                root.do-not-disturb-toggled(on);
-            }
-        }
-
-        quick-settings := QuickSettings {
-            open: root.popup == Popup.quick-settings;
-            from-top: Desktop.panel.top;
-            x: root.width - self.width - Theme.spacing-sm;
-            y: Desktop.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
-            height: self.preferred-height;
-            status: Desktop.status;
-            dark-style: Theme.dark;
-            do-not-disturb: Desktop.do-not-disturb;
-            volume <=> Desktop.volume;
-            brightness <=> Desktop.brightness;
-            power-menu-open <=> root.power-menu-open;
-            volume-changed(value) => {
-                root.volume-changed(value);
-            }
-            mute-toggled => {
-                root.mute-toggled();
-            }
-            brightness-changed(value) => {
-                root.brightness-changed(value);
-            }
-            wifi-toggled => {
-                root.wifi-toggled();
-            }
-            bluetooth-toggled => {
-                root.bluetooth-toggled();
-            }
-            do-not-disturb-toggled => {
-                root.do-not-disturb-toggled(!Desktop.do-not-disturb);
-            }
-            dark-style-toggled => {
-                root.dark-style-toggled();
-            }
-            settings-requested(page) => {
-                root.settings-requested(page);
-            }
-            media-previous => {
-                root.media-previous();
-            }
-            media-play-pause => {
-                root.media-play-pause();
-            }
-            media-next => {
-                root.media-next();
-            }
-            lock-requested => {
-                root.lock-requested();
-            }
-            suspend-requested => {
-                root.suspend-requested();
-            }
-            power-requested(action) => {
-                root.power-requested(action);
-            }
-        }
-
-        dock-menu := ShellPopup {
-            open: root.popup == Popup.dock-menu;
-            from-top: false;
-            width: 260px;
-            height: self.preferred-height;
-            x: clamp(dock-area.x + root.dock-menu-x - self.width / 2, Theme.spacing-sm, root.width - self.width - Theme.spacing-sm);
-            y: root.dock-base-y - self.height - Theme.spacing-sm;
-            content-padding: Theme.spacing-xs;
-            spacing: 0;
-
-            Text {
-                height: Theme.control-height;
-                text: root.dock-menu-title;
-                color: Theme.text-secondary;
-                font-family: Theme.font-family;
-                font-size: Theme.caption.font-size;
-                font-weight: 600;
-                vertical-alignment: center;
-                overflow: elide;
-                x: Theme.spacing-md;
-            }
-            for w[row] in root.dock-menu-windows: MenuItem {
-                icon: Icons.window;
-                text: w.title;
-                checked: w.focused;
-                clicked => {
-                    root.dock-menu-window(row);
-                }
-            }
-            if root.dock-menu-windows.length > 0: Rectangle {
-                height: Theme.spacing-sm + 1px;
-
-                Divider {
-                    width: parent.width - 2 * Theme.spacing-sm;
-                }
-            }
-            MenuItem {
-                icon: Icons.plus;
-                text: "New Window";
-                clicked => {
-                    root.dock-menu-new-window();
-                }
-            }
-            MenuItem {
-                icon: Icons.pin;
-                text: root.dock-menu-favorite ? "Unpin from Dock" : "Pin to Dock";
-                clicked => {
-                    root.dock-menu-toggle-pin();
-                }
-            }
-            if root.dock-menu-running: MenuItem {
-                icon: Icons.close;
-                text: root.dock-menu-windows.length > 1 ? "Quit " + root.dock-menu-windows.length + " Windows" : "Quit";
-                destructive: true;
-                clicked => {
-                    root.dock-menu-quit();
-                }
-            }
-        }
+    PanelBar {
+        y: Desktop.panel.top ? 0 : root.height - Desktop.panel.height;
+        width: root.width;
+        height: Desktop.panel.height;
     }
 
-    toast-stack := ToastStack {
-        x: root.width - self.width - Theme.spacing-md;
-        y: Desktop.panel.top ? root.top-inset + Theme.spacing-md : Theme.spacing-md;
+    power-dialog := PowerDialog {
+        action: Desktop.locked ? PowerAction.none : ShellOutput.power-action;
+        confirmed(action) => {
+            ShellOutput.power-confirmed(action);
+        }
+        cancelled => {
+            ShellOutput.power-confirmed(PowerAction.none);
+        }
+    }
+}
+
+// The toasts in the top right corner.
+export component ToastWindow inherits Window {
+    out property <length> surface-width: ShadowRoom.size + stack.width + Theme.spacing-md;
+    out property <length> surface-height: Theme.spacing-md + stack.preferred-height + ShadowRoom.size;
+    out property <RectData> input-rect: { x: stack.x, y: stack.y, width: stack.width, height: stack.preferred-height };
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Notifications";
+
+    stack := ToastStack {
+        x: ShadowRoom.size;
+        y: Theme.spacing-md;
         width: 380px;
         height: self.preferred-height;
-        visible: root.toasts-visible;
         toasts: Desktop.toasts;
         activated(id) => {
-            root.notification-activated(id);
+            ShellOutput.notification-activated(id);
         }
         dismissed(id) => {
-            root.notification-dismissed(id);
+            ShellOutput.notification-dismissed(id);
         }
         action(id, key) => {
-            root.notification-action(id, key);
+            ShellOutput.notification-action(id, key);
         }
     }
+}
 
-    OsdPill {
-        x: (root.width - self.width) / 2;
-        y: root.height - root.bottom-inset - (Desktop.panel.show-dock ? root.dock-exclusive : 0) - self.height - 48px;
+// The on-screen display above the bottom edge, which takes no input.
+export component OsdWindow inherits Window {
+    out property <length> surface-width: pill.width + 2 * ShadowRoom.size;
+    out property <length> surface-height: pill.height + 2 * ShadowRoom.size;
+    // The distance from the bottom of the space windows use, which keeps clear of the dock even while it hides.
+    out property <length> edge-margin: 48px - ShadowRoom.size + (Desktop.panel.show-dock && Desktop.panel.dock-autohide ? DockMetrics.reserved : 0);
+    // Whether the OSD shows, including while it fades out.
+    out property <bool> showing: pill.visible;
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus OSD";
+
+    pill := OsdPill {
+        x: ShadowRoom.size;
+        y: ShadowRoom.size;
         shown: Desktop.osd-shown && !Desktop.locked;
         kind: Desktop.osd-kind;
         level: Desktop.osd-level;
         muted: Desktop.osd-muted;
-    }
-
-    power-dialog := PowerDialog {
-        action: Desktop.locked ? PowerAction.none : root.power-action;
-        confirmed(action) => {
-            root.power-confirmed(action);
-        }
-        cancelled => {
-            root.power-confirmed(PowerAction.none);
-        }
     }
 }

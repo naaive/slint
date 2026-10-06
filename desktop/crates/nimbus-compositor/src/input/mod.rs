@@ -7,18 +7,23 @@ mod pointer;
 
 use crate::state::{Nimbus, State};
 use nimbus_ipc::WindowId;
+use smithay::backend::input::{ButtonState, KeyState};
 use smithay::backend::input::{
     Event, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _,
     GestureSwipeUpdateEvent as _, InputBackend, InputEvent,
 };
 use smithay::desktop::{PopupManager, layer_map_for_output};
+use smithay::input::keyboard::Keycode;
 use smithay::input::pointer::{
     GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
     GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::SERIAL_COUNTER;
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use std::time::Duration;
+
+/// The difference between Linux input event codes and XKB keycodes.
+const XKB_KEYCODE_OFFSET: u32 = 8;
 
 impl Nimbus {
     /// The managed window owning `surface` or one of its subsurfaces and popups.
@@ -61,10 +66,7 @@ impl Nimbus {
 
 impl State {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
-        self.nimbus.notify_activity();
-        if self.nimbus.is_locked() && self.has_grabs() {
-            self.break_grabs_for_lock();
-        }
+        self.input_arrived();
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -144,6 +146,38 @@ impl State {
             }
             _ => {}
         }
+    }
+
+    fn input_arrived(&mut self) {
+        self.nimbus.notify_activity();
+        if self.nimbus.is_locked() && self.has_grabs() {
+            self.break_grabs_for_lock();
+        }
+    }
+
+    /// Moves the pointer to `location` and clicks the left button, as a user would.
+    pub fn click(&mut self, location: Point<f64, Logical>) {
+        let time = self.input_time();
+        self.input_arrived();
+        self.pointer_moved(location, time, None);
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            self.pointer_button(pointer::BTN_LEFT, state, time);
+        }
+    }
+
+    /// Presses and releases the key with the Linux input event `code`, as a user would.
+    pub fn press_key(&mut self, code: u32) {
+        let time = self.input_time();
+        self.input_arrived();
+        let keycode = Keycode::new(code + XKB_KEYCODE_OFFSET);
+        for state in [KeyState::Pressed, KeyState::Released] {
+            self.keyboard_key(keycode, state, time);
+        }
+    }
+
+    /// Milliseconds since the compositor started, the clock of input events.
+    fn input_time(&self) -> u32 {
+        u32::try_from(self.nimbus.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
     }
 
     fn has_grabs(&self) -> bool {

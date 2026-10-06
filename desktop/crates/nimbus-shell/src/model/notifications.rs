@@ -21,7 +21,7 @@ const TOAST_FADE: Duration = Duration::from_millis(250);
 impl Model {
     pub(super) fn add_notification(&self, notification: &Notification) {
         let id = notification.id;
-        let reading = self.views().iter().any(|view| view.ui().get_popup() == Popup::Calendar);
+        let reading = self.views().iter().any(|view| view.popup() == Popup::Calendar);
         let evicted = {
             let mut state = self.state.borrow_mut();
             let toast = !state.system.do_not_disturb && !state.desktop.locked;

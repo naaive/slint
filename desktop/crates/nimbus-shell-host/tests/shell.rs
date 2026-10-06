@@ -5,7 +5,8 @@
 mod common;
 
 use common::{
-    CONFIG, PrivateBus, Session, TestClient, black, changed_fraction, distance, mean, panel_visible,
+    CONFIG, PrivateBus, Session, TestClient, black, changed_fraction, changed_pixels, distance,
+    mean, panel_visible, shell_visible,
 };
 use nimbus_ipc::Request;
 use nix::sys::signal::Signal;
@@ -13,49 +14,117 @@ use nix::sys::signal::Signal;
 #[test]
 fn panel_renders_and_launcher_and_overview_toggle() {
     let session = Session::start(CONFIG, None);
-    // The clock in the center of the panel draws light text on the dark bar.
-    let idle = session.wait_screenshot("the panel and its clock", |shot| {
-        panel_visible(shot)
-            && (560..720)
-                .flat_map(|x| (6..26).map(move |y| (x, y)))
-                .any(|(x, y)| shot.get_pixel(x, y).0[0] > 180)
-    });
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
     assert_eq!(idle.dimensions(), (1280, 720));
 
-    // The compositor turns the request into a shell command event, which the shell carries out.
+    // The compositor turns the request into a shell command event, which the shell carries out
+    // on a surface over the whole output, which closes with the launcher or overview.
     session.request(Request::ToggleLauncher);
     session.wait_screenshot("the launcher", |shot| changed_fraction(&idle, shot) > 0.3);
+    session.wait_opened("Overlay", 1);
     session.request(Request::ToggleLauncher);
+    session.wait_closed("Overlay", 1);
     session.wait_screenshot("the launcher to close", |shot| changed_fraction(&idle, shot) < 0.02);
     session.request(Request::ToggleOverview);
     session.wait_screenshot("the overview", |shot| changed_fraction(&idle, shot) > 0.2);
     session.request(Request::ToggleOverview);
+    session.wait_closed("Overlay", 2);
     session.wait_screenshot("the overview to close", |shot| changed_fraction(&idle, shot) < 0.02);
 }
 
-#[test]
-fn maximized_windows_stay_below_the_panel() {
-    let session = Session::start(CONFIG, None);
-    session.wait_screenshot("the panel", panel_visible);
+/// Maximizes a white window and returns its client and its size once it's drawn.
+fn maximized_window(session: &Session) -> (TestClient, (i32, i32)) {
     let mut client = TestClient::connect(&session.compositor);
     let index = client.create_window("org.example.White", "White");
     let id = common::wait_for("the window", || session.state().windows.first().map(|w| w.id));
     session.request(Request::SetMaximized { id, maximized: true });
     client.dispatch_until("the maximized size", |app| app.windows[index].size.1 > 300);
-    let (width, height) = client.app.windows[index].size;
-    assert_eq!(width, 1280);
-    assert!(height < 720 - 30, "the panel and dock reserve space: {height}");
-    // The panel is drawn above the window, which starts right below it.
-    let shot = session.wait_screenshot("the white window", |shot| {
-        shot.get_pixel(640, 360).0[..3].iter().all(|&c| c > 240)
+    session.wait_screenshot("the white window", |shot| white(shot, 640, 360));
+    let size = client.app.windows[index].size;
+    (client, size)
+}
+
+fn white(shot: &image::RgbaImage, x: u32, y: u32) -> bool {
+    shot.get_pixel(x, y).0[..3].iter().all(|&c| c > 240)
+}
+
+#[test]
+fn the_panel_and_dock_reserve_their_space() {
+    let session = Session::start(CONFIG, None);
+    session.wait_screenshot("the panel and the dock", shell_visible);
+    // 32 pixels of panel, and the dock with its margins.
+    let (_client, size) = maximized_window(&session);
+    assert_eq!(size, (1280, 720 - 32 - 84));
+    let shot = session.screenshot();
+    assert!(mean(&shot, 200, 4, 200, 20)[0] < 128.0, "the window stays below the panel");
+    assert!(white(&shot, 200, 33), "the window starts right below the panel");
+    assert!(white(&shot, 200, 32 + 603) && !white(&shot, 200, 32 + 605), "and ends above the dock");
+    // The dock's surface takes input only on the dock, so the window gets clicks beside it.
+    assert!(!white(&shot, 640, 690), "the dock draws in its space");
+}
+
+#[test]
+fn an_autohidden_dock_reserves_no_space() {
+    let config = CONFIG.replace("show_dock = true", "show_dock = true\ndock_autohide = true");
+    let session = Session::start(&config, None);
+    session.wait_screenshot("the panel", panel_visible);
+    assert_eq!(maximized_window(&session).1, (1280, 720 - 32));
+}
+
+#[test]
+fn launcher_opens_on_an_overlay_surface_with_the_keyboard() {
+    let session = Session::start(CONFIG, None);
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
+    session.request(Request::ToggleLauncher);
+    session.wait_opened("Overlay", 1);
+    let open = session.wait_screenshot("the launcher", |shot| changed_fraction(&idle, shot) > 0.3);
+
+    // Keys reach the launcher's search field, since the overlay takes the keyboard.
+    for code in [KEY_T, KEY_E, KEY_R, KEY_M] {
+        session.press_key(code);
+    }
+    let typed = session.wait_screenshot("the typed query", |shot| {
+        changed_pixels(&open, shot, 380, 40, 520, 100) > 50
     });
-    assert!(mean(&shot, 200, 4, 200, 20)[0] < 128.0, "the window covers the panel");
+    // Escape clears the query, then closes the launcher and its surface.
+    session.press_key(KEY_ESC);
+    session.wait_screenshot("the cleared query", |shot| {
+        changed_pixels(&open, shot, 380, 40, 520, 100) < 10
+    });
+    assert!(changed_pixels(&open, &typed, 380, 40, 520, 100) > 50);
+    session.press_key(KEY_ESC);
+    session.wait_closed("Overlay", 1);
+    session.wait_screenshot("the launcher to close", |shot| changed_fraction(&idle, shot) < 0.02);
+}
+
+#[test]
+fn quick_settings_open_in_a_popup_and_close_on_a_click_outside() {
+    let session = Session::start(CONFIG, None);
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
+    let popup = |shot: &image::RgbaImage| changed_pixels(&idle, shot, 880, 60, 380, 300);
+
+    // The status icons at the right end of the panel open quick settings below them.
+    session.click(1250.0, 16.0);
+    session.wait_opened("Popup(QuickSettings)", 1);
+    session.wait_screenshot("quick settings", |shot| popup(shot) > 20_000);
+
+    // A click on the desktop, outside the shell's surfaces, dismisses the popup.
+    session.click(400.0, 400.0);
+    session.wait_closed("Popup(QuickSettings)", 1);
+    session.wait_screenshot("quick settings to close", |shot| popup(shot) < 100);
+
+    // A click on the panel button toggles it, without dismissing first.
+    session.click(1250.0, 16.0);
+    session.wait_opened("Popup(QuickSettings)", 2);
+    session.click(1250.0, 16.0);
+    session.wait_closed("Popup(QuickSettings)", 2);
+    assert_eq!(session.opened("Popup(QuickSettings)"), 2);
 }
 
 #[test]
 fn lock_requests_show_the_lock_screen_on_a_lock_surface() {
     let mut session = Session::start(CONFIG, None);
-    let idle = session.wait_screenshot("the panel", panel_visible);
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
     session.request(Request::Lock);
     assert!(session.locked());
     // Without a lock client, the compositor draws black; anything else is the shell's lock surface.
@@ -90,10 +159,10 @@ fn exits_cleanly_on_sigterm_and_with_failure_without_the_compositor() {
 }
 
 #[test]
-fn notifications_show_toasts() {
+fn toasts_appear_in_their_own_surface_and_expire() {
     let Some(bus) = PrivateBus::start() else { return };
     let session = Session::start(CONFIG, Some(&bus.address));
-    let idle = session.wait_screenshot("the panel", panel_visible);
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
     session.wait_log("the notification server", "Serving org.freedesktop.Notifications");
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -114,7 +183,7 @@ fn notifications_show_toasts() {
                     "All 42 tests passed",
                     Vec::<&str>::new(),
                     hints,
-                    10_000i32,
+                    2_000i32,
                 ),
             )
             .await
@@ -122,9 +191,17 @@ fn notifications_show_toasts() {
         reply.body().deserialize().expect("notification id")
     });
     assert!(id > 0);
-    // The toast appears in the top right corner.
-    session.wait_screenshot("the toast", |shot| {
-        let region = |s: &image::RgbaImage| mean(s, 900, 50, 360, 90);
-        distance(region(&idle), region(shot)) > 20.0
-    });
+    // The toast appears in the top right corner, on a surface that goes once the toast expires.
+    let region = |s: &image::RgbaImage| mean(s, 900, 50, 360, 90);
+    session.wait_screenshot("the toast", |shot| distance(region(&idle), region(shot)) > 20.0);
+    session.wait_opened("Toasts", 1);
+    session.wait_closed("Toasts", 1);
+    session.wait_screenshot("the toast to go", |shot| distance(region(&idle), region(shot)) < 2.0);
 }
+
+/// Linux input event codes.
+const KEY_ESC: u32 = 1;
+const KEY_E: u32 = 18;
+const KEY_R: u32 = 19;
+const KEY_T: u32 = 20;
+const KEY_M: u32 = 50;

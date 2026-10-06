@@ -82,11 +82,10 @@ impl State {
             return;
         };
         for (_, other) in self.outputs.iter().enumerate().filter(|(i, _)| *i != target) {
-            let ui = other.view().component();
-            if ui.get_launcher_open() {
+            if other.view().launcher_open() {
                 other.view().toggle_launcher();
             }
-            if ui.get_overview_open() {
+            if other.view().overview_open() {
                 other.view().toggle_overview();
             }
         }

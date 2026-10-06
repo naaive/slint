@@ -4,7 +4,8 @@
 
 The Nimbus desktop shell: top panel, dock, launcher, overview, quick settings, calendar and notification center,
 toasts, on-screen display, and lock screen.
-It's one shared model shown by a transparent Slint window per output, built on the `@nimbus/theme.slint` design system.
+It's one shared model shown by a view per output, whose parts each have a Slint window,
+built on the `@nimbus/theme.slint` design system.
 
 ![Idle desktop](../../docs/screenshots/shell-idle.png)
 
@@ -27,10 +28,13 @@ The host creates one `ShellModel` after setting the Slint platform, then:
 
 For each output, it creates a `ShellView` with `ShellView::new(&model, output)`, then:
 
-- Calls `toggle_launcher` and `toggle_overview` for the Super key bindings.
-- Routes pointer input inside `input_region()` to the view, and keyboard input while `wants_keyboard()` is true.
+- Keeps a window for each of the view's `parts()`, made with `create(part)` and dropped once the part is no longer listed.
+  The panel, dock, overlay, toasts, and OSD go where `PartWindow::placement()` says, on a layer surface for example.
+  A popup opens next to its parent part as `popup_placement()` says; call `close_popup` when the host dismisses it.
+  Drop popups before the parts below them.
+- Routes pointer input inside each window's `input_region()` to it, and keyboard input to the overlay and popups.
   Query the region after rendering, since new toasts count from the frame that draws them.
-- Keeps maximized and tiled windows out of `exclusive_zone()`.
+- Calls `toggle_launcher` and `toggle_overview` for the Super key bindings.
 
 Views share everything else, so a toast closed on one output closes on all of them.
 
@@ -54,8 +58,9 @@ if ok { model.set_locked(false) } else { model.unlock_failed() }
 
 `cargo run -p nimbus-shell --features preview --bin nimbus-shell-preview` runs the shell in a 1280x800 window
 with a mock session that reacts to clicks, and logs every action.
-Locking opens the lock screen in a second window, which accepts any password except `wrong`.
+The parts render off screen, and the window shows them composited.
+Locking shows the lock screen, which accepts any password except `wrong`.
 
 `cargo test -p nimbus-shell` runs unit tests, behavior tests on Slint's testing backend,
-and renders every state with the software renderer.
+and renders every state with the software renderer, compositing the parts as the compositor would.
 Set `NIMBUS_UPDATE_SCREENSHOTS=1` to write `docs/screenshots/shell-*.png`.

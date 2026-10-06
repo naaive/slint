@@ -128,6 +128,18 @@ pub enum Request {
         path: Option<PathBuf>,
     },
     Quit,
+    /// Move the pointer to a point of the named output, in logical pixels, and click the left button there.
+    /// Only the headless backend accepts it, for tests.
+    Click {
+        output: String,
+        x: f64,
+        y: f64,
+    },
+    /// Press and release the key with this Linux input event code, such as 1 for Escape.
+    /// Only the headless backend accepts it, for tests.
+    PressKey {
+        code: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

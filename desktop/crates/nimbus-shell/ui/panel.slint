@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Theme, Motion, Icons, Icon } from "@nimbus/theme.slint";
-import { WorkspaceItem, SystemStatus, AppVisual } from "models.slint";
+import { WorkspaceItem, SystemStatus, AppVisual, RectData } from "models.slint";
 import { AppIcon, PanelButton, StatusIcons } from "common.slint";
 
 component WorkspaceDot inherits Rectangle {
@@ -53,8 +53,9 @@ export component Panel inherits Rectangle {
 
     callback overview-clicked;
     callback workspace-clicked(index: int);
-    callback clock-clicked;
-    callback status-clicked;
+    // `anchor` is the panel's height at the button's columns, in window coordinates, which its popup opens next to.
+    callback clock-clicked(anchor: RectData);
+    callback status-clicked(anchor: RectData);
 
     background: Theme.panel-background;
 
@@ -119,7 +120,7 @@ export component Panel inherits Rectangle {
         accessible-label: "Calendar and notifications";
         padding-x: Theme.spacing-lg;
         clicked => {
-            root.clock-clicked();
+            root.clock-clicked({ x: self.absolute-position.x, y: root.absolute-position.y, width: self.width, height: root.height });
         }
 
         Text {
@@ -155,7 +156,7 @@ export component Panel inherits Rectangle {
             active: root.quick-settings-open;
             accessible-label: "System menu";
             clicked => {
-                root.status-clicked();
+                root.status-clicked({ x: self.absolute-position.x, y: root.absolute-position.y, width: self.width, height: root.height });
             }
 
             Icon {

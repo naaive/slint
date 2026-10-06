@@ -9,16 +9,17 @@ use crate::idle::Idle;
 use crate::input::Input;
 use crate::ipc::Ipc;
 use crate::lock::{Lock, spawn_auth};
-use crate::output::{Globals, OutputShell};
+use crate::output::{Context, OutputShell, WmBase};
 use crate::platform::Windows;
 use crate::render::{Preference, Renderers};
 use crate::services::SystemServices;
 use crate::surface::{Scaling, SlintSurface};
 use anyhow::anyhow;
 use nimbus_ipc::{Request, Response};
-use nimbus_shell::{ShellAction, ShellModel};
+use nimbus_shell::{ShellAction, ShellModel, ShellView};
 use smithay_client_toolkit::activation::ActivationState;
 use smithay_client_toolkit::compositor::CompositorState;
+use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::output::OutputState;
 use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChannelEvent, Sender};
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, LoopSignal};
@@ -33,12 +34,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 use wayland_client::globals::GlobalList;
-use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
-use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 
 /// How often to redraw while Slint animations run on a surface that isn't waiting for a frame callback.
 const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
@@ -57,12 +56,12 @@ pub struct State {
     pub compositor: CompositorState,
     pub shm: Shm,
     pub layer_shell: LayerShell,
+    /// Popups are `xdg_popup`s; without `xdg_wm_base`, none open.
+    pub wm_base: Option<WmBase>,
     pub session_lock_state: SessionLockState,
     pub activation: Option<ActivationState>,
     pub scaling: Scaling,
     pub cursor_shape: Option<WpCursorShapeManagerV1>,
-    /// A transparent single-pixel buffer for the reservations; see [`crate::output`].
-    transparent: Option<WlBuffer>,
 
     pub windows: Windows,
     pub model: ShellModel,
@@ -107,9 +106,11 @@ impl State {
             model.on_unlock_attempt(auth.submitter());
         }
 
-        let single_pixel: Option<WpSinglePixelBufferManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
-        let transparent =
-            single_pixel.as_ref().map(|m| m.create_u32_rgba_buffer(0, 0, 0, 0, &qh, ()));
+        let wm_base = globals
+            .bind(&qh, 1..=6, GlobalData)
+            .map(WmBase)
+            .inspect_err(|err| tracing::warn!("no popups without xdg-shell: {err}"))
+            .ok();
         let mut state = Self {
             conn: conn.clone(),
             registry: RegistryState::new(globals),
@@ -122,7 +123,6 @@ impl State {
                 fractional: globals.bind(&qh, 1..=1, ()).ok(),
             },
             cursor_shape: globals.bind(&qh, 1..=1, ()).ok(),
-            transparent,
             idle: Idle::new(globals.bind(&qh, 1..=1, ()).ok()),
             ipc: Ipc::connect(&loop_handle)?,
             services: SystemServices::spawn(&loop_handle)?,
@@ -130,6 +130,7 @@ impl State {
             compositor,
             shm,
             layer_shell,
+            wm_base,
             windows,
             model,
             actions,
@@ -143,6 +144,11 @@ impl State {
             loop_signal,
             exit: None,
         };
+        // `SeatState` binds the seats that already exist without calling `new_seat` for them.
+        if let Some(seat) = state.seat_state.seats().next() {
+            state.input.seat = Some(seat);
+            state.watch_idle();
+        }
         state.request(&Request::Subscribe, |_, _| {});
         state.request(&Request::GetState, |state, response| match response {
             Response::State(compositor_state) => {
@@ -181,8 +187,8 @@ impl State {
     }
 
     fn surfaces(&self) -> impl Iterator<Item = &SlintSurface> {
-        let views = self.outputs.iter().map(|o| &o.surface);
-        views.chain(self.lock.surfaces.iter().map(|l| &l.surface))
+        let parts = self.outputs.iter().flat_map(OutputShell::surfaces);
+        parts.chain(self.lock.surfaces.iter().map(|l| &l.surface))
     }
 
     /// The Slint surface on `surface`.
@@ -193,7 +199,7 @@ impl State {
     pub fn surface_mut(&mut self, surface: &WlSurface) -> Option<&mut SlintSurface> {
         self.outputs
             .iter_mut()
-            .map(|o| &mut o.surface)
+            .flat_map(OutputShell::surfaces_mut)
             .chain(self.lock.surfaces.iter_mut().map(|l| &mut l.surface))
             .find(|s| s.wl_surface() == surface)
     }
@@ -207,14 +213,10 @@ impl State {
         if self.outputs.iter().any(|o| o.output() == output) {
             return;
         }
-        match OutputShell::new(self, output, name.clone()) {
-            Ok(shell) => {
-                tracing::info!(output = %name, "shell started");
-                self.outputs.push(shell);
-                self.add_lock_surface(output);
-            }
-            Err(err) => tracing::error!(output = %name, "cannot create the shell: {err:#}"),
-        }
+        let view = ShellView::new(&self.model, &name);
+        self.outputs.push(OutputShell::new(output, name.clone(), view));
+        tracing::info!(output = %name, "shell started");
+        self.add_lock_surface(output);
     }
 
     pub fn remove_output(&mut self, output: &WlOutput) {
@@ -226,15 +228,19 @@ impl State {
     pub fn update(&mut self) {
         slint::platform::update_timers_and_animations();
         self.process_actions();
-        let globals = Globals {
-            qh: &self.qh,
-            compositor: &self.compositor,
-            layer_shell: &self.layer_shell,
-            viewporter: self.scaling.viewporter.as_ref(),
-            transparent: self.transparent.as_ref(),
-        };
+        let grab = self.input.seat.as_ref().zip(self.input.last_serial);
         for output in &mut self.outputs {
-            output.update(&globals);
+            let scale = self.output_state.info(output.output()).map_or(1, |info| info.scale_factor);
+            output.update(&Context {
+                qh: &self.qh,
+                compositor: &self.compositor,
+                layer_shell: &self.layer_shell,
+                wm_base: self.wm_base.as_ref(),
+                windows: &self.windows,
+                scaling: &self.scaling,
+                scale,
+                grab,
+            });
         }
         for lock in &mut self.lock.surfaces {
             lock.surface.render(&self.qh);
@@ -254,11 +260,6 @@ impl State {
             (true, None) => Some(ANIMATION_INTERVAL),
             (false, t) => t,
         }
-    }
-
-    /// The transparent buffer the reservations show.
-    pub fn transparent(&self) -> Option<&WlBuffer> {
-        self.transparent.as_ref()
     }
 }
 

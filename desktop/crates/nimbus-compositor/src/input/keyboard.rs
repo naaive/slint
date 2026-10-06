@@ -21,13 +21,14 @@ enum KeyAction {
 
 impl State {
     pub(super) fn on_keyboard<B: InputBackend>(&mut self, event: B::KeyboardKeyEvent) {
+        self.keyboard_key(event.key_code(), event.state(), Event::time_msec(&event));
+    }
+
+    pub(super) fn keyboard_key(&mut self, keycode: Keycode, key_state: KeyState, time: u32) {
         let Some(keyboard) = self.nimbus.keyboard.clone() else {
             return;
         };
-        let keycode = event.key_code();
-        let key_state = event.state();
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time_msec(&event);
         let action = keyboard.input::<KeyAction, _>(
             self,
             keycode,

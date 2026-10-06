@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion } from "@nimbus/theme.slint";
+import { RectData, Popup } from "models.slint";
+import { Desktop } from "desktop.slint";
+import { ShellOutput } from "output.slint";
+import { Panel } from "panel.slint";
+import { Dock, DockMetrics } from "dock.slint";
+
+// The panel of an output, on its own surface or above the launcher and overview.
+export component PanelBar inherits Panel {
+    workspaces: ShellOutput.workspaces;
+    focused-title: ShellOutput.overview-open || ShellOutput.launcher-open ? "" : Desktop.focused-title;
+    focused-visual: Desktop.focused-visual;
+    clock-text: Desktop.clock-text;
+    status: Desktop.status;
+    volume: Desktop.volume;
+    do-not-disturb: Desktop.do-not-disturb;
+    show-battery-percentage: Desktop.panel.show-battery-percentage;
+    has-unread: Desktop.has-unread;
+    overview-open: ShellOutput.overview-open;
+    calendar-open: ShellOutput.popup == Popup.calendar;
+    quick-settings-open: ShellOutput.popup == Popup.quick-settings;
+    overview-clicked => {
+        ShellOutput.overview-requested(!ShellOutput.overview-open);
+    }
+    workspace-clicked(index) => {
+        ShellOutput.workspace-clicked(index);
+    }
+    clock-clicked(anchor) => {
+        ShellOutput.popup-requested(ShellOutput.popup == Popup.calendar ? Popup.none : Popup.calendar, anchor);
+    }
+    status-clicked(anchor) => {
+        ShellOutput.popup-requested(ShellOutput.popup == Popup.quick-settings ? Popup.none : Popup.quick-settings, anchor);
+    }
+}
+
+// The dock of an output, centered on the bottom edge of the area this fills.
+// An autohidden dock slides out below that edge, and comes back when the pointer touches it.
+export component DockBar inherits Rectangle {
+    // Where the dock takes pointer input: the dock, or the strip along the edge that reveals it.
+    out property <RectData> input-rect: !root.enabled ? { x: 0, y: 0, width: 0, height: 0 }
+        : root.revealed ? { x: dock-area.x, y: root.base-y, width: dock-area.width, height: DockMetrics.height }
+        : { x: dock-area.x, y: root.height - 2px, width: dock-area.width, height: 2px };
+    out property <length> dock-width: dock.width;
+
+    private property <bool> enabled: Desktop.panel.show-dock && !ShellOutput.launcher-open && !Desktop.locked && (!ShellOutput.fullscreen-active || ShellOutput.overview-open);
+    private property <length> base-y: root.height - DockMetrics.height - DockMetrics.margin;
+    private property <bool> revealed: root.enabled && (!Desktop.panel.dock-autohide || dock-area.has-hover || hot-zone.has-hover || ShellOutput.overview-open || ShellOutput.popup == Popup.dock-menu);
+
+    hot-zone := TouchArea {
+        x: dock-area.x;
+        y: root.height - 2px;
+        width: dock-area.width;
+        height: 2px;
+        enabled: root.enabled && Desktop.panel.dock-autohide;
+    }
+
+    dock-area := TouchArea {
+        x: (root.width - self.width) / 2;
+        y: root.revealed ? root.base-y : root.height + DockMetrics.margin;
+        width: dock.width;
+        height: DockMetrics.height;
+        opacity: root.revealed ? 1 : 0;
+        visible: self.opacity > 0;
+        animate y, opacity {
+            duration: Theme.duration-slow;
+            delay: root.revealed ? 0ms : (Desktop.panel.dock-autohide && root.enabled ? 400ms : 0ms);
+            easing: Motion.standard;
+        }
+
+        dock := Dock {
+            items: Desktop.dock-items;
+            menu-index: ShellOutput.popup == Popup.dock-menu ? ShellOutput.dock-menu-index : -1;
+            item-clicked(index) => {
+                ShellOutput.dock-clicked(index);
+            }
+            item-menu-requested(index, anchor) => {
+                ShellOutput.dock-menu-requested(index, anchor);
+            }
+            show-apps => {
+                ShellOutput.launcher-requested(!ShellOutput.launcher-open);
+            }
+        }
+    }
+}

@@ -2,10 +2,12 @@
 
 //! Control requests and keybinding actions, shared by the control socket and the keyboard.
 
+use crate::backend::Backend;
 use crate::state::State;
 use crate::wm::WindowMode;
 use nimbus_config::Action;
 use nimbus_ipc::{Direction, LayoutMode, Request, Response, ShellCommand, WindowId};
+use smithay::utils::Point;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -117,7 +119,30 @@ impl State {
                 self.nimbus.stop();
                 Response::Ok
             }
+            Request::Click { output, x, y } => {
+                let Some(geometry) = self
+                    .nimbus
+                    .output_by_name(&output)
+                    .and_then(|o| self.nimbus.output_geometry(&o))
+                else {
+                    return Response::Error { message: format!("no output named {output}") };
+                };
+                let location = geometry.loc.to_f64() + Point::from((x, y));
+                self.synthetic_input(|state| state.click(location))
+            }
+            Request::PressKey { code } => self.synthetic_input(|state| state.press_key(code)),
         }
+    }
+
+    /// Feeds input made up by a test client, which only the headless backend accepts.
+    fn synthetic_input(&mut self, input: impl FnOnce(&mut Self)) -> Response {
+        if !matches!(self.backend, Backend::Headless(_)) {
+            return Response::Error {
+                message: "only the headless backend accepts synthetic input".into(),
+            };
+        }
+        input(self);
+        Response::Ok
     }
 
     fn screenshot_request(&mut self, output: Option<String>, path: Option<PathBuf>) -> Response {

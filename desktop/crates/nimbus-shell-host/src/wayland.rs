@@ -6,6 +6,7 @@ use crate::actions::TokenRequest;
 use crate::state::State;
 use crate::surface::Scale;
 use smithay_client_toolkit::compositor::CompositorHandler;
+use smithay_client_toolkit::globals::GlobalData;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
@@ -15,25 +16,27 @@ use smithay_client_toolkit::session_lock::{
 use smithay_client_toolkit::shell::wlr_layer::{
     LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shell::xdg::XdgShell;
+use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{
     delegate_activation, delegate_compositor, delegate_layer, delegate_output, delegate_pointer,
-    delegate_registry, delegate_seat, delegate_session_lock, delegate_shm, registry_handlers,
+    delegate_registry, delegate_seat, delegate_session_lock, delegate_shm, delegate_xdg_popup,
+    registry_handlers,
 };
-use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_output::{Transform, WlOutput};
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_dispatch, delegate_noop};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
     self, WpFractionalScaleV1,
 };
-use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
 
 /// `wp_fractional_scale_v1` scales are in 120ths.
 const FRACTIONAL_SCALE_DENOMINATOR: f64 = 120.0;
@@ -106,7 +109,8 @@ impl OutputHandler for State {
 
 impl LayerShellHandler for State {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        self.outputs.retain_mut(|output| !output.closed(layer));
+        // Compositors close layer surfaces when their output goes away.
+        self.outputs.retain(|output| !output.has_layer(layer));
     }
 
     fn configure(
@@ -117,14 +121,30 @@ impl LayerShellHandler for State {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        let (width, height) = configure.new_size;
-        let transparent = self.transparent().cloned();
         for output in &mut self.outputs {
-            if output.is(layer) {
-                output.surface.configure(width, height);
+            output.configure_layer(layer, configure.new_size);
+        }
+    }
+}
+
+impl PopupHandler for State {
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        popup: &Popup,
+        _: PopupConfigure,
+    ) {
+        for output in &mut self.outputs {
+            if output.configure_popup(popup) {
                 return;
             }
-            if output.configure_reservation(layer, (width, height), transparent.as_ref()) {
+        }
+    }
+
+    fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
+        for output in &mut self.outputs {
+            if output.popup_done(popup) {
                 return;
             }
         }
@@ -268,13 +288,13 @@ delegate_shm!(State);
 delegate_seat!(State);
 delegate_pointer!(State);
 delegate_layer!(State);
+delegate_dispatch!(State: [XdgWmBase: GlobalData] => XdgShell);
+delegate_xdg_popup!(State);
 delegate_session_lock!(State);
 delegate_activation!(State, TokenRequest);
 delegate_registry!(State);
 delegate_noop!(State: WpViewporter);
 delegate_noop!(State: WpViewport);
 delegate_noop!(State: WpFractionalScaleManagerV1);
-delegate_noop!(State: WpSinglePixelBufferManagerV1);
-delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: WpCursorShapeManagerV1);
 delegate_noop!(State: WpCursorShapeDeviceV1);

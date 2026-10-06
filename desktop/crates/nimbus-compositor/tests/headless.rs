@@ -123,6 +123,38 @@ fn shell_requests_become_shell_command_events() {
 }
 
 #[test]
+fn synthetic_clicks_focus_windows_and_keys_run_shortcuts() {
+    let config = format!("{CONFIG}[keybindings]\n\"F9\" = \"toggle-launcher\"\n");
+    let compositor = common::start(&config);
+    let events = compositor.subscribe();
+    let mut client = TestClient::connect(&compositor);
+    client.create_window("org.nimbus.A", "A");
+    client.create_window("org.nimbus.B", "B");
+    compositor.request(Request::SetLayout { layout: LayoutMode::Tiling });
+    client.dispatch_until("tiled sizes", |app| app.windows.iter().all(|w| w.size == (625, 700)));
+    let focused = |x: f64| {
+        compositor.request(Request::Click { output: "HEADLESS-1".into(), x, y: 360.0 });
+        let state = compositor.state();
+        state.windows.iter().find(|w| w.focused).map(|w| w.app_id.clone())
+    };
+    let left = focused(320.0).expect("a window in the left half");
+    let right = focused(960.0).expect("a window in the right half");
+    assert_ne!(left, right, "each click focuses the window under it");
+    assert_eq!(focused(320.0), Some(left));
+
+    // 67 is the Linux input event code of F9.
+    compositor.request(Request::PressKey { code: 67 });
+    let command = events.wait("the shortcut's shell command", |event| match event {
+        Event::ShellCommand { command, .. } => Some(command),
+        _ => None,
+    });
+    assert_eq!(command, ShellCommand::ToggleLauncher);
+    let unknown =
+        compositor.ipc().request(&Request::Click { output: "NONE".into(), x: 0.0, y: 0.0 });
+    assert!(unknown.is_err(), "an unknown output is an error: {unknown:?}");
+}
+
+#[test]
 fn workspaces_close_and_tiling_work() {
     let compositor = common::start(CONFIG);
     let mut client = TestClient::connect(&compositor);

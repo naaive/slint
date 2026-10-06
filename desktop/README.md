@@ -220,8 +220,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   It doesn't take touch input, and it draws the default cursor everywhere.
 - The shell's OpenGL renderer has only run on Mesa's llvmpipe, against the headless compositor.
   It's untested on GPUs, and it redraws whole surfaces for each frame.
-- Keyboard input to the shell, typing on its lock screen, and unlocking have no end-to-end test,
-  because the headless compositor can't inject input.
+- Typing on the shell's lock screen and unlocking have no end-to-end test.
+  The headless compositor feeds synthetic clicks and keys, but PAM needs a real account.
+- The shell's popups and its overlay with the launcher and overview don't animate when they close, since their surfaces go right away.
+- Toasts and the OSD show above fullscreen windows.
 - The shell has no input method support; it handles dead keys and Compose sequences with the locale's XKB compose table.
   A key that completes or cancels a sequence still sends its own key release.
 - There's no XWayland, so X11-only apps don't run.
