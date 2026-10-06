@@ -14,6 +14,7 @@ pub use management::OutputManagementState;
 
 use crate::state::{Nimbus, State};
 use crate::wm::layout as geometry;
+use layout::Explicit;
 use management::HeadSnapshot;
 use nimbus_config::{Config, OutputConfig};
 use smithay::desktop::layer_map_for_output;
@@ -103,27 +104,6 @@ pub trait OutputBackend {
 }
 
 impl Nimbus {
-    /// Every connected head, enabled or not.
-    pub fn heads(&self) -> &[Output] {
-        &self.heads
-    }
-
-    /// Adds a head made by [`HeadDescription::into_output`]; [`Nimbus::reconfigure_outputs`] then enables it.
-    pub fn connect_head(&mut self, output: Output) {
-        tracing::info!(name = %output.name(), description = %output.description(), "display connected");
-        self.heads.push(output);
-    }
-
-    /// Removes a head; [`Nimbus::reconfigure_outputs`] then arranges the rest.
-    pub fn disconnect_head(&mut self, output: &Output) {
-        tracing::info!(name = %output.name(), "display disconnected");
-        self.heads.retain(|o| o != output);
-        if self.is_enabled(output) {
-            self.unmap_output(output);
-            self.outputs_changed(&[]);
-        }
-    }
-
     fn is_enabled(&self, output: &Output) -> bool {
         self.outputs().any(|o| o == output)
     }
@@ -143,7 +123,7 @@ impl Nimbus {
 
     /// The layout the configuration file asks for.
     pub fn configured_layout(&self) -> Layout {
-        layout::resolve(&self.heads, self.config.current())
+        layout::resolve(self.heads(), self.config.current())
     }
 
     /// Validates `layout`, has `backend` apply or `test` it, and then applies it to the heads.
@@ -162,28 +142,43 @@ impl Nimbus {
     }
 
     /// Applies the configured layout, or the defaults when the backend refuses it.
+    ///
+    /// Displays that grew into each other move apart, and their new positions are saved.
     pub fn reconfigure_outputs(&mut self, backend: &mut impl OutputBackend) {
-        let configured = self.configured_layout();
-        if let Err(err) = self.configure_outputs(backend, &configured, false) {
-            tracing::warn!("cannot apply the stored display layout: {err}; using the defaults");
-            let config = Config { outputs: Vec::new(), ..self.config.current().clone() };
-            let defaults = layout::resolve(&self.heads, &config);
-            if let Err(err) = self.configure_outputs(backend, &defaults, false) {
-                tracing::error!("cannot apply the default display layout: {err}");
+        let mut configured = self.configured_layout();
+        let moved = layout::separate_resized(&mut configured, |output| self.output_state(output));
+        match self.configure_outputs(backend, &configured, false) {
+            Ok(()) => {
+                let moved: Vec<_> = moved.into_iter().map(|o| (o, Explicit::default())).collect();
+                self.save_outputs(&moved);
+            }
+            Err(err) => {
+                tracing::warn!("cannot apply the stored display layout: {err}; using the defaults");
+                let config = Config { outputs: Vec::new(), ..self.config.current().clone() };
+                let defaults = layout::resolve(self.heads(), &config);
+                if let Err(err) = self.configure_outputs(backend, &defaults, false) {
+                    tracing::error!("cannot apply the default display layout: {err}");
+                }
             }
         }
         self.refresh_output_management();
     }
 
-    /// Records every head's configuration in the configuration file.
-    pub fn save_outputs(&mut self) {
-        let default_scale = self.config.current().appearance.scale;
-        let entries: Vec<OutputConfig> = self
-            .heads
+    /// Records the configuration of `heads` in the configuration file; see [`layout::entry`].
+    pub fn save_outputs(&mut self, heads: &[(Output, Explicit)]) {
+        let config = self.config.current();
+        let entries: Vec<OutputConfig> = heads
             .iter()
-            .map(|output| layout::entry(output, &self.output_state(output), default_scale))
+            .map(|(output, set)| {
+                let identity = layout::Identity::of(output);
+                let stored = config.output(identity.id());
+                layout::entry(output, &self.output_state(output), stored, *set)
+            })
             .collect();
-        self.config.update(|config| {
+        if entries.iter().all(|entry| config.output(entry.id()) == Some(entry)) {
+            return;
+        }
+        self.config.update(move |config| {
             for entry in &entries {
                 config.set_output(entry.clone());
             }
@@ -192,7 +187,8 @@ impl Nimbus {
 
     /// Tells wlr-output-management clients what changed.
     pub fn refresh_output_management(&mut self) {
-        let heads = self.heads.iter().map(|o| HeadSnapshot::new(o, self.output_state(o))).collect();
+        let heads =
+            self.heads().iter().map(|o| HeadSnapshot::new(o, self.output_state(o))).collect();
         self.output_management.update(&self.display_handle, heads);
     }
 
@@ -230,7 +226,7 @@ impl Nimbus {
     }
 
     /// Takes `output` out of the layout, closing its layer surfaces.
-    fn unmap_output(&mut self, output: &Output) {
+    pub fn unmap_output(&mut self, output: &Output) {
         self.wm.space.unmap_output(output);
         if let Some(global) = self.output_globals.remove(&output.name()) {
             self.display_handle.remove_global::<State>(global);

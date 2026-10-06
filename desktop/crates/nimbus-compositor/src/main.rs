@@ -203,7 +203,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     state.nimbus.reconfigure_outputs(&mut state.backend);
     start_housekeeping(&mut state)?;
 
-    state.nimbus.sync_lock_marker();
+    state.nimbus.sync_lock_state();
     state.nimbus.arrange();
 
     tracing::info!(backend = ?kind, socket = %socket_name, control = %ipc_path.display(), "Nimbus is ready");

@@ -148,11 +148,9 @@ impl State {
             }
             other => tracing::warn!("unexpected answer to get-state: {other:?}"),
         });
-        // A lock outlives the shell that held it; a restarted shell shows the lock screen again.
-        state.request(&Request::GetLockState, |state, response| {
-            if response == (Response::LockState { locked: true }) {
-                state.lock();
-            }
+        state.request(&Request::GetLockState, |state, response| match response {
+            Response::LockState { locked, held } => state.lock_state(locked, held),
+            other => tracing::warn!("unexpected answer to get-lock-state: {other:?}"),
         });
         state.reload_apps();
         state.settings.watch(&state.loop_handle);

@@ -148,7 +148,7 @@ impl Compositor {
 
     pub fn locked(&self) -> bool {
         match self.ipc().request(&nimbus_ipc::Request::GetLockState).expect("get-lock-state") {
-            nimbus_ipc::Response::LockState { locked } => locked,
+            nimbus_ipc::Response::LockState { locked, .. } => locked,
             other => panic!("unexpected response {other:?}"),
         }
     }
@@ -233,6 +233,18 @@ impl Events {
                 return value;
             }
         }
+    }
+}
+
+/// Polls `get` until it returns a value.
+pub fn wait_for<T>(what: &str, get: impl Fn() -> Option<T>) -> T {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Some(value) = get() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "no {what}");
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

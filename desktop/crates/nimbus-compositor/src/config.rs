@@ -10,17 +10,42 @@ use nimbus_config::{Config, ConfigWatcher};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::calloop::channel::{self, Event as ChannelEvent};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 pub struct ConfigManager {
     path: Option<PathBuf>,
     current: Config,
     watcher: Option<ConfigWatcher>,
+    writer: Option<Writer>,
+}
+
+type Edit = Box<dyn FnOnce(&mut Config) + Send>;
+
+/// Saves edits in order on a thread of its own, because [`nimbus_config::update`] waits for other programs' lock on the file.
+struct Writer {
+    edits: mpsc::Sender<Edit>,
+    thread: JoinHandle<()>,
+}
+
+impl Writer {
+    fn spawn(path: PathBuf) -> std::io::Result<Self> {
+        let (edits, receiver) = mpsc::channel::<Edit>();
+        let thread = std::thread::Builder::new().name("nimbus-config".into()).spawn(move || {
+            for edit in receiver {
+                if let Err(err) = nimbus_config::update(&path, edit) {
+                    tracing::warn!("cannot save the configuration: {err}");
+                }
+            }
+        })?;
+        Ok(Self { edits, thread })
+    }
 }
 
 impl ConfigManager {
     pub fn load(path: Option<PathBuf>) -> Self {
         let (path, current) = Config::load_or_default(path);
-        Self { path, current, watcher: None }
+        Self { path, current, watcher: None, writer: None }
     }
 
     pub fn current(&self) -> &Config {
@@ -55,19 +80,39 @@ impl ConfigManager {
         }
     }
 
-    /// Applies `edit` to the configuration, and saves it without losing other programs' changes to the file.
-    pub fn update(&mut self, edit: impl Fn(&mut Config)) {
+    /// Applies `edit` to the configuration, and saves it in the background without losing other programs' changes to the file.
+    pub fn update(&mut self, edit: impl Fn(&mut Config) + Send + 'static) {
         edit(&mut self.current);
         let Some(path) = &self.path else {
             return;
         };
-        if let Err(err) = nimbus_config::update(path, |config| edit(config)) {
-            tracing::warn!("cannot save the configuration: {err}");
+        if self.writer.is_none() {
+            match Writer::spawn(path.clone()) {
+                Ok(writer) => self.writer = Some(writer),
+                Err(err) => {
+                    tracing::warn!("cannot save the configuration: {err}");
+                    return;
+                }
+            }
+        }
+        if let Some(writer) = &self.writer {
+            // The thread only ends when the writer is dropped.
+            let _ = writer.edits.send(Box::new(move |config| edit(config)));
         }
     }
 
     fn replace(&mut self, config: Config) -> Config {
         std::mem::replace(&mut self.current, config)
+    }
+}
+
+impl Drop for ConfigManager {
+    /// Waits for the edits that aren't saved yet.
+    fn drop(&mut self) {
+        if let Some(Writer { edits, thread }) = self.writer.take() {
+            drop(edits);
+            let _ = thread.join();
+        }
     }
 }
 

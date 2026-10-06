@@ -8,6 +8,7 @@
 
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::session_lock::{LockSurface, SessionLocker};
 use std::collections::HashMap;
 
@@ -33,6 +34,11 @@ impl LockClient {
 
     pub fn surfaces(&self) -> impl Iterator<Item = &LockSurface> {
         self.surfaces.values()
+    }
+
+    /// The output that `surface`, a lock surface, covers.
+    pub fn output_of(&self, surface: &WlSurface) -> Option<&str> {
+        self.surfaces.iter().find(|(_, s)| s.wl_surface() == surface).map(|(name, _)| name.as_str())
     }
 }
 
@@ -81,17 +87,10 @@ impl SessionLock {
         *self = Self::Unlocked;
     }
 
-    /// Records a lock surface; returns `false` unless its client holds the session.
-    pub fn add_surface(&mut self, output: String, surface: LockSurface) -> bool {
-        match self {
-            Self::Locked(Some(client))
-                if client.lock.is_alive()
-                    && surface.wl_surface().client() == client.lock.client() =>
-            {
-                client.surfaces.insert(output, surface);
-                true
-            }
-            _ => false,
+    /// Records the holder's lock surface on `output`.
+    pub fn add_surface(&mut self, output: String, surface: LockSurface) {
+        if let Self::Locked(Some(client)) = self {
+            client.surfaces.insert(output, surface);
         }
     }
 

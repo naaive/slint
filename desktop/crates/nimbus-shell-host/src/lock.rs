@@ -94,6 +94,14 @@ impl State {
         self.model.set_locked(true);
     }
 
+    /// Shows a lock screen when the session is locked without one,
+    /// as after `Request::Lock` or when the lock screen client, such as an earlier shell, died.
+    pub fn lock_state(&mut self, locked: bool, held: bool) {
+        if locked && !held {
+            self.lock();
+        }
+    }
+
     /// Adds a lock screen on `output` while the shell holds the lock.
     pub fn add_lock_surface(&mut self, output: &WlOutput) {
         // The compositor rejects lock surfaces of a lock it refused, so they wait for its confirmation.

@@ -272,16 +272,21 @@ fn applies_and_saves_a_layout() {
     assert_eq!(state.outputs.iter().find(|o| o.name == "HEADLESS-2").unwrap().scale, 2.0);
 
     let path = compositor.dir.path().join("config.toml");
-    let saved = std::fs::read_to_string(&path).unwrap();
-    let config = nimbus_config::Config::load_from(&path).unwrap();
     let id = nimbus_config::OutputId {
         connector: "HEADLESS-2",
         make: "Nimbus",
         model: "Headless",
         serial: "",
     };
-    let entry = config.output(id).expect("a saved entry");
+    // The compositor saves in the background.
+    let entry = common::wait_for("a saved entry", || {
+        nimbus_config::Config::load_from(&path).ok()?.output(id).cloned()
+    });
     assert_eq!((entry.position, entry.scale, entry.mode), (Some([0, 720]), Some(2.0), None));
+    let saved = std::fs::read_to_string(&path).unwrap();
+    let config = nimbus_config::Config::load_from(&path).unwrap();
+    let first = config.output(nimbus_config::OutputId { connector: "HEADLESS-1", ..id }).unwrap();
+    assert_eq!((first.position, first.scale), (Some([0, 0]), None), "only what was set is stored");
 
     // A configuration made before the change is out of date.
     assert_eq!(client.configure(serial, false, |_, _| {}), Outcome::Cancelled);
@@ -310,6 +315,12 @@ fn refuses_what_it_cannot_do() {
         Outcome::Failed,
         "the scale is outside the supported range"
     );
+    let apart = |name: &str, head: &ZwlrOutputConfigurationHeadV1| {
+        if name == "HEADLESS-2" {
+            head.set_position(1300, 0);
+        }
+    };
+    assert_eq!(client.configure(serial, true, apart), Outcome::Failed, "a display apart");
     let same = |name: &str, head: &ZwlrOutputConfigurationHeadV1| {
         if name == "HEADLESS-1" {
             head.set_custom_mode(1280, 720, 60_000);

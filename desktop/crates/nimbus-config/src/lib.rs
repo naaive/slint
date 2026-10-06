@@ -14,6 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub mod chord;
+pub mod geometry;
 mod outputs;
 mod update;
 mod watch;

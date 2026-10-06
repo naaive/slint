@@ -95,6 +95,7 @@ impl State {
             Message::Event(Event::ShellCommand { command, output }) => {
                 self.shell_command(command, output.as_deref());
             }
+            Message::Event(Event::LockState { locked, held }) => self.lock_state(locked, held),
             Message::Event(event) => self.model.handle_compositor_event(&event),
         }
     }

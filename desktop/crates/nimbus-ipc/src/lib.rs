@@ -113,7 +113,7 @@ pub enum Request {
     ToggleLauncher,
     /// Emit [`ShellCommand::ToggleOverview`] to subscribers.
     ToggleOverview,
-    /// Lock the session and emit [`ShellCommand::Lock`] to subscribers.
+    /// Lock the session; see [`Event::LockState`].
     Lock,
     /// Ask whether the session is locked; the answer is [`Response::LockState`].
     GetLockState,
@@ -135,8 +135,14 @@ pub enum Request {
 pub enum Response {
     Ok,
     State(CompositorState),
-    LockState { locked: bool },
-    Error { message: String },
+    LockState {
+        locked: bool,
+        /// Whether a live `ext-session-lock` client holds the lock.
+        held: bool,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -163,6 +169,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
+    /// The session lock changed.
+    /// A session that's `locked` but not `held` shows black until a lock screen client takes over.
+    LockState {
+        locked: bool,
+        /// Whether a live `ext-session-lock` client holds the lock.
+        held: bool,
+    },
 }
 
 /// A command for the shell, delivered as [`Event::ShellCommand`].
@@ -176,8 +189,6 @@ pub enum ShellCommand {
     ToggleMute,
     BrightnessUp,
     BrightnessDown,
-    /// Show a lock screen through ext-session-lock; the session is locked and black until one appears.
-    Lock,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -313,8 +324,11 @@ mod tests {
     fn lock_state_wire_format() {
         let json = serde_json::to_string(&Request::GetLockState).unwrap();
         assert_eq!(json, r#"{"request":"get-lock-state"}"#);
-        let json = serde_json::to_string(&Response::LockState { locked: true }).unwrap();
-        assert_eq!(json, r#"{"response":"lock-state","locked":true}"#);
+        let json =
+            serde_json::to_string(&Response::LockState { locked: true, held: false }).unwrap();
+        assert_eq!(json, r#"{"response":"lock-state","locked":true,"held":false}"#);
+        let json = serde_json::to_string(&Event::LockState { locked: true, held: true }).unwrap();
+        assert_eq!(json, r#"{"event":"lock-state","locked":true,"held":true}"#);
     }
 
     #[test]

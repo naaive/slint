@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 use super::State;
-use nimbus_ipc::ShellCommand;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Size};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::foreign_toplevel_list::{
@@ -106,7 +104,7 @@ impl XdgActivationHandler for State {
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         let scale =
-            self.nimbus.active_output().map_or(1.0, |o| o.current_scale().fractional_scale());
+            self.nimbus.output_of(&surface).map_or(1.0, |o| o.current_scale().fractional_scale());
         with_states(&surface, |states| {
             with_fractional_scale(states, |fractional| fractional.set_preferred_scale(scale));
         });
@@ -153,19 +151,8 @@ impl SessionLockHandler for State {
         let Some(output) = Output::from_resource(&output) else {
             return;
         };
-        let Some(geo) = self.nimbus.output_geometry(&output) else {
-            return;
-        };
-        if !self.nimbus.lock.add_surface(output.name(), surface.clone()) {
-            tracing::warn!(
-                "ignoring a lock surface from a client that doesn't hold the session lock"
-            );
-            return;
-        }
-        let size: Size<u32, Logical> =
-            (u32::try_from(geo.size.w).unwrap_or(0), u32::try_from(geo.size.h).unwrap_or(0)).into();
-        surface.with_pending_state(|state| state.size = Some(size));
-        surface.send_configure();
+        self.nimbus.lock.add_surface(output.name(), surface);
+        self.nimbus.sync_lock_surfaces();
         self.nimbus.queue_redraw(&output);
     }
 }
@@ -238,8 +225,7 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
         );
         if state.nimbus.lock.release(lock) {
             tracing::warn!("the session lock client went away; the session stays locked");
-            state.nimbus.queue_redraw_all();
-            state.shell_command(ShellCommand::Lock);
+            state.lock_changed();
         }
     }
 }

@@ -188,18 +188,31 @@ impl Client {
             let Some(config) = config else {
                 continue;
             };
-            if let Some(mode) = config.mode {
+            // The compositor stores what a configuration sets, so it gets only the changes.
+            let current_mode = head
+                .current_mode
+                .as_ref()
+                .and_then(|id| head.modes.iter().find(|(proxy, _)| &proxy.id() == id));
+            if let Some(mode) = config.mode
+                && current_mode.is_none_or(|(_, current)| !current.same(&mode))
+            {
                 match head.modes.iter().find(|(_, m)| m.same(&mode)) {
                     Some((proxy, _)) => configured.set_mode(proxy),
                     None => configured.set_custom_mode(mode.width, mode.height, mode.refresh_mhz),
                 }
             }
-            configured.set_position(config.position.0, config.position.1);
-            configured.set_transform(
-                wl_output::Transform::try_from(u32::from(config.transform))
-                    .unwrap_or(wl_output::Transform::Normal),
-            );
-            configured.set_scale(config.scale);
+            if config.position != head.head.position {
+                configured.set_position(config.position.0, config.position.1);
+            }
+            if config.transform != head.head.transform {
+                configured.set_transform(
+                    wl_output::Transform::try_from(u32::from(config.transform))
+                        .unwrap_or(wl_output::Transform::Normal),
+                );
+            }
+            if config.scale != head.head.scale {
+                configured.set_scale(config.scale);
+            }
         }
         pending.apply();
         self.pending = Some(pending);

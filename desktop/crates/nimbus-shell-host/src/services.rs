@@ -86,7 +86,6 @@ impl State {
             }
             ShellCommand::BrightnessUp => self.change_level(|s| brightness_step(s, LEVEL_STEP)),
             ShellCommand::BrightnessDown => self.change_level(|s| brightness_step(s, -LEVEL_STEP)),
-            ShellCommand::Lock => self.lock(),
         }
     }
 

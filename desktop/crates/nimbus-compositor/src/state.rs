@@ -20,7 +20,7 @@ use crate::process::Children;
 use crate::render::Wallpaper;
 use crate::wm::layout::{self, Rect};
 use crate::wm::{OutputArea, Wm};
-use nimbus_ipc::{CompositorState as IpcState, Event, OutputInfo, WindowInfo};
+use nimbus_ipc::{CompositorState as IpcState, Event, OutputInfo, ShellCommand, WindowInfo};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::{PopupManager, WindowSurfaceType, layer_map_for_output};
 use smithay::input::keyboard::{KeyboardHandle, Keycode, XkbConfig};
@@ -33,12 +33,15 @@ use smithay::reexports::wayland_server::backend::{
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{DisplayHandle, Resource};
-use smithay::utils::{Clock, Logical, Monotonic, Point};
-use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::utils::{Clock, Logical, Monotonic, Point, Size};
+use smithay::wayland::compositor::{
+    CompositorClientState, CompositorState, TraversalAction, send_surface_state,
+    with_surface_tree_downward,
+};
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::foreign_toplevel_list::ForeignToplevelListState;
-use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::fractional_scale::{FractionalScaleManagerState, with_fractional_scale};
 use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::idle_notify::IdleNotifierState;
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
@@ -124,7 +127,7 @@ pub struct Nimbus {
 
     pub wm: Wm,
     /// Every connected display; the enabled ones are also in `wm.space`.
-    pub heads: Vec<Output>,
+    heads: Vec<Output>,
     pub output_globals: HashMap<String, GlobalId>,
     pub output_management: OutputManagementState,
     pub wallpaper: Wallpaper,
@@ -137,6 +140,8 @@ pub struct Nimbus {
     pub idle_inhibitors: HashSet<WlSurface>,
     pub pending_redraws: HashSet<String>,
 
+    /// The `locked` and `held` of the last [`Event::LockState`].
+    reported_lock: (bool, bool),
     window_snapshot: Vec<WindowInfo>,
     events: Vec<Event>,
 }
@@ -227,6 +232,7 @@ impl Nimbus {
             lock: if locked { SessionLock::Locked(None) } else { SessionLock::Unlocked },
             idle_inhibitors: HashSet::new(),
             pending_redraws: HashSet::new(),
+            reported_lock: (locked, false),
             window_snapshot: Vec::new(),
             events: Vec::new(),
             display_handle: dh,
@@ -235,6 +241,29 @@ impl Nimbus {
             clock,
             start_time: Instant::now(),
             running: true,
+        }
+    }
+
+    /// Every connected head, enabled or not.
+    pub fn heads(&self) -> &[Output] {
+        &self.heads
+    }
+
+    /// Adds a head made by [`HeadDescription::into_output`]; [`Nimbus::reconfigure_outputs`] then enables it.
+    ///
+    /// [`HeadDescription::into_output`]: crate::outputs::HeadDescription::into_output
+    pub fn connect_head(&mut self, output: Output) {
+        tracing::info!(name = %output.name(), description = %output.description(), "display connected");
+        self.heads.push(output);
+    }
+
+    /// Removes a head; [`Nimbus::reconfigure_outputs`] then arranges the rest.
+    pub fn disconnect_head(&mut self, output: &Output) {
+        tracing::info!(name = %output.name(), "display disconnected");
+        self.heads.retain(|o| o != output);
+        if self.outputs().any(|o| o == output) {
+            self.unmap_output(output);
+            self.outputs_changed(&[]);
         }
     }
 
@@ -254,6 +283,7 @@ impl Nimbus {
         let areas = self.output_areas();
         self.wm.reassign_outputs(&areas, moved);
         self.clamp_pointer();
+        self.sync_lock_surfaces();
         self.arrange();
         self.events.push(Event::OutputsChanged { outputs: self.output_infos() });
         self.refresh_output_management();
@@ -300,6 +330,59 @@ impl Nimbus {
     /// The output the user is working on: the one under the pointer.
     pub fn active_output(&self) -> Option<Output> {
         self.output_at(self.pointer_location)
+    }
+
+    /// The output showing `surface`: the one its lock surface or layer surface is on,
+    /// or the first one its window is on; otherwise the active one.
+    pub fn output_of(&self, surface: &WlSurface) -> Option<Output> {
+        let root = crate::input::root_surface(surface);
+        if let Some(name) = self.lock.client().and_then(|c| c.output_of(&root)) {
+            return self.output_by_name(name);
+        }
+        let layer_output = self.outputs().find(|o| {
+            layer_map_for_output(o).layer_for_surface(&root, WindowSurfaceType::TOPLEVEL).is_some()
+        });
+        let window_output = || {
+            let window = &self.wm.get(self.wm.find_surface(&root)?)?.window;
+            self.wm.space.outputs_for_element(window).into_iter().next()
+        };
+        layer_output.cloned().or_else(window_output).or_else(|| self.active_output())
+    }
+
+    /// Sizes each lock surface to its output, and sends it the output's `enter`, buffer scale, transform,
+    /// and fractional scale.
+    pub fn sync_lock_surfaces(&self) {
+        let Some(client) = self.lock.client() else {
+            return;
+        };
+        for output in self.outputs() {
+            let (Some(surface), Some(geometry)) =
+                (client.surface(&output.name()), self.output_geometry(output))
+            else {
+                continue;
+            };
+            let size = Size::<u32, Logical>::from((
+                u32::try_from(geometry.size.w).unwrap_or(0),
+                u32::try_from(geometry.size.h).unwrap_or(0),
+            ));
+            surface.with_pending_state(|state| state.size = Some(size));
+            surface.send_configure();
+            let scale = output.current_scale();
+            let transform = output.current_transform();
+            with_surface_tree_downward(
+                surface.wl_surface(),
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, data, _| {
+                    output.enter(surface);
+                    send_surface_state(surface, data, scale.integer_scale(), transform);
+                    with_fractional_scale(data, |fractional| {
+                        fractional.set_preferred_scale(scale.fractional_scale());
+                    });
+                },
+                |_, _, _| true,
+            );
+        }
     }
 
     pub fn output_geometry(&self, output: &Output) -> Option<Rect> {
@@ -388,14 +471,21 @@ impl Nimbus {
         self.lock.is_locked()
     }
 
-    pub fn sync_lock_marker(&mut self) {
+    /// Brings the lock marker and control socket subscribers in line with the lock state.
+    pub fn sync_lock_state(&mut self) {
         let locked = self.is_locked();
         self.lock_marker.sync(locked);
+        let held = self.lock.client().is_some();
+        if self.reported_lock != (locked, held) {
+            self.reported_lock = (locked, held);
+            self.events.push(Event::LockState { locked, held });
+        }
     }
 
-    /// Queues an event for control socket subscribers.
-    pub fn emit(&mut self, event: Event) {
-        self.events.push(event);
+    /// Asks the shell, through control socket subscribers, to carry out `command` on the active output.
+    pub fn shell_command(&mut self, command: ShellCommand) {
+        let output = self.active_output().map(|o| o.name());
+        self.events.push(Event::ShellCommand { command, output });
     }
 
     /// Where keyboard input should go, by priority: lock screens, exclusive layer surfaces, windows.
@@ -481,11 +571,11 @@ impl State {
         }
         self.nimbus.foreign_toplevel_state.cleanup_closed_handles();
         self.apply_keyboard_focus();
+        self.nimbus.sync_lock_state();
         let events = self.nimbus.take_events();
         if !events.is_empty() {
             self.nimbus.ipc.broadcast(&events);
         }
-        self.nimbus.sync_lock_marker();
         self.backend.render(&mut self.nimbus);
         self.nimbus.confirm_session_lock();
         self.nimbus.ipc.flush_all();

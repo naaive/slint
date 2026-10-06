@@ -5,7 +5,7 @@
 use crate::state::State;
 use crate::wm::WindowMode;
 use nimbus_config::Action;
-use nimbus_ipc::{Direction, Event, LayoutMode, Request, Response, ShellCommand, WindowId};
+use nimbus_ipc::{Direction, LayoutMode, Request, Response, ShellCommand, WindowId};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -90,19 +90,21 @@ impl State {
                 Err(err) => Response::Error { message: format!("cannot run '{command}': {err}") },
             },
             Request::ToggleLauncher => {
-                self.shell_command(ShellCommand::ToggleLauncher);
+                self.nimbus.shell_command(ShellCommand::ToggleLauncher);
                 Response::Ok
             }
             Request::ToggleOverview => {
-                self.shell_command(ShellCommand::ToggleOverview);
+                self.nimbus.shell_command(ShellCommand::ToggleOverview);
                 Response::Ok
             }
             Request::Lock => {
                 self.lock_session();
-                self.shell_command(ShellCommand::Lock);
                 Response::Ok
             }
-            Request::GetLockState => Response::LockState { locked: self.nimbus.is_locked() },
+            Request::GetLockState => Response::LockState {
+                locked: self.nimbus.is_locked(),
+                held: self.nimbus.lock.client().is_some(),
+            },
             Request::ReloadConfig => match self.nimbus.config.reload() {
                 Ok(config) => {
                     self.apply_config(config);
@@ -205,12 +207,6 @@ impl State {
         Response::Ok
     }
 
-    /// Asks the shell, through control socket subscribers, to carry out `command` on the active output.
-    pub fn shell_command(&mut self, command: ShellCommand) {
-        let output = self.nimbus.active_output().map(|o| o.name());
-        self.nimbus.emit(Event::ShellCommand { command, output });
-    }
-
     /// Locks the session without a lock client; black covers every output until one takes over.
     pub fn lock_session(&mut self) {
         if self.nimbus.lock.lock() {
@@ -224,9 +220,8 @@ impl State {
         self.lock_changed();
     }
 
-    /// Brings the lock marker, grabs, and the screen in line with the lock state.
+    /// Brings grabs and the screen in line with the lock state; [`State::post_dispatch`] syncs the rest.
     pub fn lock_changed(&mut self) {
-        self.nimbus.sync_lock_marker();
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
     }
@@ -274,23 +269,23 @@ impl State {
                 None
             }
             Action::VolumeUp => {
-                self.shell_command(ShellCommand::VolumeUp);
+                self.nimbus.shell_command(ShellCommand::VolumeUp);
                 None
             }
             Action::VolumeDown => {
-                self.shell_command(ShellCommand::VolumeDown);
+                self.nimbus.shell_command(ShellCommand::VolumeDown);
                 None
             }
             Action::ToggleMute => {
-                self.shell_command(ShellCommand::ToggleMute);
+                self.nimbus.shell_command(ShellCommand::ToggleMute);
                 None
             }
             Action::BrightnessUp => {
-                self.shell_command(ShellCommand::BrightnessUp);
+                self.nimbus.shell_command(ShellCommand::BrightnessUp);
                 None
             }
             Action::BrightnessDown => {
-                self.shell_command(ShellCommand::BrightnessDown);
+                self.nimbus.shell_command(ShellCommand::BrightnessDown);
                 None
             }
             Action::Quit => Some(Request::Quit),

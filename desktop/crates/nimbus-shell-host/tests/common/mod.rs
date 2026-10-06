@@ -208,7 +208,7 @@ impl Session {
 
     pub fn locked(&self) -> bool {
         match self.ipc().request(&Request::GetLockState).expect("get-lock-state") {
-            Response::LockState { locked } => locked,
+            Response::LockState { locked, .. } => locked,
             other => panic!("unexpected response {other:?}"),
         }
     }

@@ -3,10 +3,11 @@
 //! The layout the configuration asks for, validation, and the configuration entries that record a layout.
 
 use super::{Layout, OutputError, OutputState, head_info};
+use nimbus_config::geometry::{self, Rect};
 use nimbus_config::{Config, OutputConfig, OutputId, OutputMode};
 use smithay::output::{Mode, Output};
 use smithay::reexports::wayland_server::protocol::wl_output;
-use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
+use smithay::utils::{Logical, Point, Size, Transform};
 use std::ops::RangeInclusive;
 
 pub const SCALE_RANGE: RangeInclusive<f64> = 0.25..=8.0;
@@ -58,8 +59,9 @@ pub fn logical_size(state: &OutputState) -> Size<i32, Logical> {
     state.transform.transform_size(state.mode.size).to_f64().to_logical(state.scale).to_i32_ceil()
 }
 
-fn rect(state: &OutputState) -> Rectangle<i32, Logical> {
-    Rectangle::new(state.position, logical_size(state))
+fn rect(state: &OutputState) -> Rect {
+    let size = logical_size(state);
+    Rect { x: state.position.x, y: state.position.y, w: size.w, h: size.h }
 }
 
 /// The supported mode of `output` with this size and a refresh rate near `refresh_mhz`;
@@ -80,8 +82,8 @@ pub fn find_mode(output: &Output, width: i32, height: i32, refresh_mhz: i32) -> 
 ///
 /// At least one display stays on.
 /// Displays without a position go to the right of the others.
-/// When the stored positions leave a display apart from the rest, as after unplugging the middle one of three,
-/// the displays are lined up from left to right in their stored order, so the pointer can reach each of them.
+/// When the stored positions leave displays apart from the rest, as after unplugging the middle one of three,
+/// they move to the nearest edge of the others, so the pointer can reach each of them.
 pub fn resolve(heads: &[Output], config: &Config) -> Layout {
     let default_scale = valid_scale(config.appearance.scale).unwrap_or(1.0);
     let mut entries: Vec<(Output, OutputState, bool)> = heads
@@ -119,24 +121,14 @@ pub fn resolve(heads: &[Output], config: &Config) -> Layout {
         state.enabled = true;
     }
     place(&mut entries);
-    entries.into_iter().map(|(output, state, _)| (output, state)).collect()
+    let mut layout: Layout =
+        entries.into_iter().map(|(output, state, _)| (output, state)).collect();
+    update_rects(&mut layout, geometry::join);
+    layout
 }
 
+/// Puts the displays without a stored position to the right of the others.
 fn place(entries: &mut [(Output, OutputState, bool)]) {
-    let mut placed: Vec<&mut OutputState> = entries
-        .iter_mut()
-        .filter(|(_, state, placed)| *placed && state.enabled)
-        .map(|(_, state, _)| state)
-        .collect();
-    let rects: Vec<_> = placed.iter().map(|state| rect(state)).collect();
-    if !connected(&rects) {
-        placed.sort_by_key(|state| (state.position.x, state.position.y));
-        let mut x = 0;
-        for state in placed {
-            state.position = (x, 0).into();
-            x += logical_size(state).w;
-        }
-    }
     let mut x = entries
         .iter()
         .filter(|(_, state, placed)| *placed && state.enabled)
@@ -149,23 +141,44 @@ fn place(entries: &mut [(Output, OutputState, bool)]) {
     }
 }
 
-/// Whether the rectangles form one group, each sharing an edge with or overlapping another.
-fn connected(rects: &[Rectangle<i32, Logical>]) -> bool {
-    let adjacent = |a: &Rectangle<i32, Logical>, b: &Rectangle<i32, Logical>| {
-        let overlap = |a0: i32, a1: i32, b0: i32, b1: i32| a1.min(b1) - a0.max(b0);
-        let x = overlap(a.loc.x, a.loc.x + a.size.w, b.loc.x, b.loc.x + b.size.w);
-        let y = overlap(a.loc.y, a.loc.y + a.size.h, b.loc.y, b.loc.y + b.size.h);
-        x >= 0 && y >= 0 && (x > 0 || y > 0)
-    };
-    let Some(first) = rects.first() else {
-        return true;
-    };
-    let mut reached = vec![first];
-    let mut rest: Vec<_> = rects[1..].iter().collect();
-    while let Some(index) = rest.iter().position(|r| reached.iter().any(|q| adjacent(q, r))) {
-        reached.push(rest.swap_remove(index));
+/// Runs `edit` on the rectangles of the enabled displays, and moves the displays to match.
+fn update_rects(layout: &mut [(Output, OutputState)], edit: impl FnOnce(&mut [Rect])) {
+    let mut enabled: Vec<&mut OutputState> =
+        layout.iter_mut().filter(|(_, state)| state.enabled).map(|(_, state)| state).collect();
+    let mut rects: Vec<Rect> = enabled.iter().map(|state| rect(state)).collect();
+    edit(&mut rects);
+    for (state, rect) in enabled.iter_mut().zip(rects) {
+        state.position = (rect.x, rect.y).into();
     }
-    rest.is_empty()
+}
+
+/// Pushes apart displays that grew into each other since `before`, as when `appearance.scale` changes,
+/// and joins those left apart; returns the displays that moved.
+pub fn separate_resized(
+    layout: &mut Layout,
+    before: impl Fn(&Output) -> OutputState,
+) -> Vec<Output> {
+    // A display that kept its size counts as where it is, so that only resizes push displays apart.
+    let old: Vec<Option<Rect>> = layout
+        .iter()
+        .filter(|(_, state)| state.enabled)
+        .map(|(output, state)| {
+            let old = before(output);
+            let resized = logical_size(&old) != logical_size(state);
+            old.enabled.then(|| if resized { rect(&old) } else { rect(state) })
+        })
+        .collect();
+    let unmoved: Vec<_> = layout.iter().map(|(_, state)| state.position).collect();
+    update_rects(layout, |rects| {
+        geometry::separate(rects, &old);
+        geometry::join(rects);
+    });
+    layout
+        .iter()
+        .zip(unmoved)
+        .filter(|((_, state), position)| state.position != *position)
+        .map(|((output, _), _)| output.clone())
+        .collect()
 }
 
 /// Checks what every backend needs of a layout.
@@ -193,25 +206,53 @@ pub fn validate(layout: &[(Output, OutputState)]) -> Result<(), OutputError> {
             return Err(OutputError::Invalid(format!("{name} is too far from the origin")));
         }
     }
+    let rects: Vec<Rect> =
+        layout.iter().filter(|(_, state)| state.enabled).map(|(_, state)| rect(state)).collect();
+    if !geometry::connected(&rects) {
+        return Err(OutputError::Invalid(
+            "each display has to share an edge with another, so the pointer can reach it".into(),
+        ));
+    }
     Ok(())
 }
 
-/// The configuration entry that records `state`, leaving out what matches the display's defaults.
-pub fn entry(output: &Output, state: &OutputState, default_scale: f64) -> OutputConfig {
+/// Which parts of a display's configuration a client set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Explicit {
+    pub mode: bool,
+    pub transform: bool,
+    pub scale: bool,
+}
+
+/// The configuration entry that records `state`: whether the display is on, its position, and what `set` names.
+/// Everything else keeps what `stored` has, or the display's default.
+pub fn entry(
+    output: &Output,
+    state: &OutputState,
+    stored: Option<&OutputConfig>,
+    set: Explicit,
+) -> OutputConfig {
     let identity = Identity::of(output);
     let mode = state.mode;
-    let default_scale = valid_scale(default_scale).unwrap_or(1.0);
+    let stored = stored.cloned().unwrap_or_default();
     OutputConfig {
         enabled: state.enabled,
-        mode: (output.preferred_mode() != Some(mode)).then(|| OutputMode {
-            width: u32::try_from(mode.size.w).unwrap_or(0),
-            height: u32::try_from(mode.size.h).unwrap_or(0),
-            refresh_mhz: u32::try_from(mode.refresh).unwrap_or(0),
-        }),
+        mode: if set.mode {
+            Some(OutputMode {
+                width: u32::try_from(mode.size.w).unwrap_or(0),
+                height: u32::try_from(mode.size.h).unwrap_or(0),
+                refresh_mhz: u32::try_from(mode.refresh).unwrap_or(0),
+            })
+        } else {
+            stored.mode
+        },
         position: Some([state.position.x, state.position.y]),
-        scale: (state.scale != default_scale).then_some(state.scale),
-        transform: (state.transform != head_info(output).native_transform)
-            .then(|| transform_to_config(state.transform)),
+        scale: if set.scale { Some(state.scale) } else { stored.scale },
+        transform: if set.transform {
+            Some(transform_to_config(state.transform))
+        } else {
+            stored.transform
+        },
         ..OutputConfig::new(identity.id())
     }
 }
@@ -301,13 +342,16 @@ mod tests {
         // B, at 100, was unplugged.
         stored(&mut config, &heads[1], |e| e.position = Some([200, 0]));
         assert_eq!(positions(&resolve(&heads, &config)), [(0, 0), (100, 0)]);
+        // A stranded display moves to the nearest edge, not into a row.
+        stored(&mut config, &heads[1], |e| e.position = Some([0, 300]));
+        assert_eq!(positions(&resolve(&heads, &config)), [(0, 0), (0, 100)]);
 
         // Stacked displays touch, so they stay.
         stored(&mut config, &heads[1], |e| e.position = Some([50, 100]));
         assert_eq!(positions(&resolve(&heads, &config)), [(0, 0), (50, 100)]);
         // Touching at a corner isn't enough.
         stored(&mut config, &heads[1], |e| e.position = Some([100, 100]));
-        assert_eq!(positions(&resolve(&heads, &config)), [(0, 0), (100, 0)]);
+        assert_eq!(positions(&resolve(&heads, &config)), [(0, 0), (100, 99)]);
     }
 
     #[test]
@@ -319,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn entries_leave_out_defaults() {
+    fn entries_store_what_clients_set() {
         let a = head("A", "S", &[mode(1920, 1080, 60_000), mode(1280, 720, 60_000)]);
         let state = OutputState {
             enabled: true,
@@ -328,14 +372,20 @@ mod tests {
             transform: Transform::Normal,
             scale: 1.5,
         };
-        let entry = entry(&a, &state, 1.5);
+        let entry = entry(&a, &state, None, Explicit::default());
         assert_eq!((entry.mode, entry.scale, entry.transform), (None, None, None));
         assert_eq!(entry.position, Some([10, 20]));
         assert_eq!((entry.connector.as_str(), entry.serial.as_str()), ("A", "S"));
 
+        // A scale that a client set is stored, even when it matches `appearance.scale`.
+        let scaled =
+            super::entry(&a, &state, None, Explicit { scale: true, ..Explicit::default() });
+        assert_eq!(scaled.scale, Some(1.5));
+        // What the client leaves out keeps what's stored.
         let changed =
             OutputState { mode: mode(1280, 720, 60_000), transform: Transform::_270, ..state };
-        let entry = super::entry(&a, &changed, 1.0);
+        let set = Explicit { mode: true, transform: true, scale: false };
+        let entry = super::entry(&a, &changed, Some(&scaled), set);
         assert_eq!(entry.mode.map(|m| m.to_string()).as_deref(), Some("1280x720@60"));
         assert_eq!(entry.scale, Some(1.5));
         assert_eq!(entry.transform, Some(nimbus_config::Transform::Rotate270));
@@ -344,6 +394,34 @@ mod tests {
         config.set_output(entry);
         let layout = resolve(&[a], &config);
         assert_eq!(layout[0].1, changed, "round trip");
+    }
+
+    #[test]
+    fn displays_that_grew_into_each_other_move_apart() {
+        let heads: Vec<Output> = ["A", "B", "C"]
+            .into_iter()
+            .map(|name| head(name, "", &[mode(1920, 1080, 60_000)]))
+            .collect();
+        let mut config = Config::default();
+        stored(&mut config, &heads[0], |e| e.position = Some([0, 0]));
+        stored(&mut config, &heads[1], |e| e.position = Some([960, 0]));
+        stored(&mut config, &heads[2], |e| e.position = Some([0, 540]));
+        config.appearance.scale = 2.0;
+        let before = resolve(&heads, &config);
+        assert_eq!(positions(&before), [(0, 0), (960, 0), (0, 540)]);
+
+        // At 100%, the displays would overlap where they were.
+        config.appearance.scale = 1.0;
+        let mut after = resolve(&heads, &config);
+        let state = |output: &Output| before.iter().find(|(o, _)| o == output).unwrap().1;
+        let moved = separate_resized(&mut after, state);
+        assert_eq!(positions(&after), [(0, 0), (1920, 0), (0, 1080)]);
+        assert_eq!(moved, heads[1..]);
+
+        // Unchanged sizes move nothing.
+        let mut same = before.clone();
+        assert!(separate_resized(&mut same, state).is_empty());
+        assert_eq!(positions(&same), positions(&before));
     }
 
     #[test]
@@ -357,6 +435,11 @@ mod tests {
             scale: 1.0,
         };
         assert!(validate(&[(a.clone(), good)]).is_ok());
+        let b = head("B", "", &[mode(100, 100, 60_000)]);
+        let beside = OutputState { position: (100, 0).into(), ..good };
+        assert!(validate(&[(a.clone(), good), (b.clone(), beside)]).is_ok());
+        let apart = OutputState { position: (101, 0).into(), ..good };
+        assert!(validate(&[(a.clone(), good), (b, apart)]).is_err(), "displays apart");
         for bad in [
             OutputState { enabled: false, ..good },
             OutputState { scale: 0.0, ..good },

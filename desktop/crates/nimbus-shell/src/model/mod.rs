@@ -453,7 +453,9 @@ impl Model {
                     state.outputs = outputs.clone();
                     update_scale(&mut state);
                 }
-                Event::LayoutChanged { .. } | Event::ShellCommand { .. } => return,
+                Event::LayoutChanged { .. }
+                | Event::ShellCommand { .. }
+                | Event::LockState { .. } => return,
             }
         }
         self.refresh_windows();

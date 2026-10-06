@@ -7,7 +7,7 @@
 //! Applied configurations go through [`Nimbus::configure_outputs`](crate::state::Nimbus::configure_outputs)
 //! like every other display change, and are saved to the configuration file.
 
-use super::layout::{find_mode, round_scale};
+use super::layout::{Explicit, find_mode, round_scale};
 use super::{Layout, OutputError, OutputState, head_info};
 use crate::state::State;
 use smithay::output::{Mode, Output};
@@ -346,6 +346,14 @@ enum RequestedMode {
 }
 
 impl HeadChanges {
+    fn explicit(&self) -> Explicit {
+        Explicit {
+            mode: self.mode.is_some(),
+            transform: self.transform.is_some(),
+            scale: self.scale.is_some(),
+        }
+    }
+
     fn apply(&self, output: &Output, state: &mut OutputState) -> Result<(), OutputError> {
         state.enabled = true;
         match self.mode {
@@ -509,6 +517,7 @@ impl State {
             return;
         }
         let mut layout = Layout::new();
+        let mut explicit = Vec::new();
         for output in self.nimbus.heads().to_vec() {
             let name = output.name();
             let Some((_, changes)) = heads.iter().find(|(head, _)| head.data() == Some(&name))
@@ -521,8 +530,13 @@ impl State {
             };
             let mut state = self.nimbus.output_state(&output);
             let result = match changes {
-                Some(changes) => changes.lock().unwrap().apply(&output, &mut state),
+                Some(changes) => {
+                    let changes = changes.lock().unwrap();
+                    explicit.push((output.clone(), changes.explicit()));
+                    changes.apply(&output, &mut state)
+                }
                 None => {
+                    explicit.push((output.clone(), Explicit::default()));
                     state.enabled = false;
                     Ok(())
                 }
@@ -537,7 +551,7 @@ impl State {
         match self.nimbus.configure_outputs(&mut self.backend, &layout, test) {
             Ok(()) => {
                 if !test {
-                    self.nimbus.save_outputs();
+                    self.nimbus.save_outputs(&explicit);
                 }
                 configuration.succeeded();
             }

@@ -10,6 +10,7 @@ pub mod wlr;
 use std::path::Path;
 
 use nimbus_config::Transform;
+use nimbus_config::geometry::{Rect, attach, bounds, follow_resize};
 use nimbus_ipc::{Client, OutputInfo, Request, Response};
 
 #[derive(Debug, thiserror::Error)]
@@ -234,14 +235,6 @@ pub fn logical_size(config: &HeadConfig) -> (i32, i32) {
     (logical(w), logical(h))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Rect {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-}
-
 fn rect(config: &HeadConfig) -> Rect {
     let (w, h) = logical_size(config);
     Rect { x: config.position.0, y: config.position.1, w, h }
@@ -250,16 +243,6 @@ fn rect(config: &HeadConfig) -> Rect {
 /// Each head's rectangle, or `None` for a head that's disabled or has no size.
 fn enabled_rects(configs: &[HeadConfig]) -> Vec<Option<Rect>> {
     configs.iter().map(|c| c.enabled.then(|| rect(c)).filter(|r| r.w > 0 && r.h > 0)).collect()
-}
-
-/// The smallest rectangle that holds all of `rects`.
-fn bounds<'a>(rects: impl IntoIterator<Item = &'a Rect>) -> Option<Rect> {
-    rects.into_iter().fold(None, |bounds: Option<Rect>, r| {
-        let Some(b) = bounds else { return Some(*r) };
-        let (x, y) = (b.x.min(r.x), b.y.min(r.y));
-        let (right, bottom) = ((b.x + b.w).max(r.x + r.w), (b.y + b.h).max(r.y + r.h));
-        Some(Rect { x, y, w: right - x, h: bottom - y })
-    })
 }
 
 /// The arrangement preview: each enabled head's rectangle as fractions of the arrangement's bounds,
@@ -306,32 +289,6 @@ pub fn move_head(configs: &mut [HeadConfig], index: usize, proposed: (f32, f32))
     normalize(configs);
 }
 
-/// The position nearest `target` where `moving` shares an edge with one of `others`.
-fn attach(moving: Rect, target: (i32, i32), others: &[Rect]) -> Option<(i32, i32)> {
-    others
-        .iter()
-        .flat_map(|o| {
-            let x = slide(target.0, moving.w, o.x, o.w);
-            let y = slide(target.1, moving.h, o.y, o.h);
-            [(o.x - moving.w, y), (o.x + o.w, y), (x, o.y - moving.h), (x, o.y + o.h)]
-        })
-        .min_by_key(|&(x, y)| {
-            let (dx, dy) = (i64::from(x - target.0), i64::from(y - target.1));
-            dx * dx + dy * dy
-        })
-}
-
-/// Where a span of `length` at `position` goes along another span's edge:
-/// lined up with its start or end when within 5% of `length`, and overlapping it by at least a pixel.
-fn slide(position: i32, length: i32, other_start: i32, other_length: i32) -> i32 {
-    let threshold = length / 20;
-    [other_start, other_start + other_length - length]
-        .into_iter()
-        .find(|aligned| (position - aligned).abs() <= threshold)
-        .unwrap_or(position)
-        .clamp(other_start - length + 1, other_start + other_length - 1)
-}
-
 /// Keeps the arrangement together after head `index` changed from `before`.
 ///
 /// Heads past its old right or bottom edge move by the change of its size,
@@ -346,18 +303,18 @@ pub fn make_room(configs: &mut [HeadConfig], index: usize, before: &HeadConfig) 
         configs[index].position = bounds(&others).map_or((0, 0), |b| (b.x + b.w, b.y));
     } else {
         let size = |c: &HeadConfig| if c.enabled { logical_size(c) } else { (0, 0) };
-        let (old, new) = (size(before), size(&after));
-        let (right, bottom) = (before.position.0 + old.0, before.position.1 + old.1);
-        for (i, config) in configs.iter_mut().enumerate() {
-            if i == index || !config.enabled {
-                continue;
-            }
-            if config.position.0 >= right {
-                config.position.0 += new.0 - old.0;
-            }
-            if config.position.1 >= bottom {
-                config.position.1 += new.1 - old.1;
-            }
+        let (w, h) = size(before);
+        let before = Rect { x: before.position.0, y: before.position.1, w, h };
+        let mut others: Vec<&mut HeadConfig> = configs
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, c)| *i != index && c.enabled)
+            .map(|(_, c)| c)
+            .collect();
+        let mut rects: Vec<Rect> = others.iter().map(|c| rect(c)).collect();
+        follow_resize(&mut rects, before, size(&after));
+        for (config, rect) in others.iter_mut().zip(rects) {
+            config.position = (rect.x, rect.y);
         }
     }
     normalize(configs);

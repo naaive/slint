@@ -5,18 +5,18 @@
 mod common;
 
 use common::{Compositor, TIMEOUT};
-use nimbus_ipc::{Event, Request, ShellCommand};
+use nimbus_ipc::{Event, Request};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
-use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1,
-    ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+    ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
     ext_session_lock_v1::{self, ExtSessionLockV1},
 };
 
@@ -33,6 +33,10 @@ struct App {
     compositor: Option<WlCompositor>,
     outputs: Vec<WlOutput>,
     state: Option<LockState>,
+    /// The size of the last configure of a lock surface.
+    configured: Option<(u32, u32)>,
+    /// Whether a lock surface was told which output it's on.
+    entered: bool,
 }
 
 struct Locker {
@@ -84,6 +88,15 @@ impl Locker {
         }
     }
 
+    fn dispatch_until(&mut self, what: &str, cond: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + TIMEOUT;
+        while !cond(&self.app) {
+            self.queue.roundtrip(&mut self.app).expect("roundtrip");
+            assert!(Instant::now() < deadline, "no {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn unlock(&mut self) {
         self.lock.take().unwrap().unlock_and_destroy();
         let _ = self.conn.flush();
@@ -129,10 +142,39 @@ impl Dispatch<ExtSessionLockV1, ()> for App {
     }
 }
 
+impl Dispatch<ExtSessionLockSurfaceV1, ()> for App {
+    fn event(
+        app: &mut Self,
+        surface: &ExtSessionLockSurfaceV1,
+        event: ext_session_lock_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_session_lock_surface_v1::Event::Configure { serial, width, height } = event {
+            surface.ack_configure(serial);
+            app.configured = Some((width, height));
+        }
+    }
+}
+
+impl Dispatch<WlSurface, ()> for App {
+    fn event(
+        app: &mut Self,
+        _: &WlSurface,
+        event: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_surface::Event::Enter { .. } = event {
+            app.entered = true;
+        }
+    }
+}
+
 delegate_noop!(App: ignore ExtSessionLockManagerV1);
-delegate_noop!(App: ignore ExtSessionLockSurfaceV1);
 delegate_noop!(App: ignore WlCompositor);
-delegate_noop!(App: ignore WlSurface);
 delegate_noop!(App: ignore WlOutput);
 
 #[test]
@@ -170,12 +212,13 @@ fn a_new_client_locks_after_the_holder_dies() {
 
     let mut owner = connect();
     assert_eq!(owner.lock_with_surfaces(true), LockState::Locked);
-    drop(owner);
-    let command = events.wait("shell command", |event| match event {
-        Event::ShellCommand { command, .. } => Some(command),
-        _ => None,
+    events.wait("the holder", |event| {
+        (event == Event::LockState { locked: true, held: true }).then_some(())
     });
-    assert_eq!(command, ShellCommand::Lock, "the shell wasn't asked to take over");
+    drop(owner);
+    events.wait("the shell to be asked to take over", |event| {
+        (event == Event::LockState { locked: true, held: false }).then_some(())
+    });
     assert!(compositor.locked(), "the dead holder unlocked the session");
 
     let mut next = connect();
@@ -186,24 +229,43 @@ fn a_new_client_locks_after_the_holder_dies() {
 }
 
 #[test]
-fn the_lock_request_locks_and_asks_the_shell_for_a_lock_screen() {
+fn the_lock_request_locks_and_asks_for_a_lock_screen() {
     let compositor = Compositor::start("", &[]);
     let events = compositor.subscribe();
     compositor.request(Request::Lock);
-    let command = events.wait("shell command", |event| match event {
-        Event::ShellCommand { command, output } => Some((command, output)),
+    let lock_state = |event: Event| match event {
+        Event::LockState { locked, held } => Some((locked, held)),
         _ => None,
-    });
-    assert_eq!(command, (ShellCommand::Lock, Some("HEADLESS-1".into())));
+    };
+    assert_eq!(events.wait("the lock state", lock_state), (true, false));
     assert!(compositor.locked());
     assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
 
     // The lock screen client takes over the lock and ends it.
     let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
     assert_eq!(locker.lock(), LockState::Locked);
+    assert_eq!(events.wait("the lock state", lock_state), (true, true));
     locker.unlock();
+    assert_eq!(events.wait("the lock state", lock_state), (false, false));
     assert!(!compositor.locked());
     assert!(!nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
+}
+
+#[test]
+fn lock_surfaces_follow_their_output() {
+    let compositor = Compositor::start("[appearance]\nscale = 1.0\n", &[]);
+    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    assert_eq!(locker.lock_with_surfaces(true), LockState::Locked);
+    locker.dispatch_until("configure with the output's size", |app| {
+        app.configured == Some((1280, 720)) && app.entered
+    });
+
+    let config = compositor.dir.path().join("config.toml");
+    std::fs::write(config, "[appearance]\nscale = 2.0\n").unwrap();
+    locker
+        .dispatch_until("configure with the scaled size", |app| app.configured == Some((640, 360)));
+    locker.unlock();
+    assert!(!compositor.locked());
 }
 
 #[test]

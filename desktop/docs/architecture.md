@@ -24,7 +24,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | Crate | Kind | Responsibility |
 | --- | --- | --- |
 | `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker. |
-| `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
+| `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`) and its edge-to-edge geometry (`geometry`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
@@ -116,7 +116,8 @@ A head is a connected display, which the backend describes as a smithay `Output`
 It's enabled while it's mapped in the window manager's space; only enabled heads have a `wl_output` global.
 Every change of a head's mode, position, scale, transform, or enabled state goes through `Nimbus::configure_outputs`:
 
-1. `outputs::layout::validate` checks what every backend needs: one head stays on, scales from 0.25 to 8, and supported modes.
+1. `outputs::layout::validate` checks what every backend needs: one head stays on, scales from 0.25 to 8, supported modes,
+   and each enabled head shares an edge with another, so the pointer can reach it.
 2. The backend's `OutputBackend::apply_outputs` sets up the devices, or with `test` only checks that it could.
 3. The compositor applies the layout to the heads, moves windows along with moved outputs, and tells clients.
 
@@ -133,17 +134,22 @@ An entry matches a display by make, model, and serial number when both have a se
 `Nimbus::reconfigure_outputs` applies the stored layout at startup, on hotplug, after a VT switch back, and when the entries or `appearance.scale` change in the file.
 It falls back to the defaults when the backend refuses the stored layout:
 the preferred mode, `appearance.scale`, the native transform, and a place to the right of the other displays.
-When stored positions leave a display apart from the rest, as after unplugging the middle one of three,
-the displays line up from left to right in their stored order, so the pointer can reach each of them.
+When stored positions leave displays apart from the rest, as after unplugging the middle one of three,
+they move to the nearest edge of the largest group (`nimbus_config::geometry::join`).
+When heads grow into each other, as when `appearance.scale` goes down, they're pushed apart to the right or down,
+and their new positions are saved.
 
 wlr-output-management (version 4) advertises every head, enabled or not, and sends each client only what changed, followed by `done` with a new serial.
 A configuration made with an older serial is cancelled.
 Custom modes are accepted when they match a supported mode within 1 Hz, and adaptive sync can't be turned on.
-The compositor saves every applied configuration to `[[outputs]]` through `nimbus_config::update`,
-leaving out what matches a display's defaults, so `appearance.scale` keeps applying to displays at the default scale.
+The compositor saves every applied configuration to `[[outputs]]` through `nimbus_config::update` on a worker thread, unless nothing changed.
+An entry records whether each head is on and its position,
+plus the mode, transform, and scale that the client set; what it didn't set keeps the stored value.
+So `appearance.scale` keeps applying to a head until a client sets its scale.
 
 The Displays page in Settings is a wlr-output-management client on its own thread and Wayland connection (`displays/wlr.rs`).
 It arranges displays by dragging, attaching each to the nearest edge of another, sets mode, scale, rotation, and whether each display is on,
+sends only what the user changed,
 and reverts an applied configuration unless the user keeps it within 15 seconds.
 Without the protocol, it lists the outputs that the control socket reports, read-only.
 
@@ -177,7 +183,7 @@ Surfaces:
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
 Shortcuts and requests aimed at the shell reach it on the control socket as `Event::ShellCommand`:
-toggling the launcher or overview, volume and brightness keys, and lock requests.
+toggling the launcher or overview, and volume and brightness keys.
 The compositor handles the keys and names the output under the pointer; the shell carries the commands out.
 
 ## Shell Process
@@ -232,20 +238,24 @@ When OpenGL fails, at startup or for one surface, the shell logs a warning and r
 
 Locked is compositor state, apart from whatever draws the lock screen.
 An `ext-session-lock` lock, `Request::Lock`, `--locked`, or the lock marker at startup locks the session.
-`Request::Lock` also emits `ShellCommand::Lock`, which asks the shell for a lock screen.
+Every change of the lock state emits `Event::LockState` with `locked` and `held`, whether a live lock client holds it.
 While it's locked, the compositor draws the lock client's surfaces over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
 Volume, mute, and brightness keys still emit their `Event::ShellCommand`; every other key goes to the lock client.
 Without a live lock client, the compositor draws black, gives keyboard and pointer to no one,
 and accepts a new `ext-session-lock` lock.
 It refuses a lock while a live client holds the session, and never displays the refused lock's surfaces.
-A lock client that dies, or destroys its lock before `locked`, leaves the session locked,
-and the compositor emits `ShellCommand::Lock` so the shell takes over.
+A lock client that dies, or destroys its lock before `locked`, leaves the session locked but not held.
 Only the holder's `unlock_and_destroy` unlocks.
-`Request::GetLockState` reports the lock state over the control socket.
+`Request::GetLockState` reports the same state over the control socket.
+Each lock surface is sized to its output, and told its output, scale, and transform, whenever the outputs change.
 
-`nimbus-shell` asks for the lock state when it starts, and locks with `ext-session-lock` if the session is locked,
-so a restarted shell shows its lock screen again.
-logind's lock signal, `Event::ShellCommand` with `lock`, and inactivity also make it lock.
+Smithay records the outputs that each lock surface covers in one list, which only `unlock_and_destroy` clears.
+A dead holder's entries stay there until the session unlocks; they never match a new client's outputs.
+
+`nimbus-shell` locks with `ext-session-lock` whenever the session is locked but not held,
+from `Request::GetLockState` when it starts and from `Event::LockState` after that.
+So `Request::Lock` and the lock shortcut get its lock screen, and a restarted shell shows it again.
+logind's lock signal and inactivity also make it lock.
 It creates its lock surfaces once the compositor confirms the lock.
 
 The lock marker, `$XDG_RUNTIME_DIR/nimbus/locked` (`nimbus_ipc::lock_marker_path`), exists while the session is locked.
@@ -335,6 +345,7 @@ The release profile aborts on panic, because every process is supervised or rest
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.
+  The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,
