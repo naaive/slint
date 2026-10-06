@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT
+
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.nimbus
+Interfaces=org.freedesktop.impl.portal.Settings
+UseIn=nimbus

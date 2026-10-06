@@ -41,6 +41,10 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - `org.freedesktop.Notifications`, UPower, NetworkManager, BlueZ, MPRIS, logind, PipeWire or PulseAudio volume, and backlight.
 - Each service degrades on its own: a missing daemon hides its feature and is picked up again when it appears.
 
+### Portal (`nimbus-portal`)
+
+- An `xdg-desktop-portal` Settings backend, so apps that follow the portal pick up the Nimbus color scheme and accent color, live.
+
 ### Apps
 
 - **Settings** (`nimbus-settings`): appearance, panel and dock, workspaces, keyboard and mouse, shortcuts, power, displays, notifications, and about.
@@ -97,7 +101,7 @@ Install Nimbus, then log in on a TTY and run `nimbus-session`, or pick "Nimbus" 
 desktop/data/install.sh --prefix /usr/local
 ```
 
-The script builds every binary, installs the session file, desktop entries, the systemd user target, the portal configuration,
+The script builds every binary, installs the session file, desktop entries, the systemd user target, the portal backend and its configuration,
 an example configuration, and the lock screen's PAM service in `/etc/pam.d/nimbus`.
 Run it with `--uninstall` to remove everything again, and with `--help` for the other options.
 
@@ -201,5 +205,9 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Saving the configuration replaces `config.toml` with a new file.
   A symlinked `config.toml` becomes a regular file, and an editor that saves in place doesn't take the configuration lock.
 - `xdg-desktop-portal-wlr` screen casting needs wlr-screencopy, which Nimbus doesn't offer yet.
+- The portal backend answers only `org.freedesktop.appearance`.
+  It reports no contrast preference, since the configuration has no high contrast option.
+  Older `xdg-desktop-portal` releases look for backends only in their own data directory, usually `/usr/share`;
+  install with `--prefix /usr` for them to find `nimbus.portal`.
 - The UI is English only.
 - Each crate's README lists its own gaps.

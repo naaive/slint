@@ -3008,6 +3008,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nimbus-portal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "nimbus-config",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "nimbus-services"
 version = "0.1.0"
 dependencies = [

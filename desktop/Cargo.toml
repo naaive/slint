@@ -12,6 +12,7 @@ members = [
   "crates/nimbus-shell",
   "crates/nimbus-compositor",
   "crates/nimbus-session",
+  "crates/nimbus-portal",
   "apps/nimbus-settings",
   "apps/nimbus-files",
   "apps/nimbus-terminal",

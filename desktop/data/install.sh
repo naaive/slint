@@ -41,15 +41,18 @@ workspace=$(dirname "$data_dir")
 SESSION_DIR=${SESSION_DIR:-$PREFIX/share/wayland-sessions}
 root=$DESTDIR$PREFIX
 
-packages="crates/nimbus-compositor crates/nimbus-session apps/nimbus-settings apps/nimbus-files apps/nimbus-terminal apps/nimbus-monitor"
-binaries="nimbus-compositor nimbus-session nimbusctl nimbus-settings nimbus-files nimbus-terminal nimbus-monitor"
+packages="crates/nimbus-compositor crates/nimbus-session crates/nimbus-portal apps/nimbus-settings apps/nimbus-files apps/nimbus-terminal apps/nimbus-monitor"
+binaries="nimbus-compositor nimbus-session nimbusctl nimbus-portal nimbus-settings nimbus-files nimbus-terminal nimbus-monitor"
 apps="org.nimbus.Settings org.nimbus.Files org.nimbus.Terminal org.nimbus.Monitor"
+portal_service=org.freedesktop.impl.portal.desktop.nimbus.service
 
 if [ "$action" = uninstall ]; then
     for bin in $binaries; do rm -f "$root/bin/$bin"; done
     for app in $apps; do rm -f "$root/share/applications/$app.desktop"; done
     rm -f "$DESTDIR$SESSION_DIR/nimbus.desktop" \
         "$root/share/xdg-desktop-portal/nimbus-portals.conf" \
+        "$root/share/xdg-desktop-portal/portals/nimbus.portal" \
+        "$root/share/dbus-1/services/$portal_service" \
         "$root/lib/systemd/user/nimbus-session.target"
     if cmp -s "$data_dir/pam.d/nimbus" "$DESTDIR$PAM_DIR/nimbus"; then
         rm -f "$DESTDIR$PAM_DIR/nimbus"
@@ -75,6 +78,9 @@ rm -f "$root/.crates.toml" "$root/.crates2.json"
 
 install -Dm644 "$data_dir/nimbus.desktop" "$DESTDIR$SESSION_DIR/nimbus.desktop"
 install -Dm644 "$data_dir/nimbus-portals.conf" "$root/share/xdg-desktop-portal/nimbus-portals.conf"
+install -Dm644 "$data_dir/nimbus.portal" "$root/share/xdg-desktop-portal/portals/nimbus.portal"
+mkdir -p "$root/share/dbus-1/services"
+sed "s|^Exec=@bindir@|Exec=$PREFIX/bin|" "$data_dir/dbus-1/$portal_service" > "$root/share/dbus-1/services/$portal_service"
 install -Dm644 "$data_dir/systemd/nimbus-session.target" "$root/lib/systemd/user/nimbus-session.target"
 install -Dm644 "$data_dir/config.toml" "$root/share/nimbus/config.toml"
 for app in $apps; do

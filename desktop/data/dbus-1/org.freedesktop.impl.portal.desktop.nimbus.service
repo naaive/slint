@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT
+#
+# install.sh replaces @bindir@ in Exec with the installed binary directory.
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.nimbus
+Exec=@bindir@/nimbus-portal

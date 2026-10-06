@@ -15,7 +15,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - **Single-threaded UI, async edges.** The compositor runs one `calloop` event loop on the main thread, which also drives Slint.
   D-Bus work runs on a Tokio runtime in `nimbus-services` and reaches the main thread through a `calloop` channel.
 - **Degrade, don't fail.** A missing D-Bus daemon, backlight, or battery hides that feature; it never stops the session.
-- **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind,
+- **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind, the portal Settings interface,
   and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, and `xdg-activation` on the Wayland side.
 
 ## Crates
@@ -29,6 +29,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, shell hosting, control socket. |
+| `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and runs autostart; `nimbusctl` is the command-line client. |
 | `nimbus-settings` | app | System settings, editing `nimbus-config`. |
 | `nimbus-files` | app | File manager. |
@@ -48,6 +49,7 @@ apps ──> nimbus-theme[headless], nimbus-config
 nimbus-files ──> nimbus-xdg
 nimbus-settings ──> nimbus-ipc
 nimbus-session ──> nimbus-ipc, nimbus-config
+nimbus-portal ──> nimbus-config
 ```
 
 ## Compositor
@@ -128,6 +130,24 @@ When the compositor crashes with the marker present, the session restarts it wit
 Without the shell, it ends the session instead.
 The marker is per runtime directory, so a nested compositor in the same `XDG_RUNTIME_DIR` shares it with the real session.
 
+## Portal
+
+`nimbus-portal` implements `org.freedesktop.impl.portal.Settings` for `xdg-desktop-portal`.
+It owns `org.freedesktop.impl.portal.desktop.nimbus` on the session bus and is started by D-Bus activation;
+`data/nimbus-portals.conf` selects it for Settings when `XDG_CURRENT_DESKTOP` is `Nimbus`.
+
+It serves the `org.freedesktop.appearance` namespace from the configuration:
+
+| Key | Type | Value |
+| --- | --- | --- |
+| `color-scheme` | `u` | 1 for `dark`, 2 for `light`, 0 for `system` |
+| `accent-color` | `(ddd)` | `appearance.accent` as sRGB in 0 to 1, or the default accent if it doesn't parse |
+| `contrast` | `u` | always 0 |
+
+`system` has no preference because `nimbus-theme` resolves it by asking the portal.
+The portal watches the configuration with `nimbus_config::watch` and emits `SettingChanged` for each key whose value changed.
+`Read` on any other namespace or key fails with `org.freedesktop.portal.Error.NotFound`.
+
 ## Theming
 
 `nimbus-theme` owns all colors, spacing, radii, typography, and motion as a `Theme` global,
@@ -165,6 +185,7 @@ Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent:
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   The shell tests run it with the real shell and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle over IPC, maximized windows stay below the panel, and notifications show toasts.
+- `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running
