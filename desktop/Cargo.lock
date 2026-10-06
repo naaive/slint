@@ -2896,6 +2896,7 @@ dependencies = [
 name = "nimbus-compositor"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "clap",
  "dirs",
@@ -2910,6 +2911,7 @@ dependencies = [
  "smithay",
  "tempfile",
  "thiserror 2.0.21",
+ "tiny-skia 0.11.4",
  "tracing",
  "tracing-subscriber",
  "wayland-client",

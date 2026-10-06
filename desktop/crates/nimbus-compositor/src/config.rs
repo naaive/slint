@@ -117,7 +117,7 @@ impl Drop for ConfigManager {
 }
 
 impl State {
-    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, wallpaper, and displays.
+    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, wallpaper, decorations, and displays.
     pub fn apply_config(&mut self, config: Config) {
         let old = self.nimbus.config.replace(config.clone());
         if old.input != config.input {
@@ -149,6 +149,10 @@ impl State {
         }
         if old.appearance.wallpaper != config.appearance.wallpaper {
             self.nimbus.wallpaper = Wallpaper::new(config.appearance.wallpaper.clone());
+        }
+        if old.appearance != config.appearance {
+            self.nimbus.decorations.set_appearance(&config.appearance);
+            self.nimbus.wm.set_decoration_metrics(self.nimbus.decorations.metrics());
         }
         if old.outputs != config.outputs || old.appearance.scale != config.appearance.scale {
             self.nimbus.reconfigure_outputs(&mut self.backend);

@@ -3,6 +3,7 @@
 //! Pointer focus, focus on click or hover, scrolling, and interactive move and resize.
 
 use super::constraints::Constraint;
+use crate::decoration::Hit;
 use crate::state::{Nimbus, State};
 use crate::wm::grabs::{self, MoveGrab, ResizeGrab};
 use nimbus_ipc::WindowId;
@@ -29,16 +30,43 @@ const WHEEL_STEP: f64 = 15.0;
 /// A surface and the global position of its origin, as Smithay's pointer focus takes it.
 type PointerFocus = (WlSurface, Point<f64, Logical>);
 
+/// What's under the pointer.
+enum PointerHit {
+    Surface(PointerFocus),
+    Decoration(WindowId, Hit),
+}
+
+impl PointerHit {
+    fn surface(self) -> Option<PointerFocus> {
+        match self {
+            Self::Surface(focus) => Some(focus),
+            Self::Decoration(..) => None,
+        }
+    }
+
+    fn decoration(&self) -> Option<(WindowId, Hit)> {
+        match *self {
+            Self::Decoration(id, hit) => Some((id, hit)),
+            Self::Surface(_) => None,
+        }
+    }
+}
+
 impl Nimbus {
     /// Finds the surface under `pos`, in the same order the scene is drawn.
     pub fn pointer_target(&self, pos: Point<f64, Logical>) -> Option<PointerFocus> {
+        self.pointer_hit(pos).and_then(PointerHit::surface)
+    }
+
+    /// Finds the surface or decoration under `pos`, in the same order the scene is drawn.
+    fn pointer_hit(&self, pos: Point<f64, Logical>) -> Option<PointerHit> {
         let output = self.output_at(pos)?;
         let output_geo = self.output_geometry(&output)?;
         let name = output.name();
         let local = pos - output_geo.loc.to_f64();
         if self.is_locked() {
             let lock = self.lock.client()?.surface(&name)?;
-            return Some((lock.wl_surface().clone(), output_geo.loc.to_f64()));
+            return Some(PointerHit::Surface((lock.wl_surface().clone(), output_geo.loc.to_f64())));
         }
 
         let layer_hit = |layers: &[Layer]| {
@@ -48,19 +76,30 @@ impl Nimbus {
                 let geo = map.layer_geometry(surface)?;
                 let (hit, loc) =
                     surface.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL)?;
-                Some((hit, (loc + geo.loc + output_geo.loc).to_f64()))
+                Some(PointerHit::Surface((hit, (loc + geo.loc + output_geo.loc).to_f64())))
             })
         };
         let window_hit = |window: &Window| {
             let location = self.wm.space.element_location(window)? - window.geometry().loc;
             let (surface, loc) =
                 window.surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)?;
-            Some((surface, (loc + location).to_f64()))
+            Some(PointerHit::Surface((surface, (loc + location).to_f64())))
+        };
+        let decoration_hit = |window: &Window| {
+            let id = self.wm.find_window(window)?;
+            let hit = self.wm.frame(id)?.hit(pos)?;
+            Some(PointerHit::Decoration(id, hit))
         };
         layer_hit(&[Layer::Overlay])
             .or_else(|| self.wm.fullscreen_on(&name).and_then(|w| window_hit(&w.window)))
             .or_else(|| layer_hit(&[Layer::Top]))
-            .or_else(|| self.wm.space.elements().rev().find_map(window_hit))
+            .or_else(|| {
+                self.wm
+                    .space
+                    .elements()
+                    .rev()
+                    .find_map(|w| window_hit(w).or_else(|| decoration_hit(w)))
+            })
             .or_else(|| layer_hit(&[Layer::Bottom, Layer::Background]))
     }
 }
@@ -112,7 +151,9 @@ impl State {
         self.nimbus.pointer_location = location;
         self.nimbus.clamp_pointer();
         let location = self.nimbus.pointer_location;
-        let focus = self.nimbus.pointer_target(location);
+        let hit = self.nimbus.pointer_hit(location);
+        self.decoration_motion(hit.as_ref().and_then(PointerHit::decoration), location);
+        let focus = hit.and_then(PointerHit::surface);
         if let Some((surface, _)) = &focus {
             self.focus_follows_mouse(surface);
         }
@@ -150,10 +191,15 @@ impl State {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.nimbus.pointer.clone();
         let location = self.nimbus.pointer_location;
+        let hit = self.nimbus.pointer_hit(location);
 
+        let decoration = hit.as_ref().and_then(PointerHit::decoration);
+        if state == ButtonState::Released || !pointer.is_grabbed() {
+            self.decoration_button(decoration, button, state, serial, time);
+        }
         if state == ButtonState::Pressed
             && !pointer.is_grabbed()
-            && let Some((surface, _)) = self.nimbus.pointer_target(location)
+            && let Some((surface, _)) = hit.and_then(PointerHit::surface)
         {
             let logo = self.nimbus.keyboard.as_ref().is_some_and(|k| k.modifier_state().logo);
             let window = self.nimbus.window_for_surface(&surface);
@@ -249,7 +295,12 @@ impl State {
         Some((self.nimbus.wm.find_surface(surface)?, start_data))
     }
 
-    fn begin_move(&mut self, id: WindowId, start_data: GrabStartData<State>, serial: Serial) {
+    pub(super) fn begin_move(
+        &mut self,
+        id: WindowId,
+        start_data: GrabStartData<State>,
+        serial: Serial,
+    ) {
         let location = self.nimbus.pointer_location;
         let Some(rect) = self.nimbus.wm.detach_for_grab(id, location) else {
             return;
@@ -261,7 +312,7 @@ impl State {
         pointer.set_grab(self, grab, serial, Focus::Clear);
     }
 
-    fn begin_resize(
+    pub(super) fn begin_resize(
         &mut self,
         id: WindowId,
         start_data: GrabStartData<State>,

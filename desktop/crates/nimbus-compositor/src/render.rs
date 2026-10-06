@@ -2,7 +2,9 @@
 
 //! Scene assembly shared by all backends and captures, frame callbacks, presentation feedback, and screenshot files.
 
+use crate::decoration::Look;
 use crate::state::Nimbus;
+use crate::wm::WindowMode;
 use anyhow::{Context, anyhow};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::{
@@ -128,6 +130,10 @@ where
         if overlaps {
             elements.extend(window_elements(renderer, window));
         }
+        elements.extend(
+            titlebar_element(renderer, nimbus, window, output_geo, output_scale)
+                .map(OutputRenderElement::Memory),
+        );
     }
     push_layers(renderer, output, output_scale, &[Layer::Bottom, Layer::Background], &mut elements);
 
@@ -137,6 +143,38 @@ where
         elements.push(OutputRenderElement::Memory(wallpaper));
     }
     elements
+}
+
+/// The titlebar the compositor draws above `window`, if it has one on the output covering `output_geo`.
+fn titlebar_element<R>(
+    renderer: &mut R,
+    nimbus: &Nimbus,
+    window: &smithay::desktop::Window,
+    output_geo: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Option<MemoryRenderBufferRenderElement<R>>
+where
+    R: Renderer + ImportMem,
+    R::TextureId: Texture + Clone + Send + 'static,
+{
+    let id = nimbus.wm.find_window(window)?;
+    let frame = nimbus.wm.frame(id)?;
+    let w = nimbus.wm.get(id)?;
+    let titlebar = frame.titlebar();
+    if !titlebar.overlaps(output_geo) {
+        return None;
+    }
+    let look = Look {
+        style: frame.style,
+        size: titlebar.size,
+        title: w.title.clone(),
+        focused: nimbus.wm.focused() == Some(id),
+        maximized: w.mode == WindowMode::Maximized,
+        hovered: nimbus.decoration_input.hovered_button(id),
+        rounded: frame.resizable,
+    };
+    let location = (titlebar.loc - output_geo.loc).to_f64().to_physical(scale);
+    nimbus.decorations.element(renderer, id, look, location, scale)
 }
 
 fn push_layers<R>(

@@ -128,6 +128,9 @@ impl State {
         }
         self.nimbus.wm.track_floating_size(id);
         self.nimbus.wm.refresh_metadata(id);
+        if self.nimbus.wm.titlebar_changed(id) {
+            self.nimbus.arrange();
+        }
     }
 
     fn handle_layer_commit(&mut self, surface: &WlSurface) {

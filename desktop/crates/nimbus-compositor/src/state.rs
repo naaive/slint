@@ -14,7 +14,8 @@ use crate::backend::Backend;
 use crate::capture::CaptureState;
 use crate::config::ConfigManager;
 use crate::cursor::CursorThemeManager;
-use crate::input::WorkspaceSwipe;
+use crate::decoration::Decorations;
+use crate::input::{DecorationInput, WorkspaceSwipe};
 use crate::ipc::IpcServer;
 use crate::keybindings::Bindings;
 use crate::lock::SessionLock;
@@ -155,6 +156,8 @@ pub struct Nimbus {
     pub output_globals: HashMap<String, GlobalId>,
     pub output_management: OutputManagementState,
     pub wallpaper: Wallpaper,
+    pub decorations: Decorations,
+    pub decoration_input: DecorationInput,
     pub config: ConfigManager,
     pub bindings: Bindings,
     pub ipc: IpcServer,
@@ -202,7 +205,9 @@ impl Nimbus {
         let mut seat = seat_state.new_wl_seat(&dh, seat_name);
         let keyboard = add_keyboard(&mut seat, &config.current().input);
         let pointer = seat.add_pointer();
-        let wm = Wm::new(&config.current().workspaces);
+        let decorations = Decorations::new(&config.current().appearance);
+        let mut wm = Wm::new(&config.current().workspaces);
+        wm.set_decoration_metrics(decorations.metrics());
         let bindings = Bindings::from_config(&config.current().keybindings);
         let wallpaper = Wallpaper::new(config.current().appearance.wallpaper.clone());
 
@@ -267,6 +272,8 @@ impl Nimbus {
             output_globals: HashMap::new(),
             output_management: OutputManagementState::new(&dh),
             wallpaper,
+            decorations,
+            decoration_input: DecorationInput::default(),
             config,
             bindings,
             ipc,

@@ -102,6 +102,7 @@ Modules in `crates/nimbus-compositor/src`:
   On the headless backend, `Request::Click` and `Request::PressKey` feed input as if a user made it, for tests.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 - `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshot files.
+- `decoration/`: server-side titlebars; see [Decorations](#decorations).
 - `capture/`: screen capture and screenshots; see [Screen Capture](#screen-capture).
 - `xwayland/`: the X11 display for X11 apps; see [XWayland](#xwayland).
 
@@ -118,6 +119,33 @@ and `DISPLAY` when it serves X11 apps, for its children, and prints exactly one 
 All logging goes to standard error.
 The headless backend creates one 1920x1080 virtual output, `HEADLESS-1`, or one per size listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
 `Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
+
+### Decorations
+
+The compositor draws a titlebar above a window when its client asks for server-side decorations through `xdg-decoration`,
+leaves the mode unset, or doesn't use the protocol at all.
+A client that asks for client-side decorations keeps drawing its own.
+Without a decoration object, a client that sets its window geometry is taken to draw its own decorations,
+since GTK does so without supporting `xdg-decoration`.
+
+A floating or maximized window gets the full titlebar: the title, and minimize, maximize, and close buttons.
+A tiled window gets a slim bar with the title and the close button, in the accent color while it's focused.
+Fullscreen windows have none.
+The window manager keeps a window's geometry for its content and fits the titlebar on top,
+so maximized and tiled windows get their area minus the bar, and floating windows are placed with the bar inside the usable area.
+`decoration/frame.rs` holds the geometry and hit-testing, shared by drawing and input.
+
+Dragging a titlebar more than 4 pixels moves the window, and a double click toggles maximize.
+The buttons act on release, if the pointer is still on them.
+Floating windows have 8 pixel resize borders outside the frame, which set the matching resize cursor.
+
+`decoration/draw.rs` rasterizes each titlebar with tiny-skia and ab_glyph into a `MemoryRenderBuffer` per window and output scale.
+It's redrawn only when the title, width, scale, focus, maximized state, hovered button, or theme changes.
+The colors follow `nimbus-theme`'s tokens for `[appearance] color_scheme` and `accent`; `system` is dark,
+as the portal reports no preference for it.
+The font is `[appearance] font_family` as `fc-match` resolves it, or DejaVu, Noto, or Liberation Sans from the usual places;
+the titlebar height follows `font_size`.
+Changes to `[appearance]` restyle every titlebar at once.
 
 ### XWayland
 
@@ -607,7 +635,12 @@ The release profile aborts on panic, because every process is supervised or rest
   The apps render reference screenshots off screen through `nimbus_theme::headless`.
 - `nimbus-test-support` holds the shared harness: it starts the headless compositor in a temporary directory,
   provides Wayland test clients, and starts a private `dbus-daemon`.
+  Its test client asks for client-side decorations unless a test chooses otherwise, so its windows get exactly the size the compositor gives.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
+  The decoration tests check the negotiated mode, that maximized and tiled windows lose the full and slim titlebar's height,
+  that a screenshot shows the titlebar above the content and turns light with the configuration, and none on fullscreen windows,
+  and click the close, maximize, and minimize buttons and double-click the titlebar;
+  unit tests cover the titlebar geometry, button hit-testing, and resize borders.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
   The input method tests pair a text-input client with an input method client:
   preedit and commit strings reach the client, activation follows focus between windows and a layer surface,

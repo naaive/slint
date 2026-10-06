@@ -15,6 +15,9 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   a nested window for development (winit), DRM/KMS with libinput and libseat on a TTY (udev), and headless rendering into memory for tests.
 - Window management with workspaces, floating placement, a master-stack tiling layout, maximize, fullscreen, minimize,
   interactive move and resize, and focus by direction.
+- Themed titlebars for apps that don't draw their own, with minimize, maximize, and close buttons, moving by drag,
+  maximizing by double click, and resize borders; tiled windows get a slim bar.
+  They follow the color scheme, accent, and font of `[appearance]` as it changes.
 - Protocols: xdg-shell, xdg-decoration, wlr-layer-shell, xdg-activation, linux-dmabuf, presentation-time, viewporter,
   fractional-scale, single-pixel-buffer, cursor-shape, idle-notify, idle-inhibit, ext-session-lock, keyboard-shortcuts-inhibit,
   ext-foreign-toplevel-list, wlr-output-management, wlr-screencopy, ext-image-copy-capture, primary selection,
@@ -274,7 +277,12 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - X11 apps need xwayland-satellite 0.6 or later; without it, `DISPLAY` stays unset.
   XWayland has only run against a script standing in for xwayland-satellite.
   Changing `[xwayland]` takes effect when the compositor restarts.
-- Nimbus draws no server-side decorations; apps draw their own title bars, which don't follow the Nimbus theme.
+- Apps that draw their own title bars, such as GTK apps, don't follow the Nimbus theme.
+  An app that doesn't use xdg-decoration and doesn't set its window geometry gets a titlebar, even if it draws one of its own.
+  A client that destroys its decoration object keeps the titlebar.
+- Titlebars have no window menu, take no touch or tablet input, and don't show in window captures.
+  The `system` color scheme always draws dark titlebars.
+  Titlebars have only run headless.
 - Display configuration has only run headless.
   On udev, a test checks modes and free CRTCs but not the kernel's bandwidth limits; an apply that hits them rolls back.
 - Display settings are stored per display, not as profiles for each set of connected displays.

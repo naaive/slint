@@ -46,8 +46,9 @@ impl PointerGrab<State> for MoveGrab {
         let size =
             data.nimbus.wm.get(self.window).map(|w| w.window.geometry().size).unwrap_or_default();
         if let Some(area) = data.nimbus.output_area_at(event.location) {
-            location =
-                floating::keep_reachable(Rect::new(location, size), area.usable, REACHABLE_MARGIN);
+            let titlebar = Point::from((0, data.nimbus.wm.titlebar_height(self.window)));
+            let outer = Rect::new(location - titlebar, size + Size::from((0, titlebar.y)));
+            location = floating::keep_reachable(outer, area.usable, REACHABLE_MARGIN) + titlebar;
         }
         data.nimbus.wm.move_floating(self.window, location);
         data.nimbus.queue_redraw_all();

@@ -24,9 +24,6 @@ impl XdgShellHandler for State {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // Nimbus draws no title bars, so clients decorate themselves.
-        surface
-            .with_pending_state(|state| state.decoration_mode = Some(DecorationMode::ClientSide));
         self.nimbus.wm.add(Window::new_wayland_window(surface));
     }
 
@@ -154,6 +151,7 @@ impl XdgShellHandler for State {
             if let Some(handle) = removed.foreign {
                 self.nimbus.foreign_toplevel_state.remove_toplevel(&handle);
             }
+            self.nimbus.decorations.forget(id);
             self.nimbus.arrange();
         }
     }
@@ -255,18 +253,20 @@ fn best_output(
 impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         toplevel
-            .with_pending_state(|state| state.decoration_mode = Some(DecorationMode::ClientSide));
+            .with_pending_state(|state| state.decoration_mode = Some(DecorationMode::ServerSide));
+        self.nimbus.arrange();
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: DecorationMode) {
-        self.new_decoration(toplevel.clone());
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+        self.nimbus.arrange();
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
         }
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        XdgDecorationHandler::request_mode(self, toplevel, DecorationMode::ClientSide);
+        XdgDecorationHandler::request_mode(self, toplevel, DecorationMode::ServerSide);
     }
 }
 

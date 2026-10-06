@@ -3,6 +3,7 @@
 //! Input routing: compositor shortcuts, focus, and delivery to Wayland clients.
 
 mod constraints;
+mod decoration;
 mod devices;
 mod gestures;
 mod keyboard;
@@ -10,6 +11,7 @@ mod pointer;
 mod tablet;
 mod touch;
 
+pub use decoration::DecorationInput;
 pub use gestures::WorkspaceSwipe;
 
 use crate::state::{Nimbus, State};

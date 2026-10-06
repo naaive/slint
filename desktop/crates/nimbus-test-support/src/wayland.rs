@@ -14,7 +14,11 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::{self, Mode as DecorationMode, ZxdgToplevelDecorationV1},
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
@@ -83,6 +87,9 @@ pub struct TestWindow {
     /// The size of the attached buffer.
     pub size: (i32, i32),
     pub states: Vec<xdg_toplevel::State>,
+    pub decoration: Option<ZxdgToplevelDecorationV1>,
+    /// The decoration mode the compositor last configured.
+    pub decoration_mode: Option<DecorationMode>,
     pub close_requested: bool,
     pub destroyed: bool,
     pending: (i32, i32),
@@ -94,9 +101,15 @@ pub struct TestClientState {
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
     wm_base: Option<XdgWmBase>,
+    decoration_manager: Option<ZxdgDecorationManagerV1>,
     pub windows: Vec<TestWindow>,
     /// The buffer size of windows the compositor lets choose their size.
     pub default_size: (i32, i32),
+    /// The xdg-decoration mode new windows ask for; `None` creates no decoration object.
+    ///
+    /// [`TestClient::connect`] asks for client-side decorations,
+    /// so windows cover exactly the size the compositor gives them.
+    pub decoration: Option<DecorationMode>,
 }
 
 /// A Wayland client with xdg toplevels.
@@ -113,7 +126,11 @@ impl TestClient {
         let mut queue = conn.new_event_queue();
         let qh = queue.handle();
         conn.display().get_registry(&qh, ());
-        let mut app = TestClientState { default_size: (400, 300), ..TestClientState::default() };
+        let mut app = TestClientState {
+            default_size: (400, 300),
+            decoration: Some(DecorationMode::ClientSide),
+            ..TestClientState::default()
+        };
         queue.roundtrip(&mut app).expect("roundtrip");
         assert!(
             app.compositor.is_some() && app.shm.is_some() && app.wm_base.is_some(),
@@ -132,6 +149,12 @@ impl TestClient {
         let toplevel = xdg_surface.get_toplevel(&self.qh, index);
         toplevel.set_app_id(app_id.into());
         toplevel.set_title(title.into());
+        let decoration =
+            self.app.decoration_manager.as_ref().zip(self.app.decoration).map(|(manager, mode)| {
+                let decoration = manager.get_toplevel_decoration(&toplevel, &self.qh, index);
+                decoration.set_mode(mode);
+                decoration
+            });
         surface.commit();
         self.app.windows.push(TestWindow {
             surface,
@@ -141,6 +164,8 @@ impl TestClient {
             requested: (0, 0),
             size: (0, 0),
             states: Vec::new(),
+            decoration,
+            decoration_mode: None,
             close_requested: false,
             destroyed: false,
             pending: (0, 0),
@@ -152,6 +177,9 @@ impl TestClient {
 
     pub fn destroy_window(&mut self, index: usize) {
         let window = &mut self.app.windows[index];
+        if let Some(decoration) = window.decoration.take() {
+            decoration.destroy();
+        }
         window.toplevel.destroy();
         window.xdg_surface.destroy();
         window.surface.destroy();
@@ -185,6 +213,9 @@ impl Dispatch<WlRegistry, ()> for TestClientState {
                 }
                 "wl_shm" => app.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => app.wm_base = Some(registry.bind(name, version.min(5), qh, ())),
+                "zxdg_decoration_manager_v1" => {
+                    app.decoration_manager = Some(registry.bind(name, 1, qh, ()))
+                }
                 _ => {}
             }
         }
@@ -284,7 +315,23 @@ impl Dispatch<WlBuffer, ()> for TestClientState {
     }
 }
 
+impl Dispatch<ZxdgToplevelDecorationV1, usize> for TestClientState {
+    fn event(
+        app: &mut Self,
+        _: &ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        &index: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode: WEnum::Value(mode) } = event {
+            app.windows[index].decoration_mode = Some(mode);
+        }
+    }
+}
+
 delegate_noop!(TestClientState: ignore WlCompositor);
+delegate_noop!(TestClientState: ZxdgDecorationManagerV1);
 delegate_noop!(TestClientState: ignore WlSurface);
 delegate_noop!(TestClientState: ignore WlShm);
 delegate_noop!(TestClientState: ignore WlShmPool);

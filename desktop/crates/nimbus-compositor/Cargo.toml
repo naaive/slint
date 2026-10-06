@@ -39,6 +39,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 xcursor = "0.3"
 dirs = { workspace = true }
 libc = "0.2"
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+ab_glyph = "0.2"
 
 [dev-dependencies]
 nimbus-test-support = { workspace = true }

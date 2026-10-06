@@ -7,6 +7,7 @@ mod backend;
 mod capture;
 mod config;
 mod cursor;
+mod decoration;
 mod input;
 mod ipc;
 mod keybindings;

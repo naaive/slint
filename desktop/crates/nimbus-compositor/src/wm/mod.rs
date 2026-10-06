@@ -13,6 +13,7 @@ pub mod layout;
 pub mod tiling;
 pub mod workspace;
 
+use crate::decoration::{self, Frame, Metrics, Style, frame::below_titlebar};
 use focus::FocusStack;
 use layout::{Layout, Rect};
 use nimbus_ipc::{Direction, Event, LayoutMode, WindowId, WindowInfo, WorkspaceId};
@@ -71,6 +72,8 @@ pub struct ManagedWindow {
     /// A size to request once when the window returns to floating; `Some(None)` lets the client choose.
     restore_size: Option<Option<Size<i32, Logical>>>,
     pub resize: Option<ResizeState>,
+    /// The titlebar the compositor draws above the window, as of the last arrange.
+    pub titlebar: Option<Style>,
     pub app_id: String,
     pub title: String,
     pub foreign: Option<ForeignToplevelHandle>,
@@ -102,6 +105,28 @@ impl ManagedWindow {
 
     pub fn floats(&self, layout: LayoutMode) -> bool {
         layout == LayoutMode::Floating || self.user_floating || self.prefers_floating()
+    }
+
+    /// See [`decoration::server_side`].
+    fn server_side_decorations(&self) -> bool {
+        let Some(toplevel) = self.toplevel() else {
+            return false;
+        };
+        let negotiated = toplevel.with_pending_state(|state| state.decoration_mode);
+        let sets_geometry = with_states(toplevel.wl_surface(), |states| {
+            states.cached_state.get::<SurfaceCachedState>().current().geometry.is_some()
+        });
+        decoration::server_side(negotiated, sets_geometry)
+    }
+
+    /// The titlebar the window gets in its current mode, when it's tiled or not.
+    fn titlebar_style(&self, tiled: bool) -> Option<Style> {
+        match self.mode {
+            WindowMode::Fullscreen => None,
+            _ if !self.server_side_decorations() => None,
+            WindowMode::Normal if tiled => Some(Style::Slim),
+            _ => Some(Style::Full),
+        }
     }
 
     fn info(&self, focused: bool) -> WindowInfo {
@@ -158,6 +183,7 @@ pub struct Wm {
     layout: LayoutMode,
     tiling: MasterStack,
     gaps: i32,
+    decoration_metrics: Metrics,
     events: Vec<Event>,
 }
 
@@ -174,8 +200,37 @@ impl Wm {
             layout: layout_from_config(config.layout),
             tiling: MasterStack::default(),
             gaps: clamp_gaps(config.gaps),
+            decoration_metrics: Metrics::default(),
             events: Vec::new(),
         }
+    }
+
+    pub fn set_decoration_metrics(&mut self, metrics: Metrics) {
+        self.decoration_metrics = metrics;
+    }
+
+    /// The height of the titlebar above window `id`, or 0 without one.
+    pub fn titlebar_height(&self, id: WindowId) -> i32 {
+        self.get(id)
+            .and_then(|w| w.titlebar)
+            .map_or(0, |style| self.decoration_metrics.height(style))
+    }
+
+    /// Whether window `id` gained or lost its titlebar since the last arrange,
+    /// as when a client sets its window geometry after its first configure.
+    pub fn titlebar_changed(&self, id: WindowId) -> bool {
+        self.get(id).is_some_and(|w| {
+            w.initial_commit && w.titlebar.is_some() != w.titlebar_style(false).is_some()
+        })
+    }
+
+    /// The decorations of a shown window, around its geometry in the space.
+    pub fn frame(&self, id: WindowId) -> Option<Frame> {
+        let w = self.get(id)?;
+        let style = w.titlebar?;
+        let content = self.space.element_geometry(&w.window)?;
+        let resizable = w.mode == WindowMode::Normal && style == Style::Full;
+        Some(Frame { content, style, resizable, metrics: self.decoration_metrics })
     }
 
     pub fn workspaces(&self) -> &Workspaces {
@@ -265,6 +320,7 @@ impl Wm {
             user_floating: false,
             restore_size: None,
             resize: None,
+            titlebar: None,
             app_id,
             title,
             foreign: None,
@@ -326,12 +382,17 @@ impl Wm {
             .filter_map(|o| self.space.element_location(&o.window))
             .collect();
 
+        let metrics = self.decoration_metrics;
         let w = &mut self.windows[index];
         w.mapped = true;
         w.output = Some(area.name.clone());
         if w.floating.is_none() && w.floats(layout) {
+            let usable = below_titlebar(
+                area.usable,
+                w.titlebar_style(false).map_or(0, |style| metrics.height(style)),
+            );
             let size = w.window.geometry().size;
-            let clamped = floating::clamp_size(size, area.usable);
+            let clamped = floating::clamp_size(size, usable);
             let location = match parent_rect {
                 Some(parent) => floating::clamp_location(
                     Rect::new(
@@ -342,9 +403,9 @@ impl Wm {
                             .into(),
                         clamped,
                     ),
-                    area.usable,
+                    usable,
                 ),
-                None => floating::place(clamped, area.usable, &occupied),
+                None => floating::place(clamped, usable, &occupied),
             };
             if clamped != size && size.w > 0 && size.h > 0 {
                 w.restore_size = Some(Some(clamped));
@@ -630,6 +691,7 @@ impl Wm {
         let Some(first) = areas.first() else {
             return;
         };
+        let metrics = self.decoration_metrics;
         for w in &mut self.windows {
             let area = w.output.as_deref().and_then(|name| areas.iter().find(|a| a.name == name));
             let delta = w
@@ -645,8 +707,9 @@ impl Wm {
                 }
                 None => continue,
             };
+            let titlebar = w.titlebar_style(false).map_or(0, |style| metrics.height(style));
             if let Some(rect) = w.floating.as_mut() {
-                *rect = floating::refit(*rect, delta, area.usable);
+                *rect = floating::refit(*rect, delta, below_titlebar(area.usable, titlebar));
             }
         }
     }
@@ -683,11 +746,14 @@ impl Wm {
             for &i in &members {
                 let tile = tiled.iter().position(|&t| t == i).map(|p| tiles[p]);
                 let w = &mut self.windows[i];
+                w.titlebar = w.titlebar_style(tile.is_some());
+                let titlebar = w.titlebar.map_or(0, |style| self.decoration_metrics.height(style));
                 let target = match w.mode {
                     WindowMode::Fullscreen => Some(area.geometry),
                     WindowMode::Maximized => Some(area.usable),
                     WindowMode::Normal => tile,
-                };
+                }
+                .map(|rect| below_titlebar(rect, titlebar));
                 let restore = if target.is_none() { w.restore_size.take() } else { None };
                 let is_focused = focused == Some(w.id);
                 if let Some(toplevel) = w.window.toplevel() {
@@ -741,8 +807,9 @@ impl Wm {
                     None => match w.floating {
                         Some(rect) => rect.loc,
                         None => {
-                            let size = floating::clamp_size(w.window.geometry().size, area.usable);
-                            let loc = floating::place(size, area.usable, &[]);
+                            let usable = below_titlebar(area.usable, titlebar);
+                            let size = floating::clamp_size(w.window.geometry().size, usable);
+                            let loc = floating::place(size, usable, &[]);
                             w.floating = Some(Rect::new(loc, size));
                             loc
                         }
