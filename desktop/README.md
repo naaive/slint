@@ -131,6 +131,9 @@ nimbus-compositor --backend winit
 WAYLAND_DISPLAY=wayland-1 NIMBUS_SOCKET=/run/user/1000/nimbus-wayland-1.sock nimbus-shell
 ```
 
+The shell renders with OpenGL on a GPU and in software otherwise.
+Set `NIMBUS_SHELL_RENDERER=software` or `NIMBUS_SHELL_RENDERER=gl` to choose.
+
 ## Controlling the Desktop
 
 `nimbusctl` talks to the compositor named by `$NIMBUS_SOCKET`, which the compositor sets for every app it starts.
@@ -211,6 +214,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
 
 - The shell process hasn't run on the winit or udev backends yet.
   It doesn't take touch input, and it draws the default cursor everywhere.
+- The shell's OpenGL renderer has only run on Mesa's llvmpipe, against the headless compositor.
+  It's untested on GPUs, and it redraws whole surfaces for each frame.
 - Keyboard input to the shell, typing on its lock screen, and unlocking have no end-to-end test,
   because the headless compositor can't inject input.
 - There's no XWayland, so X11-only apps don't run.

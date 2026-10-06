@@ -3,6 +3,7 @@
 //! Slint's software renderer drawing into two alternating `wl_shm` buffers.
 
 use super::Renderer;
+use crate::state::State;
 use anyhow::Context;
 use slint::PhysicalSize;
 use slint::platform::WindowAdapter;
@@ -12,6 +13,7 @@ use slint::platform::software_renderer::{
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use std::rc::Rc;
+use wayland_client::QueueHandle;
 use wayland_client::protocol::wl_shm::{self, WlShm};
 use wayland_client::protocol::wl_surface::WlSurface;
 
@@ -52,6 +54,7 @@ impl TargetPixel for Argb8888 {
 /// so each buffer only needs the regions that changed since it was last shown.
 pub struct SoftwareRenderer {
     window: Rc<MinimalSoftwareWindow>,
+    surface: WlSurface,
     shm: WlShm,
     pool: Option<SlotPool>,
     buffers: Vec<Buffer>,
@@ -63,9 +66,10 @@ pub struct SoftwareRenderer {
 }
 
 impl SoftwareRenderer {
-    pub fn new(shm: WlShm) -> Self {
+    pub fn new(shm: WlShm, surface: WlSurface) -> Self {
         Self {
             window: MinimalSoftwareWindow::new(RepaintBufferType::SwappedBuffers),
+            surface,
             shm,
             pool: None,
             buffers: Vec::new(),
@@ -109,7 +113,7 @@ impl Renderer for SoftwareRenderer {
         self.window.clone()
     }
 
-    fn render(&mut self, surface: &WlSurface) -> bool {
+    fn render(&mut self, qh: &QueueHandle<State>) -> bool {
         let size = WindowAdapter::size(&*self.window);
         if size.width == 0 || size.height == 0 {
             return false;
@@ -118,7 +122,7 @@ impl Renderer for SoftwareRenderer {
             tracing::warn!("cannot allocate shell buffers: {err:#}");
             return false;
         }
-        let Self { window, pool: Some(pool), buffers, next, fresh, .. } = self else {
+        let Self { window, surface, pool: Some(pool), buffers, next, fresh, .. } = self else {
             return false;
         };
         let buffer = &buffers[*next];
@@ -153,6 +157,7 @@ impl Renderer for SoftwareRenderer {
         for (x, y, width, height) in damage {
             surface.damage_buffer(x, y, width, height);
         }
+        surface.frame(qh, surface.clone());
         *next = (*next + 1) % buffers.len();
         true
     }

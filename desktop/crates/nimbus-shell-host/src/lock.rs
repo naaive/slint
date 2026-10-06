@@ -100,19 +100,21 @@ impl State {
         let Some(session) = self.lock.session.as_ref().filter(|s| s.is_locked()) else {
             return;
         };
-        let created =
-            self.windows.create(|| LockView::new(&self.model)).and_then(|(view, renderer)| {
+        let wl_surface = self.compositor.create_surface(&self.qh);
+        let created = self.windows.create(&wl_surface, || LockView::new(&self.model)).and_then(
+            |(view, renderer)| {
                 view.show()?;
                 Ok((view, renderer))
-            });
+            },
+        );
         let (view, renderer) = match created {
             Ok(created) => created,
             Err(err) => {
                 tracing::error!("cannot show the lock screen: {err}");
+                wl_surface.destroy();
                 return;
             }
         };
-        let wl_surface = self.compositor.create_surface(&self.qh);
         let role = session.create_lock_surface(wl_surface.clone(), output, &self.qh);
         let scale = self.output_scale(output);
         let surface = SlintSurface::new(wl_surface, renderer, &self.scaling, scale, &self.qh);

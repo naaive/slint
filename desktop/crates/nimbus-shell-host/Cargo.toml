@@ -16,11 +16,16 @@ nimbus-config = { workspace = true }
 nimbus-xdg = { workspace = true }
 nimbus-services = { workspace = true }
 nimbus-shell = { workspace = true }
-slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
+slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts", "renderer-femtovg"] }
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-client = "0.31"
+# The system backend exposes the `wl_display` and `wl_surface` pointers EGL needs.
+wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 xkbcommon = "0.8"
+glutin = { version = "0.32", default-features = false, features = ["egl", "wayland"] }
+glow = "0.18"
+raw-window-handle = "0.6"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

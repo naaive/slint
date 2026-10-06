@@ -31,9 +31,15 @@ pub struct OutputShell {
 impl OutputShell {
     /// Creates the view for the output named `name`, on a transparent layer surface over all of it.
     pub fn new(state: &State, output: &WlOutput, name: String) -> anyhow::Result<Self> {
-        let (view, renderer) = state.windows.create(|| ShellView::new(&state.model, &name))?;
-        view.show()?;
         let wl_surface = state.compositor.create_surface(&state.qh);
+        let created = state
+            .windows
+            .create(&wl_surface, || ShellView::new(&state.model, &name))
+            .and_then(|(view, renderer)| {
+                view.show()?;
+                Ok((view, renderer))
+            });
+        let (view, renderer) = created.inspect_err(|_| wl_surface.destroy())?;
         let layer = state.layer_shell.create_layer_surface(
             &state.qh,
             wl_surface.clone(),

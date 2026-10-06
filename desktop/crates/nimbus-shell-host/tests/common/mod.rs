@@ -143,6 +143,11 @@ impl Session {
             .env("XDG_RUNTIME_DIR", dir.join("runtime"))
             .env("WAYLAND_DISPLAY", &self.display)
             .env("NIMBUS_SOCKET", &self.control)
+            // Software rendering keeps screenshots independent of the GPU, unless the test run asks for another renderer.
+            .env(
+                "NIMBUS_SHELL_RENDERER",
+                std::env::var("NIMBUS_SHELL_RENDERER").as_deref().unwrap_or("software"),
+            )
             .env("HOME", dir)
             .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
             .env("XDG_DATA_HOME", dir.join("data"))

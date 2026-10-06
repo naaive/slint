@@ -153,9 +153,8 @@ Modules in `crates/nimbus-shell-host/src`:
 - `main.rs`: arguments, logging, signals, and the event loop.
 - `state.rs`: the `State` the loop runs on, outputs, and the work after each dispatch: actions, timers, rendering.
 - `wayland.rs`: the protocol handlers.
-- `platform.rs`: the Slint platform, which gives each Slint window a `Renderer`.
-- `render/`: the `Renderer` trait, and `SoftwareRenderer`, Slint's software renderer drawing into two alternating
-  `wl_shm` buffers with `RepaintBufferType::SwappedBuffers`, so each frame redraws only what changed.
+- `platform.rs`: the Slint platform, which gives each Slint window a `Renderer` for the surface it shows on.
+- `render/`: the `Renderer` trait and its two implementations; see [Rendering](#rendering).
 - `surface.rs`: a Slint window on a `wl_surface`.
   It renders at the buffer scale, through a viewport at `wp_fractional_scale_v1` scales or with `set_buffer_scale` otherwise,
   and only when Slint has changes and the previous frame's callback arrived.
@@ -171,6 +170,23 @@ Modules in `crates/nimbus-shell-host/src`:
 - `ipc.rs`: one control socket connection, subscribed to events, which also carries requests; responses reach callbacks in request order.
 - `services.rs`: `nimbus-services` and the compositor's `Event::ShellCommand`s, such as volume keys and launcher toggles.
 - `actions.rs`: `ShellAction`s, launching applications with an `xdg-activation` token, and the application index.
+
+### Rendering
+
+Each Slint window draws onto its `wl_surface` through a `Renderer`, which also requests the frame callback.
+
+- `SoftwareRenderer` is Slint's software renderer drawing into two alternating `wl_shm` buffers
+  with `RepaintBufferType::SwappedBuffers`, so each frame redraws only what changed.
+- `GlRenderer` is Slint's FemtoVG renderer drawing with OpenGL ES through EGL (`glutin`),
+  with a context per surface and an EGL window surface created at the first frame's size.
+  FemtoVG redraws the whole window for each frame.
+  EGL's own frame pacing is off; swapping buffers commits the surface, so the frame callback is requested first.
+
+At startup the shell opens EGL on its Wayland connection and makes a context current.
+It uses `GlRenderer` when that works on a GPU, and `SoftwareRenderer` otherwise,
+since a software rasterizer such as llvmpipe redraws more than Slint's software renderer.
+`NIMBUS_SHELL_RENDERER=software` skips OpenGL, and `NIMBUS_SHELL_RENDERER=gl` takes it even on a software rasterizer.
+When OpenGL fails, at startup or for one surface, the shell logs a warning and renders in software.
 
 ## Locking
 
@@ -277,6 +293,7 @@ The release profile aborts on panic, because every process is supervised or rest
   the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,
   notifications show toasts, `Request::Lock` shows the lock screen on a lock surface,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
+  They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
 - `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.

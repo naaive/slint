@@ -11,7 +11,7 @@ use crate::ipc::Ipc;
 use crate::lock::{Lock, spawn_auth};
 use crate::output::{Globals, OutputShell};
 use crate::platform::Windows;
-use crate::render::SoftwareRenderer;
+use crate::render::{Preference, Renderers};
 use crate::services::SystemServices;
 use crate::surface::{Scaling, SlintSurface};
 use nimbus_ipc::{Request, Response};
@@ -89,8 +89,8 @@ impl State {
         let compositor = CompositorState::bind(globals, &qh)?;
         let shm = Shm::bind(globals, &qh)?;
         let layer_shell = LayerShell::bind(globals, &qh)?;
-        let wl_shm = shm.wl_shm().clone();
-        let windows = Windows::install(move || Box::new(SoftwareRenderer::new(wl_shm.clone())))?;
+        let renderers = Renderers::new(conn, shm.wl_shm().clone(), Preference::from_env());
+        let windows = Windows::install(move |surface| renderers.create(surface))?;
 
         let settings = Settings::load(config_path);
         let actions = Rc::new(RefCell::new(VecDeque::new()));

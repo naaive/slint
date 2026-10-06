@@ -9,20 +9,33 @@ use slint::platform::{Platform, WindowAdapter};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use wayland_client::protocol::wl_surface::WlSurface;
 
-type NewRenderer = Box<dyn Fn() -> Box<dyn Renderer>>;
+type NewRenderer = Box<dyn Fn(&WlSurface) -> Box<dyn Renderer>>;
+
+/// The window [`Windows::create`] is creating.
+#[derive(Default)]
+struct Creation {
+    surface: Option<WlSurface>,
+    renderer: Option<Box<dyn Renderer>>,
+}
 
 struct ShellPlatform {
     new_renderer: NewRenderer,
-    created: Rc<RefCell<Vec<Box<dyn Renderer>>>>,
+    creation: Rc<RefCell<Creation>>,
     start: Instant,
 }
 
 impl Platform for ShellPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let renderer = (self.new_renderer)();
+        let mut creation = self.creation.borrow_mut();
+        let surface = creation
+            .surface
+            .take()
+            .ok_or_else(|| PlatformError::from("a shell window needs a surface"))?;
+        let renderer = (self.new_renderer)(&surface);
         let adapter = renderer.window_adapter();
-        self.created.borrow_mut().push(renderer);
+        creation.renderer = Some(renderer);
         Ok(adapter)
     }
 
@@ -33,30 +46,34 @@ impl Platform for ShellPlatform {
 
 /// Creates Slint components together with the renderers of their windows.
 pub struct Windows {
-    created: Rc<RefCell<Vec<Box<dyn Renderer>>>>,
+    creation: Rc<RefCell<Creation>>,
 }
 
 impl Windows {
-    /// Installs the Slint platform for this thread; `new_renderer` makes the renderer of each new window.
-    pub fn install(new_renderer: impl Fn() -> Box<dyn Renderer> + 'static) -> anyhow::Result<Self> {
-        let created = Rc::new(RefCell::new(Vec::new()));
+    /// Installs the Slint platform for this thread; `new_renderer` makes the renderer of each new window,
+    /// for the surface it shows on.
+    pub fn install(
+        new_renderer: impl Fn(&WlSurface) -> Box<dyn Renderer> + 'static,
+    ) -> anyhow::Result<Self> {
+        let creation = Rc::new(RefCell::new(Creation::default()));
         slint::platform::set_platform(Box::new(ShellPlatform {
             new_renderer: Box::new(new_renderer),
-            created: created.clone(),
+            creation: creation.clone(),
             start: Instant::now(),
         }))
         .map_err(|e| anyhow!("cannot install the Slint platform: {e}"))?;
-        Ok(Self { created })
+        Ok(Self { creation })
     }
 
-    /// Creates a component with `create` and returns it with the renderer of its window.
+    /// Creates a component with `create`, with its window on `surface`, and returns it with the window's renderer.
     pub fn create<T>(
         &self,
+        surface: &WlSurface,
         create: impl FnOnce() -> Result<T, PlatformError>,
     ) -> Result<(T, Box<dyn Renderer>), PlatformError> {
+        self.creation.borrow_mut().surface = Some(surface.clone());
         let component = create();
-        let renderer = self.created.borrow_mut().pop();
-        self.created.borrow_mut().clear();
+        let Creation { renderer, .. } = std::mem::take(&mut *self.creation.borrow_mut());
         Ok((component?, renderer.ok_or_else(|| PlatformError::from("no window was created"))?))
     }
 }

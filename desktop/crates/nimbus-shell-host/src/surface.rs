@@ -184,8 +184,7 @@ impl SlintSurface {
         if self.size.is_none() || self.frame_pending {
             return;
         }
-        if self.renderer.render(&self.surface) {
-            self.surface.frame(qh, self.surface.clone());
+        if self.renderer.render(qh) {
             self.frame_pending = true;
             self.needs_commit = true;
         }
