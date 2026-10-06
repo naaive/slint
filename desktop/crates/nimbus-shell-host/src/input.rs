@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Pointer and keyboard input for the shell's surfaces, with keys translated through the compositor's keymap.
+//! Pointer and keyboard input for the shell's surfaces,
+//! with keys translated through the compositor's keymap and the locale's compose table.
 
 use crate::state::State;
 use slint::platform::{Key, PointerEventButton, WindowEvent};
@@ -8,6 +9,7 @@ use slint::{LogicalPosition, SharedString};
 use smithay_client_toolkit::reexports::calloop::RegistrationToken;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use std::ffi::OsString;
 use std::time::Duration;
 use wayland_client::protocol::wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard};
 use wayland_client::protocol::wl_pointer::WlPointer;
@@ -17,7 +19,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
     Shape, WpCursorShapeDeviceV1,
 };
-use xkbcommon::xkb::{self, Keysym, keysyms};
+use xkbcommon::xkb::{self, Keysym, compose, keysyms};
 
 /// Linux input event codes of the pointer buttons.
 const BTN_LEFT: u32 = 0x110;
@@ -38,6 +40,7 @@ pub struct Input {
     pub keyboard: Option<WlKeyboard>,
     keyboard_focus: Option<WlSurface>,
     xkb: Option<xkb::State>,
+    compose: Option<compose::State>,
     repeat: Option<RepeatInfo>,
     repeating: Option<(u32, RegistrationToken)>,
     /// The serial of the last button or key press, which proves user intent when asking for activation tokens.
@@ -81,8 +84,18 @@ impl State {
         let Some(xkb) = &self.input.xkb else {
             return;
         };
-        let text = slint_key_text(xkb.key_get_one_sym(keycode.into())).unwrap_or_default();
-        let repeats = xkb.get_keymap().key_repeats(keycode.into());
+        let sym = xkb.key_get_one_sym(keycode.into());
+        let composition = match &mut self.input.compose {
+            Some(compose) if pressed => compose_key(compose, sym),
+            _ => Composition::None,
+        };
+        let repeats =
+            composition == Composition::None && xkb.get_keymap().key_repeats(keycode.into());
+        let text = match composition {
+            Composition::None => slint_key_text(sym).unwrap_or_default(),
+            Composition::Pending => SharedString::new(),
+            Composition::Composed(text) => text,
+        };
         if self.input.repeating.as_ref().is_some_and(|(code, _)| *code == keycode) || pressed {
             self.stop_repeat();
         }
@@ -167,7 +180,10 @@ impl Dispatch<WlKeyboard, ()> for State {
                     )
                 };
                 match keymap {
-                    Ok(Some(keymap)) => state.input.xkb = Some(xkb::State::new(&keymap)),
+                    Ok(Some(keymap)) => {
+                        state.input.xkb = Some(xkb::State::new(&keymap));
+                        state.input.compose = compose_state(&context);
+                    }
                     Ok(None) => tracing::warn!("the compositor's keymap doesn't compile"),
                     Err(err) => tracing::warn!("cannot read the compositor's keymap: {err}"),
                 }
@@ -181,6 +197,9 @@ impl Dispatch<WlKeyboard, ()> for State {
             }
             wl_keyboard::Event::Leave { surface, .. } => {
                 state.stop_repeat();
+                if let Some(compose) = &mut state.input.compose {
+                    compose.reset();
+                }
                 if let Some(target) = state.surface(&surface) {
                     target.dispatch(WindowEvent::WindowActiveChanged(false));
                 }
@@ -213,6 +232,54 @@ impl Dispatch<WlKeyboard, ()> for State {
                     });
             }
             _ => {}
+        }
+    }
+}
+
+/// The compose state for the locale from `LC_ALL`, `LC_CTYPE`, or `LANG`.
+fn compose_state(context: &xkb::Context) -> Option<compose::State> {
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .find(|locale| !locale.is_empty())
+        .unwrap_or_else(|| OsString::from("C"));
+    match compose::Table::new_from_locale(context, &locale, compose::COMPILE_NO_FLAGS) {
+        Ok(table) => Some(compose::State::new(&table, compose::STATE_NO_FLAGS)),
+        Err(()) => {
+            tracing::info!("no compose table for locale {locale:?}");
+            None
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Composition {
+    /// The key isn't part of a compose sequence.
+    None,
+    /// The key starts, continues, or cancels a sequence.
+    Pending,
+    Composed(SharedString),
+}
+
+fn compose_key(state: &mut compose::State, sym: Keysym) -> Composition {
+    if state.feed(sym) == compose::FeedResult::Ignored {
+        return Composition::None;
+    }
+    match state.status() {
+        compose::Status::Nothing => Composition::None,
+        compose::Status::Composing => Composition::Pending,
+        compose::Status::Composed => {
+            let text = state
+                .utf8()
+                .filter(|text| !text.is_empty())
+                .map(|text| SharedString::from(text.as_str()))
+                .or_else(|| state.keysym().and_then(slint_key_text));
+            state.reset();
+            text.map_or(Composition::Pending, Composition::Composed)
+        }
+        compose::Status::Cancelled => {
+            state.reset();
+            Composition::Pending
         }
     }
 }
@@ -342,5 +409,50 @@ mod tests {
         let shift = keymap.mod_get_index(xkb::MOD_NAME_SHIFT);
         state.update_mask(1 << shift, 0, 0, 0, 0, 0);
         assert_eq!(slint_key_text(state.key_get_one_sym(a)).as_deref(), Some("A"));
+    }
+
+    fn compose_state() -> compose::State {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let table = compose::Table::new_from_buffer(
+            &context,
+            "<dead_acute> <e> : \"é\" eacute\n<Multi_key> <a> <e> : \"æ\" ae\n",
+            "C",
+            compose::FORMAT_TEXT_V1,
+            compose::COMPILE_NO_FLAGS,
+        )
+        .expect("the compose table");
+        compose::State::new(&table, compose::STATE_NO_FLAGS)
+    }
+
+    fn feed(state: &mut compose::State, raw: u32) -> Composition {
+        compose_key(state, Keysym::new(raw))
+    }
+
+    #[test]
+    fn a_dead_key_composes_with_the_next_key() {
+        let mut state = compose_state();
+        assert_eq!(feed(&mut state, keysyms::KEY_dead_acute), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_Shift_L), Composition::None);
+        assert_eq!(feed(&mut state, keysyms::KEY_e), Composition::Composed("é".into()));
+        assert_eq!(feed(&mut state, keysyms::KEY_e), Composition::None);
+    }
+
+    #[test]
+    fn a_cancelled_sequence_swallows_its_keys_and_resets() {
+        let mut state = compose_state();
+        assert_eq!(feed(&mut state, keysyms::KEY_Multi_key), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_a), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_x), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_x), Composition::None);
+        assert_eq!(feed(&mut state, keysyms::KEY_Multi_key), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_a), Composition::Pending);
+        assert_eq!(feed(&mut state, keysyms::KEY_e), Composition::Composed("æ".into()));
+    }
+
+    #[test]
+    fn keys_outside_a_sequence_pass_through() {
+        let mut state = compose_state();
+        assert_eq!(feed(&mut state, keysyms::KEY_a), Composition::None);
+        assert_eq!(feed(&mut state, keysyms::KEY_Return), Composition::None);
     }
 }

@@ -222,6 +222,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
   It's untested on GPUs, and it redraws whole surfaces for each frame.
 - Keyboard input to the shell, typing on its lock screen, and unlocking have no end-to-end test,
   because the headless compositor can't inject input.
+- The shell has no input method support; it handles dead keys and Compose sequences with the locale's XKB compose table.
+  A key that completes or cancels a sequence still sends its own key release.
 - There's no XWayland, so X11-only apps don't run.
 - Nimbus draws no server-side decorations; apps draw their own title bars, which don't follow the Nimbus theme.
 - Display configuration has only run headless.

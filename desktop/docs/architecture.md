@@ -216,6 +216,9 @@ Modules in `crates/nimbus-shell-host/src`:
   It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
 - `idle.rs`: an `ext-idle-notify-v1` notification after `power.lock_after_minutes`, which locks.
 - `input.rs`: pointer and keyboard input; keys go through the compositor's XKB keymap, with its repeat rate.
+  Key presses go through the compose table for the locale in `LC_ALL`, `LC_CTYPE`, or `LANG`, for dead keys and Compose sequences.
+  Keys in a sequence produce no text and don't repeat, and neither does the composed text.
+  Without a compose table, keys go straight to Slint.
 - `ipc.rs`: one control socket connection, subscribed to events, which also carries requests; responses reach callbacks in request order.
   Requests wait in a buffer until the socket takes them, so writing never blocks.
   The events of one read reach the model together, which updates the views once.
