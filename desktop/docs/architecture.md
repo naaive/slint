@@ -26,15 +26,15 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker; the compositor's ready line (`Ready`). |
 | `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`) and its edge-to-edge geometry (`geometry`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
-| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, and the polkit authentication agent. |
+| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, udisks, and the polkit authentication agent. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output, in a window per part. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
-| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, and runs autostart; `nimbusctl` is the command-line client. |
+| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, makes sure there's a Secret Service, and runs autostart; `nimbusctl` is the command-line client. |
 | `nimbus-settings` | app | System settings, editing `nimbus-config`; display configuration through wlr-output-management; networks and Bluetooth through `nimbus-services`. |
-| `nimbus-files` | app | File manager. |
+| `nimbus-files` | app | File manager, with the volumes udisks can mount in its sidebar. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
 | `nimbus-monitor` | app | System monitor on `sysinfo`. |
 | `nimbus-test-support` | dev lib | Harness for integration tests: the headless compositor, Wayland test clients, and a private `dbus-daemon`. |
@@ -49,7 +49,7 @@ nimbus-shell-host ──> nimbus-shell ──> nimbus-theme ──> nimbus-confi
         └──> (all of the above)
 nimbus-compositor ──> nimbus-ipc, nimbus-config, nimbus-xdg
 apps ──> nimbus-theme[headless], nimbus-config
-nimbus-files ──> nimbus-xdg
+nimbus-files ──> nimbus-xdg, nimbus-services
 nimbus-settings ──> nimbus-ipc, nimbus-services
 nimbus-session ──> nimbus-ipc, nimbus-config
 nimbus-portal ──> nimbus-theme, nimbus-config
@@ -302,6 +302,7 @@ Modules in `crates/nimbus-shell-host/src`:
 - `services.rs`: `nimbus-services` and the compositor's `Event::ShellCommand`s, such as volume keys and launcher toggles.
   Volume and brightness keys go through `ShellModel::step_level`, so rapid presses build on the level the model shows.
 - `actions.rs`: `ShellAction`s, launching applications with an `xdg-activation` token, and the application index.
+- `media.rs`: removable media; see [Removable Media](#removable-media).
 
 ### Rendering
 
@@ -389,6 +390,29 @@ the output of the focused window when the request comes up, or the first output.
 Opening the dialog closes that view's launcher, overview, power dialog, and popup, and toasts step aside while it shows.
 Responses go back as `ServiceCommand::Authentication`; `Secret` keeps them out of debug logs.
 
+## Removable Media
+
+`nimbus_services::udisks` is a udisks2 client on the system bus.
+It lists the file systems udisks doesn't mark `HintSystem` or `HintIgnore`, with their drives,
+from `GetManagedObjects` again after each burst of `InterfacesAdded`, `InterfacesRemoved`, and `PropertiesChanged`.
+`Event::Volumes` carries the list whenever it changes, and `Event::Added` each volume that appears after the first list since udisks appeared.
+Commands run on tasks of their own, since udisks asks polkit first, and the dialog waits for the user:
+`Mount` calls `Filesystem.Mount` and reports the mount point;
+`Eject` and `PowerOff` unmount every file system on the drive, then call `Drive.Eject` or `Drive.PowerOff`.
+udisks's refusals come back as `Event::Failed` with its message, except when the user dismissed the polkit dialog.
+The shell runs the client among its services, as `ServiceEvent::Disks` and `ServiceCommand::Disks`, and apps run it alone with `udisks::Client`.
+
+The shell mounts a removable volume that appears while the session is unlocked, unless `[media] automount` is off,
+and shows a toast for it with an "Open" action.
+Opening mounts the volume if needed, then starts the default application for `inode/directory`, or Files, on the mount point,
+with the toast's activation token.
+The toast closes when its volume goes.
+
+Files adds the volumes to the devices in its sidebar.
+A mounted volume takes the place of its mount point from the mount table; opening one that isn't mounted mounts it and shows it.
+An eject button and a menu unmount it, eject its medium, or power off its drive, after leaving its folder if it's showing.
+A toast says when an ejected or powered off volume can be removed.
+
 ## Portal
 
 `nimbus-portal` implements `org.freedesktop.impl.portal.Settings` for `xdg-desktop-portal`.
@@ -446,6 +470,14 @@ Each autostarted process leads its own process group.
 When the session ends, for any reason, it sends SIGTERM to the shell and these groups together,
 and SIGKILL to whatever still runs three seconds later.
 It leaves the groups running when the compositor restarts.
+Before it starts the compositor, `nimbus-session` makes sure apps find a Secret Service (`org.freedesktop.secrets`).
+When nothing owns the name, it runs `gnome-keyring-daemon --start --components=secrets`,
+which takes over a daemon that `pam_gnome_keyring` started at login, with the login keyring unlocked, or starts a new one.
+It exports the `GNOME_KEYRING_CONTROL` and `SSH_AUTH_SOCK` that gnome-keyring prints to everything it starts, and to D-Bus activation,
+but keeps an `SSH_AUTH_SOCK` the user already set.
+Without gnome-keyring, it relies on D-Bus activation of whatever provides the name, and logs a warning when nothing does.
+The lock screen's PAM service in `data/pam.d/nimbus` includes `pam_gnome_keyring`, so unlocking the screen unlocks the keyring again.
+
 Logging out asks logind to end the session.
 Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested`,
 and the shell sends `Request::Quit`, so the compositor exits with status 0.
@@ -494,6 +526,8 @@ The release profile aborts on panic, because every process is supervised or rest
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
+  With a private `dbus-daemon`, they check that a script standing in for `gnome-keyring-daemon` runs when nothing owns `org.freedesktop.secrets`,
+  that its variables reach the compositor, and that it doesn't run when the name is owned.
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
   The Settings behavior tests drive the Network and Bluetooth pages against in-process sample clients:
   passwords, saved networks, forgetting, pairing by confirming a code, and discovery that follows the page.
@@ -505,6 +539,9 @@ The release profile aborts on panic, because every process is supervised or rest
   connects with a wrong and a right password, changes the password, disconnects, and forgets.
   The BlueZ client test powers a fake adapter, discovers, pairs through the agent by confirming and by declining, disconnects and removes devices,
   and checks that the agent refuses callers other than BlueZ.
+  `nimbus-test-support` has a fake udisks with one removable drive.
+  The udisks tests list, mount, add, and power off volumes on it, and check failures and dismissed dialogs.
+  A `nimbus-shell` test mounts a stick inserted into it and shows its toast, and a Files test mounts a volume from the sidebar and powers its drive off.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running

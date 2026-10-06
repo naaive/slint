@@ -59,6 +59,10 @@ impl Apps {
         .context("cannot receive applications")?;
         Ok(Self { index: Rc::default(), sender })
     }
+
+    pub fn get(&self, id: &str) -> Option<DesktopEntry> {
+        self.index.get(id).cloned()
+    }
 }
 
 impl State {
@@ -150,6 +154,9 @@ impl State {
                 }
             }
             TokenPurpose::NotificationAction { id, action } => {
+                if self.media_action(*id, action, token.clone()) {
+                    return;
+                }
                 let (id, action) = (*id, action.clone());
                 self.services.send(match token {
                     Some(activation_token) => ServiceCommand::InvokeNotificationActionWithToken {

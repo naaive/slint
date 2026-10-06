@@ -84,6 +84,7 @@ pub enum Msg {
         places: Vec<Place>,
         mounts: Vec<Mount>,
     },
+    Disks(nimbus_services::udisks::Event),
 }
 
 pub type Sender = UnboundedSender<Msg>;

@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 
 pub mod chord;
 pub mod geometry;
+mod media;
 mod outputs;
 mod update;
 mod watch;
 mod xwayland;
+pub use media::Media;
 pub use outputs::{InvalidOutputMode, OutputConfig, OutputId, OutputMode, Transform, format_hz};
 pub use update::{update, update_with};
 pub use watch::{ConfigWatcher, watch};
@@ -34,6 +36,7 @@ pub struct Config {
     pub keybindings: Keybindings,
     pub power: Power,
     pub xwayland: Xwayland,
+    pub media: Media,
     /// Command lines started once when the session starts.
     pub autostart: Vec<String>,
     /// Desktop entry ids pinned to the dock, in order, without the `.desktop` suffix.
@@ -53,6 +56,7 @@ impl Default for Config {
             keybindings: Keybindings::default(),
             power: Power::default(),
             xwayland: Xwayland::default(),
+            media: Media::default(),
             autostart: Vec::new(),
             favorites: [
                 "org.nimbus.Files",

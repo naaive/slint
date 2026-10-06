@@ -11,6 +11,7 @@ mod idle;
 mod input;
 mod ipc;
 mod lock;
+mod media;
 mod output;
 mod platform;
 mod render;

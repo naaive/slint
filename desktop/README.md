@@ -39,13 +39,17 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - A notification server with toasts, actions, and a notification center next to the calendar.
 - On-screen displays for volume and brightness keys, and a lock screen.
 - A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
+- Inserted USB sticks and memory cards mount on their own, unless `[media] automount` is off,
+  and a toast offers to open them in the file manager.
 - The `nimbus-shell` binary runs the shell as a Wayland client, on layer-shell and session-lock surfaces.
   It hosts the system services and the polkit agent, checks lock screen passwords through PAM on a worker thread,
   and locks on logind requests and after inactivity.
 
 ### Services (`nimbus-services`)
 
-- `org.freedesktop.Notifications`, UPower, NetworkManager, BlueZ, MPRIS, logind, PipeWire or PulseAudio volume, and backlight.
+- `org.freedesktop.Notifications`, UPower, NetworkManager, BlueZ, MPRIS, logind, udisks, PipeWire or PulseAudio volume, and backlight.
+- A udisks client for removable media: the volumes worth showing, and mounting, unmounting, ejecting, and powering off,
+  which apps can run on a thread of its own.
 - The session's polkit authentication agent, which checks responses through polkit's setuid `polkit-agent-helper-1`, never in process.
 - NetworkManager and BlueZ clients for network and Bluetooth settings, with a BlueZ pairing agent, which apps run on a thread of their own.
 - Each service degrades on its own: a missing daemon hides its feature and is picked up again when it appears.
@@ -62,12 +66,15 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   Pair Bluetooth devices by confirming or entering a code, then connect, disconnect, or remove them, through BlueZ.
   Quick settings open these pages from the Wi-Fi and Bluetooth tiles.
 - **Files** (`nimbus-files`): grid and list views, search, a freedesktop trash, thumbnails, and copy and move with conflict handling and undo.
+  The sidebar lists drives and partitions from udisks: open one to mount it,
+  and unmount, eject, or safely remove it from its menu or eject button.
 - **Terminal** (`nimbus-terminal`): tabs, color schemes, search, true color, and box drawing, on `alacritty_terminal`.
 - **System Monitor** (`nimbus-monitor`): processes with sorting, tree view, and signals; CPU, memory, network, and disk graphs; and file systems.
 
 ### Session (`nimbus-session`)
 
 - `nimbus-session` starts the compositor and the shell, sets up D-Bus and the session environment, and runs autostart once per session.
+  It starts gnome-keyring's Secret Service when nothing else provides one, and exports the variables it prints.
   It restarts the shell whenever it exits, with a growing delay,
   and both after a compositor crash, locked if the screen was locked.
 - `nimbusctl` controls a running session from the command line.
@@ -121,6 +128,17 @@ desktop/data/install.sh --prefix /usr/local
 The script builds every binary, installs the session file, desktop entries, the systemd user target, the portal backend and its configuration,
 an example configuration, and the lock screen's PAM service in `/etc/pam.d/nimbus`.
 Run it with `--uninstall` to remove everything again, and with `--help` for the other options.
+
+To unlock the login keyring with your login password, add `pam_gnome_keyring` to the PAM service you log in through,
+such as `/etc/pam.d/login`, `gdm-password`, or `sddm`, as your distribution documents:
+
+```text
+auth     optional  pam_gnome_keyring.so
+session  optional  pam_gnome_keyring.so auto_start
+```
+
+`nimbus-session` then hands the daemon PAM started its Secret Service, already unlocked.
+The lock screen's `/etc/pam.d/nimbus` unlocks the keyring again with the password that unlocks the screen.
 
 ### Headless
 
@@ -262,6 +280,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   install with `--prefix /usr` for them to find `nimbus.portal`.
 - The polkit agent has only run against a fake polkitd and a script standing in for `polkit-agent-helper-1`.
   It registers only inside a logind session, so a nested session leaves polkit to the host desktop's agent.
+- Removable media have only run against a fake udisks, and gnome-keyring against a script standing in for it.
+- Files lists only the volumes udisks doesn't mark as system or ignored, so partitions of internal disks don't appear unless mounted.
+  Encrypted volumes don't appear, since there's no way to unlock them yet.
+- Settings has no switch for `[media] automount` yet.
   It doesn't use polkit's socket-activated helper, which distributions that drop the helper's setuid bit need.
 - polkit requests wait while the session is locked, and their dialog shows once it unlocks.
 - The Network and Bluetooth pages have only run against fake NetworkManager and BlueZ daemons.

@@ -71,6 +71,7 @@ impl Controller {
         match target {
             Some(Target::Dir(path)) => self.navigate(Location::Dir(path)),
             Some(Target::Trash) => self.navigate(Location::Trash),
+            Some(Target::Volume(id)) => self.open_volume(id),
             None => {}
         }
     }
@@ -268,7 +269,13 @@ impl Controller {
         }
     }
 
-    fn show_menu(&self, entries: Vec<MenuEntry>, target: Option<PathBuf>, x: f32, y: f32) {
+    pub(super) fn show_menu(
+        &self,
+        entries: Vec<MenuEntry>,
+        target: Option<PathBuf>,
+        x: f32,
+        y: f32,
+    ) {
         let rows = convert::menu_rows(&entries);
         let separators = rows.iter().filter(|r| r.separator).count();
         self.ui.set_menu_item_count((rows.len() - separators) as i32);
@@ -491,6 +498,11 @@ impl Controller {
             Command::Restore => self.restore_selection(),
             Command::EmptyTrash => self.confirm_empty_trash(),
             Command::Properties => self.show_properties(),
+            Command::OpenPlace
+            | Command::Mount
+            | Command::Unmount
+            | Command::Eject
+            | Command::PowerOff => self.volume_command(command),
             Command::NewFolder if !in_trash => self.show_new_folder(),
             Command::SelectAll => self.change_selection(|s| s.select_all()),
             Command::CopyLocation => self.copy_location(),

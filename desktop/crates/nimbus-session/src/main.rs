@@ -4,6 +4,7 @@
 
 mod autostart;
 mod env;
+mod keyring;
 mod supervisor;
 
 use clap::{Parser, ValueEnum};
@@ -147,6 +148,15 @@ fn main() -> ExitCode {
         DbusPlan::Unavailable => {
             tracing::warn!("no D-Bus session bus; desktop services will be unavailable")
         }
+    }
+    let bus_address = session_env
+        .get("DBUS_SESSION_BUS_ADDRESS")
+        .map(str::to_owned)
+        .or_else(|| lookup_env("DBUS_SESSION_BUS_ADDRESS"))
+        .filter(|address| !address.is_empty());
+    if let Some(address) = bus_address {
+        let daemon = env::find_in_path("gnome-keyring-daemon", std::env::var_os("PATH"));
+        keyring::ensure(&address, daemon, &mut session_env, lookup_env);
     }
     if lookup_env("XDG_RUNTIME_DIR").is_none() {
         tracing::warn!("XDG_RUNTIME_DIR isn't set; the compositor may fail to create its sockets");

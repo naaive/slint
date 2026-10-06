@@ -108,6 +108,8 @@ export component AppWindow inherits Window {
     callback location-accepted(text: string);
     callback location-cancelled();
     callback place-clicked(index: int);
+    callback place-eject(index: int);
+    callback place-context(index: int, x: length, y: length);
     callback toggle-search();
     callback search-edited(text: string);
     callback search-accepted();
@@ -203,6 +205,12 @@ export component AppWindow inherits Window {
                 place-clicked(index) => {
                     root.place-clicked(index);
                     view-scope.focus();
+                }
+                place-eject(index) => {
+                    root.place-eject(index);
+                }
+                place-context(index, x, y) => {
+                    root.place-context(index, x, y);
                 }
             }
 

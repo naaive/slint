@@ -3,7 +3,7 @@
 //! System integration for the Nimbus shell.
 //!
 //! [`Services::spawn`] starts a Tokio runtime on a background thread that talks to D-Bus
-//! (UPower, NetworkManager, MPRIS, logind, the session's `org.freedesktop.Notifications` server, and its polkit agent)
+//! (UPower, NetworkManager, MPRIS, logind, udisks, the session's `org.freedesktop.Notifications` server, and its polkit agent)
 //! and to PipeWire or PulseAudio through `wpctl`/`pactl`.
 //! Every service degrades gracefully: a missing bus or daemon leaves its part of [`SystemState`] at `None` or default.
 //!
@@ -28,6 +28,7 @@ mod worker;
 
 pub mod bluez;
 pub mod nm;
+pub mod udisks;
 
 pub use notifications::DEFAULT_TIMEOUT as DEFAULT_NOTIFICATION_TIMEOUT;
 pub use polkit::{AuthenticationCommand, AuthenticationEvent, AuthenticationRequest, Secret};
@@ -157,6 +158,8 @@ pub enum ServiceEvent {
     LogoutRequested,
     /// polkit asks the user to authenticate; see [`AuthenticationEvent`].
     Authentication(AuthenticationEvent),
+    /// Removable media and other volumes from udisks; see [`udisks::Event`].
+    Disks(udisks::Event),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,6 +198,7 @@ pub enum ServiceCommand {
     Logout,
     /// Answers the polkit agent's [`ServiceEvent::Authentication`].
     Authentication(AuthenticationCommand),
+    Disks(udisks::Command),
 }
 
 /// Configures which services to start; tests and the shell preview disable the bus-backed ones.
@@ -209,6 +213,7 @@ pub struct ServicesConfig {
     pub bluetooth: bool,
     pub logind: bool,
     pub polkit: bool,
+    pub udisks: bool,
 }
 
 impl Default for ServicesConfig {
@@ -223,6 +228,7 @@ impl Default for ServicesConfig {
             bluetooth: true,
             logind: true,
             polkit: true,
+            udisks: true,
         }
     }
 }
@@ -265,7 +271,7 @@ impl ServicesBuilder {
         self
     }
 
-    /// Sets the bus for UPower, NetworkManager, BlueZ, logind, logind's brightness control, and polkit.
+    /// Sets the bus for UPower, NetworkManager, BlueZ, logind, logind's brightness control, polkit, and udisks.
     #[must_use]
     pub fn system_bus(mut self, address: BusAddress) -> Self {
         self.options.system_bus = address;

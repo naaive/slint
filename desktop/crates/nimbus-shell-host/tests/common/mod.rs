@@ -17,6 +17,8 @@ pub struct Session {
     pub compositor: Compositor,
     shell: Option<Child>,
     bus: Option<String>,
+    /// The system bus for the next shell start, unreachable when `None`.
+    pub system_bus: Option<String>,
 }
 
 impl Session {
@@ -30,7 +32,7 @@ impl Session {
     pub fn start_compositor(config: &str, bus: Option<&str>) -> Self {
         let compositor = Compositor::builder(config).start();
         std::fs::create_dir_all(compositor.dir.path().join("data")).unwrap();
-        Self { compositor, shell: None, bus: bus.map(str::to_owned) }
+        Self { compositor, shell: None, bus: bus.map(str::to_owned), system_bus: None }
     }
 
     /// Starts the shell; its log goes to `shell.log`, appended to across restarts.
@@ -60,7 +62,7 @@ impl Session {
             .env("XDG_DATA_HOME", dir.join("data"))
             .env("XDG_DATA_DIRS", dir.join("data"))
             .env("DBUS_SESSION_BUS_ADDRESS", self.bus.as_deref().unwrap_or(&no_bus))
-            .env("DBUS_SYSTEM_BUS_ADDRESS", &no_bus)
+            .env("DBUS_SYSTEM_BUS_ADDRESS", self.system_bus.as_deref().unwrap_or(&no_bus))
             // The surfaces of the shell's parts log when they open and close.
             .env("RUST_LOG", "info,nimbus_shell::output=debug")
             .env_remove("WAYLAND_SOCKET")

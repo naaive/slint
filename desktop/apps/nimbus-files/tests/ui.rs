@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use nimbus_files::app::{Controller, Env};
 use nimbus_files::{AppWindow, DialogKind, ViewKind};
+use nimbus_services::BusAddress;
 use slint::platform::Key;
 use slint::{ComponentHandle as _, Model as _};
 
@@ -25,6 +26,10 @@ impl Fixture {
     }
 
     fn with_live_updates(live_updates: bool) -> Self {
+        Self::with_options(live_updates, BusAddress::Disabled)
+    }
+
+    fn with_options(live_updates: bool, system_bus: BusAddress) -> Self {
         i_slint_backend_testing::init_no_event_loop();
         let dir = tempfile::tempdir().expect("temp dir");
         let home = dir.path().join("home");
@@ -45,6 +50,7 @@ impl Fixture {
             prefs_path: None,
             mountinfo: dir.path().join("mountinfo"),
             live_updates,
+            system_bus,
         };
         let ui = AppWindow::new().expect("window");
         let controller = Controller::new(ui.clone_strong(), env, Some(home.clone()));
@@ -444,4 +450,50 @@ fn keyboard_menu_bookmarks_and_window_menu() {
         .expect("hidden files toggle");
     f.ui.invoke_menu_activated(hidden as i32);
     assert!(f.ui.get_show_hidden());
+}
+
+#[test]
+fn volumes_mount_when_opened_and_power_off_from_the_sidebar() {
+    use nimbus_test_support::{FakeUdisks, MountAnswer, PrivateBus};
+    let Some(bus) = PrivateBus::start() else { return };
+    // The fake answers on the runtime's worker thread while the test waits.
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let udisks = runtime.block_on(async {
+        let udisks = FakeUdisks::start(&bus).await;
+        let device = "/org/freedesktop/UDisks2/block_devices/sdb1";
+        udisks.insert(device, "/dev/sdb1", "STICK", MountAnswer::Mount).await;
+        udisks
+    });
+    let f = Fixture::with_options(false, BusAddress::Address(bus.address.clone()));
+    let stick = |f: &Fixture| {
+        let places = f.ui.get_places();
+        (0..places.row_count()).find(|&i| places.row_data(i).is_some_and(|p| p.label == "STICK"))
+    };
+    f.wait_until("the stick in the sidebar", |f| stick(f).is_some());
+    let index = stick(&f).unwrap();
+    let place = f.ui.get_places().row_data(index).unwrap();
+    assert_eq!(place.heading, "");
+    assert_eq!(place.detail, "/dev/sdb1");
+    assert!(place.can_eject, "a drive that powers off can be ejected");
+
+    f.ui.invoke_place_clicked(index as i32);
+    f.wait_until("the mounted stick", |f| f.ui.get_location_text() == "/run/media/ada/STICK");
+    assert_eq!(udisks.calls(), ["mount STICK"]);
+    f.wait_until("the stick's place to follow its mount", |f| {
+        stick(f).is_some_and(|i| f.ui.get_current_place() == i as i32)
+    });
+
+    f.ui.invoke_place_context(stick(&f).unwrap() as i32, 10.0, 10.0);
+    let rows = f.ui.get_menu_rows();
+    let labels: Vec<String> = (0..rows.row_count())
+        .filter_map(|i| rows.row_data(i))
+        .map(|r| r.label.to_string())
+        .collect();
+    assert_eq!(labels, ["Open", "", "Unmount", "Safely Remove Drive"]);
+    f.ui.invoke_menu_activated(3);
+    // Leaving the stick's folder comes first.
+    assert_eq!(f.ui.get_location_text(), f.home.to_string_lossy().as_ref());
+    f.wait_until("the stick to power off", |_| udisks.calls().len() == 3);
+    assert_eq!(udisks.calls(), ["mount STICK", "unmount STICK", "power off"]);
 }

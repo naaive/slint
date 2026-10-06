@@ -3,4 +3,7 @@
 # Without it, Nimbus uses the "login" service.
 # "login" exists on Debian, Ubuntu, Fedora, and Arch, so including it keeps their local policy.
 auth include login
+# Unlocks the login keyring with the password that unlocked the screen.
+# The leading "-" skips the line where gnome-keyring isn't installed.
+-auth optional pam_gnome_keyring.so
 account include login

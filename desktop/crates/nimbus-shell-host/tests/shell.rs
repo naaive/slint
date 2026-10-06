@@ -199,6 +199,28 @@ fn toasts_appear_in_their_own_surface_and_expire() {
     session.wait_screenshot("the toast to go", |shot| distance(region(&idle), region(shot)) < 2.0);
 }
 
+#[test]
+fn inserted_media_are_mounted_and_announced_in_a_toast() {
+    let Some(bus) = PrivateBus::start() else { return };
+    // The fake answers on the runtime's worker thread while the test waits.
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let udisks = runtime.block_on(nimbus_test_support::FakeUdisks::start(&bus));
+    let mut session = Session::start_compositor(CONFIG, None);
+    session.system_bus = Some(bus.address.clone());
+    session.start_shell();
+    session.wait_screenshot("the panel and the dock", shell_visible);
+    session.wait_log("the udisks client", "Watching volumes from udisks");
+
+    let device = "/org/freedesktop/UDisks2/block_devices/sdb1";
+    let answer = nimbus_test_support::MountAnswer::Mount;
+    runtime.block_on(udisks.insert(device, "/dev/sdb1", "STICK", answer));
+    session.wait_opened("Toasts", 1);
+    common::wait_for("the stick to be mounted", || {
+        udisks.calls().contains(&"mount STICK".into()).then_some(())
+    });
+}
+
 /// Linux input event codes.
 const KEY_ESC: u32 = 1;
 const KEY_E: u32 = 18;

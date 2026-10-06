@@ -614,7 +614,7 @@ impl Model {
             }
             ServiceEvent::LockRequested => self.set_locked(true),
             ServiceEvent::UnlockRequested => self.set_locked(false),
-            ServiceEvent::LogoutRequested => {}
+            ServiceEvent::LogoutRequested | ServiceEvent::Disks(_) => {}
             ServiceEvent::Authentication(event) => self.handle_authentication(event),
         }
     }

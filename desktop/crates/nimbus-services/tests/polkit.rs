@@ -121,6 +121,7 @@ impl Fixture {
             bluetooth: false,
             logind: false,
             polkit: true,
+            udisks: false,
         })
         .session_bus(BusAddress::Disabled)
         .system_bus(BusAddress::Address(bus.address.clone()))

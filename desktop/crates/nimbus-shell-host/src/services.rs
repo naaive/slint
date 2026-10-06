@@ -3,6 +3,7 @@
 //! System services and the commands the compositor sends the shell, such as the volume keys.
 
 use crate::ipc::log_failure;
+use crate::media::Media;
 use crate::state::{State, forward};
 use anyhow::Context;
 use nimbus_ipc::{Request, ShellCommand};
@@ -18,6 +19,7 @@ pub struct SystemServices {
     /// Ids for the shell's own toasts, counting down from the top so they stay clear of the
     /// notification server's, which count up.
     next_local_notification: u32,
+    pub media: Media,
 }
 
 impl SystemServices {
@@ -28,11 +30,18 @@ impl SystemServices {
         let services = Services::spawn(ServicesConfig::default(), move |event| {
             let _ = sender.send(event);
         });
-        Ok(Self { services, next_local_notification: u32::MAX })
+        Ok(Self { services, next_local_notification: u32::MAX, media: Media::default() })
     }
 
     pub fn send(&self, command: ServiceCommand) {
         self.services.send(command);
+    }
+
+    /// An id for one of the shell's own toasts.
+    pub fn next_local_id(&mut self) -> u32 {
+        let id = self.next_local_notification;
+        self.next_local_notification = id.wrapping_sub(1);
+        id
     }
 }
 
@@ -50,6 +59,7 @@ impl State {
                 self.report_lock_presented();
             }
             ServiceEvent::UnlockRequested => self.unlock(),
+            ServiceEvent::Disks(event) => self.disks_event(event),
             event => self.model.handle_service_event(&event),
         }
     }
@@ -94,8 +104,7 @@ impl State {
 
     /// Shows a toast, for errors the user would otherwise never see.
     pub fn show_error(&mut self, summary: String, body: String) {
-        let id = self.services.next_local_notification;
-        self.services.next_local_notification = id.wrapping_sub(1);
+        let id = self.services.next_local_id();
         self.model.handle_service_event(&ServiceEvent::Notification(Notification {
             id,
             app_name: "Nimbus".into(),

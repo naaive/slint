@@ -18,6 +18,7 @@ use crate::logind::LoginCommand;
 use crate::mpris::MediaCommand;
 use crate::network::NetworkCommand;
 use crate::notifications::NotificationCommand;
+use crate::udisks;
 use crate::{
     Audio, AuthenticationCommand, Battery, Bluetooth, BusAddress, Media, Network, ServiceCommand,
     ServiceEvent, ServicesConfig, SystemState,
@@ -95,6 +96,7 @@ struct Routes {
     notifications: Option<UnboundedSender<NotificationCommand>>,
     login: Option<UnboundedSender<LoginCommand>>,
     polkit: Option<UnboundedSender<AuthenticationCommand>>,
+    udisks: Option<UnboundedSender<udisks::Command>>,
     /// UPower takes no commands; holding the sender keeps it running until the central task stops.
     _upower: Option<UnboundedSender<Infallible>>,
 }
@@ -134,6 +136,7 @@ struct Receivers {
     notifications: Option<UnboundedReceiver<NotificationCommand>>,
     login: Option<UnboundedReceiver<LoginCommand>>,
     polkit: Option<UnboundedReceiver<AuthenticationCommand>>,
+    udisks: Option<UnboundedReceiver<udisks::Command>>,
     upower: Option<UnboundedReceiver<Infallible>>,
 }
 
@@ -146,6 +149,7 @@ fn routes(config: &ServicesConfig) -> (Routes, Receivers) {
     let (notifications_tx, notifications) = channel(config.notifications);
     let (login_tx, login) = channel(config.logind);
     let (polkit_tx, polkit) = channel(config.polkit);
+    let (udisks_tx, udisks) = channel(config.udisks);
     let (upower_tx, upower) = channel(config.upower);
     (
         Routes {
@@ -157,6 +161,7 @@ fn routes(config: &ServicesConfig) -> (Routes, Receivers) {
             notifications: notifications_tx,
             login: login_tx,
             polkit: polkit_tx,
+            udisks: udisks_tx,
             _upower: upower_tx,
         },
         Receivers {
@@ -168,6 +173,7 @@ fn routes(config: &ServicesConfig) -> (Routes, Receivers) {
             notifications,
             login,
             polkit,
+            udisks,
             upower,
         },
     )
@@ -184,6 +190,7 @@ async fn start_services(options: Options, receivers: Receivers, updates: Updates
         || receivers.bluetooth.is_some()
         || receivers.login.is_some()
         || receivers.polkit.is_some()
+        || receivers.udisks.is_some()
         || receivers.backlight.is_some();
     let (session, system) = tokio::join!(
         async {
@@ -235,6 +242,11 @@ async fn start_services(options: Options, receivers: Receivers, updates: Updates
                 tokio::spawn(async move { while commands.recv().await.is_some() {} });
             }
         }
+    }
+    if let Some(commands) = receivers.udisks {
+        let updates = updates.clone();
+        let emit = move |event| updates.event(ServiceEvent::Disks(event));
+        start_bus_service(udisks::Udisks::new(std::sync::Arc::new(emit)), system.clone(), commands);
     }
     if let Some(commands) = receivers.login {
         let service = crate::logind::Logind::new(updates);
@@ -380,6 +392,9 @@ fn dispatch(routes: &Routes, command: ServiceCommand) -> Dispatch {
         }
         C::Authentication(command) => {
             route(&routes.polkit, command);
+        }
+        C::Disks(command) => {
+            route(&routes.udisks, command);
         }
     }
     Dispatch::Routed

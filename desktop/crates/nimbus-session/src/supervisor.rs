@@ -460,6 +460,7 @@ fn wait_for_ready(
 fn update_activation_environment(env: &SessionEnv) {
     let mut command = Command::new("dbus-update-activation-environment");
     command.arg("--systemd").args(ACTIVATION_VARIABLES);
+    command.args(crate::keyring::VARIABLES.iter().filter(|name| env.get(name).is_some()));
     run_helper(command, env);
 }
 

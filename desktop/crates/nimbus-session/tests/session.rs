@@ -53,6 +53,11 @@ impl Sandbox {
     }
 
     fn spawn(&self, compositor: &Path) -> Child {
+        self.spawn_with(compositor, &[])
+    }
+
+    /// Like [`Sandbox::spawn`], with `env` set after the sandbox's own variables.
+    fn spawn_with(&self, compositor: &Path, env: &[(&str, &str)]) -> Child {
         Command::new(env!("CARGO_BIN_EXE_nimbus-session"))
             .args(["--backend", "headless", "--ready-timeout", "5", "--compositor"])
             .arg(compositor)
@@ -65,6 +70,8 @@ impl Sandbox {
             .env("HOME", self.dir.path())
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("QT_QPA_PLATFORM")
+            .env_remove("SSH_AUTH_SOCK")
+            .envs(env.iter().copied())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -364,4 +371,68 @@ fn compositor_crash_restarts_the_compositor_and_the_shell() {
     let shells = sandbox.shell_starts();
     assert_eq!(shells.len(), 2, "{shells:?}");
     assert!(shells.iter().all(|shell| is_gone(&shell[0])), "every shell was stopped");
+}
+
+/// A `gnome-keyring-daemon` that records its arguments and prints what the real one prints.
+fn fake_keyring(sandbox: &Sandbox) -> String {
+    let bin = sandbox.path("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let daemon = bin.join("gnome-keyring-daemon");
+    std::fs::write(
+        &daemon,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\necho GNOME_KEYRING_CONTROL=/run/keyring\necho SSH_AUTH_SOCK=/run/keyring/ssh\n",
+            sandbox.path("keyring-args").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default())
+}
+
+/// A compositor that records the keyring variables it gets, then logs out.
+fn keyring_probe(sandbox: &Sandbox) -> PathBuf {
+    sandbox.compositor(&format!(
+        "echo \"${{GNOME_KEYRING_CONTROL-unset}} ${{SSH_AUTH_SOCK-unset}}\" > '{}'\nexit 0",
+        sandbox.path("keyring-env").display()
+    ))
+}
+
+#[test]
+fn gnome_keyring_starts_without_a_secret_service_and_its_variables_reach_the_session() {
+    let Some(bus) = nimbus_test_support::PrivateBus::start() else { return };
+    let sandbox = Sandbox::new("");
+    let path = fake_keyring(&sandbox);
+    let compositor = keyring_probe(&sandbox);
+    let env = [("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str()), ("PATH", path.as_str())];
+    let mut session = sandbox.spawn_with(&compositor, &env);
+    assert!(wait_with_timeout(&mut session, Duration::from_secs(20)).success());
+    assert_eq!(sandbox.lines("keyring-args"), ["--start --components=secrets"]);
+    assert_eq!(
+        wait_for_file(&sandbox.path("keyring-env"), Duration::from_secs(1)),
+        "/run/keyring /run/keyring/ssh\n"
+    );
+}
+
+#[test]
+fn a_running_secret_service_is_left_alone() {
+    let Some(bus) = nimbus_test_support::PrivateBus::start() else { return };
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let _provider = runtime.block_on(async {
+        let conn = bus.connect().await;
+        conn.request_name("org.freedesktop.secrets").await.unwrap();
+        conn
+    });
+    let sandbox = Sandbox::new("");
+    let path = fake_keyring(&sandbox);
+    let compositor = keyring_probe(&sandbox);
+    let env = [("DBUS_SESSION_BUS_ADDRESS", bus.address.as_str()), ("PATH", path.as_str())];
+    let mut session = sandbox.spawn_with(&compositor, &env);
+    assert!(wait_with_timeout(&mut session, Duration::from_secs(20)).success());
+    assert!(sandbox.lines("keyring-args").is_empty(), "gnome-keyring ran anyway");
+    assert_eq!(
+        wait_for_file(&sandbox.path("keyring-env"), Duration::from_secs(1)),
+        "unset unset\n"
+    );
 }

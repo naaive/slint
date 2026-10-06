@@ -4,10 +4,12 @@
 
 mod bus;
 mod compositor;
+mod udisks;
 mod wayland;
 
 pub use bus::PrivateBus;
 pub use compositor::{Compositor, CompositorBuilder, Events, compositor_binary};
+pub use udisks::{FAKE_DRIVE, FakeUdisks, MountAnswer};
 pub use wayland::{
     TestClient, TestClientState, TestWindow, attach_buffer, connect, dispatch_until,
 };

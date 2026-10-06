@@ -65,6 +65,12 @@ pub(super) fn connect(c: &Rc<Controller>) {
     ui.on_toggle_hidden(move || hidden(()));
     let column = bind(c, |c, key: i32| c.column_clicked(key));
     ui.on_column_clicked(column);
+    let eject = bind(c, |c, i: i32| index(i).into_iter().for_each(|i| c.place_eject(i)));
+    ui.on_place_eject(eject);
+    let place_context = bind(c, |c, (i, x, y): (i32, f32, f32)| {
+        index(i).into_iter().for_each(|i| c.place_context(i, x, y));
+    });
+    ui.on_place_context(move |i, x, y| place_context((i, x, y)));
     let main_menu = bind(c, |c, (x, y): (f32, f32)| c.main_menu(x, y));
     ui.on_main_menu_requested(move |x, y| main_menu((x, y)));
 

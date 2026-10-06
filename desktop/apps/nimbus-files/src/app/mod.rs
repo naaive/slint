@@ -6,6 +6,7 @@ mod actions;
 mod bindings;
 mod controller;
 pub(crate) mod convert;
+mod volumes;
 mod workers;
 
 pub use controller::{Controller, Env};

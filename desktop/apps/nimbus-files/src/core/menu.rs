@@ -25,6 +25,13 @@ pub enum Command {
     NewWindow,
     ToggleHidden,
     Reload,
+    /// Opens the place a volume menu is for, mounting its volume first if needed.
+    OpenPlace,
+    Mount,
+    Unmount,
+    Eject,
+    /// Powers off the drive, after unmounting it, so it can be unplugged safely.
+    PowerOff,
 }
 
 /// One row of a context menu.
@@ -152,6 +159,31 @@ pub fn background_menu(ctx: MenuContext) -> Vec<MenuEntry> {
     ]
 }
 
+/// What a volume's menu in the sidebar offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VolumeContext {
+    pub mounted: bool,
+    pub ejectable: bool,
+    pub can_power_off: bool,
+}
+
+/// The menu for a right click on a volume in the sidebar.
+pub fn volume_menu(ctx: VolumeContext) -> Vec<MenuEntry> {
+    let mut entries = vec![item(Command::OpenPlace, "Open", "", true), MenuEntry::Separator];
+    entries.push(if ctx.mounted {
+        item(Command::Unmount, "Unmount", "", true)
+    } else {
+        item(Command::Mount, "Mount", "", true)
+    });
+    if ctx.ejectable {
+        entries.push(item(Command::Eject, "Eject", "", true));
+    }
+    if ctx.can_power_off {
+        entries.push(item(Command::PowerOff, "Safely Remove Drive", "", true));
+    }
+    entries
+}
+
 /// The window menu in the header bar.
 pub fn main_menu(ctx: MenuContext) -> Vec<MenuEntry> {
     let mut entries = vec![item(Command::NewWindow, "New Window", "Ctrl+N", true)];
@@ -241,6 +273,20 @@ mod tests {
         assert!(!menu.iter().any(|(c, _)| *c == Command::OpenWith));
         let bookmarked = commands(&item_menu(MenuContext { bookmarked: true, ..ctx }));
         assert!(bookmarked.contains(&(Command::RemoveBookmark, true)));
+    }
+
+    #[test]
+    fn volume_menus() {
+        let unmounted = commands(&volume_menu(VolumeContext::default()));
+        assert_eq!(unmounted, [(Command::OpenPlace, true), (Command::Mount, true)]);
+        let stick =
+            VolumeContext { mounted: true, can_power_off: true, ..VolumeContext::default() };
+        assert_eq!(
+            commands(&volume_menu(stick)),
+            [(Command::OpenPlace, true), (Command::Unmount, true), (Command::PowerOff, true)]
+        );
+        let disc = VolumeContext { mounted: true, ejectable: true, ..VolumeContext::default() };
+        assert!(commands(&volume_menu(disc)).contains(&(Command::Eject, true)));
     }
 
     #[test]

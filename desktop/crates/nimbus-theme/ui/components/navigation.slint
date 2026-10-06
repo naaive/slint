@@ -13,6 +13,8 @@ export component NavigationItem {
     in property <string> badge;
 
     callback clicked;
+    // A right click, at its position in the item.
+    callback context-requested(x: length, y: length);
 
     min-height: Theme.control-height + 4px;
     min-width: layout.min-width;
@@ -68,6 +70,11 @@ export component NavigationItem {
     touch := TouchArea {
         clicked => {
             root.clicked();
+        }
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.context-requested(self.mouse-x, self.mouse-y);
+            }
         }
     }
 

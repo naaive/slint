@@ -90,6 +90,7 @@ pub fn render(options: Options) -> anyhow::Result<Frame> {
         prefs_path: None,
         mountinfo: sample.path().join("mountinfo"),
         live_updates: false,
+        system_bus: nimbus_services::BusAddress::Disabled,
     };
 
     let ui = AppWindow::new()?;

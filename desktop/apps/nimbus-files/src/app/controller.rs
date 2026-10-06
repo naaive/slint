@@ -11,10 +11,13 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use futures_channel::mpsc::UnboundedReceiver;
+use nimbus_services::BusAddress;
+use nimbus_services::udisks;
 use nimbus_xdg::DesktopEntry;
 use slint::{ComponentHandle as _, Image, Model as _, ModelRc, VecModel};
 
 use super::convert::{self, ItemContext, SpecialFolders};
+use super::volumes::Disks;
 use super::workers::{self, ConflictDetails, Msg, PlaceSources, Sender, ThumbnailQueue};
 use crate::core::diff::{self, Edit};
 use crate::core::entry::{EntryKind, FileEntry};
@@ -53,6 +56,8 @@ pub struct Env {
     pub mountinfo: PathBuf,
     /// Watches folders and the mount table; tests turn it off for determinism.
     pub live_updates: bool,
+    /// The system bus, where udisks lists the volumes it can mount; `Disabled` shows only mounted ones.
+    pub system_bus: BusAddress,
 }
 
 impl Env {
@@ -65,6 +70,7 @@ impl Env {
             prefs_path: Preferences::default_path(),
             mountinfo: PathBuf::from("/proc/self/mountinfo"),
             live_updates: true,
+            system_bus: BusAddress::Default,
             home,
         }
     }
@@ -164,6 +170,7 @@ pub(super) struct State {
     pub menu_target: Option<PathBuf>,
     pub places: Vec<Place>,
     pub mounts: Vec<Mount>,
+    pub disks: Disks,
     pub special: SpecialFolders,
     pub pending_select: Vec<PathBuf>,
     pub thumbnails: HashMap<PathBuf, Image>,
@@ -193,6 +200,7 @@ pub struct Controller {
     jobs_timer: slint::Timer,
     _places_watcher: Option<notify::RecommendedWatcher>,
     mounts_stop: Arc<AtomicBool>,
+    pub(super) disks: Option<udisks::Client>,
 }
 
 impl Drop for Controller {
@@ -255,6 +263,7 @@ impl Controller {
             menu: Vec::new(),
             menu_target: None,
             special: SpecialFolders::from_places(&places),
+            disks: Disks { listed: places.clone(), ..Disks::default() },
             places,
             mounts,
             pending_select: Vec::new(),
@@ -268,6 +277,12 @@ impl Controller {
             type_ahead: String::new(),
             type_ahead_at: None,
         };
+        let disks = (env.system_bus != BusAddress::Disabled).then(|| {
+            let tx = tx.clone();
+            udisks::Client::spawn(env.system_bus.clone(), move |event| {
+                workers::send(&tx, Msg::Disks(event));
+            })
+        });
         let files = Rc::new(VecModel::default());
         let jobs_model = Rc::new(VecModel::default());
         ui.set_files(ModelRc::from(files.clone()));
@@ -288,6 +303,7 @@ impl Controller {
             jobs_timer: slint::Timer::default(),
             _places_watcher: places_watcher,
             mounts_stop,
+            disks,
         });
         super::bindings::connect(&controller);
         controller.sync_prefs();
@@ -368,14 +384,10 @@ impl Controller {
             Msg::Apps { id, apps, default } => self.on_apps(id, apps, default.as_deref()),
             Msg::PlacesChanged => workers::load_places(self.tx.clone(), self.env.place_sources()),
             Msg::Places { places, mounts } => {
-                {
-                    let mut state = self.state.borrow_mut();
-                    state.special = SpecialFolders::from_places(&places);
-                    state.places = places;
-                    state.mounts = mounts;
-                }
-                self.sync_places();
+                self.state.borrow_mut().mounts = mounts;
+                self.set_listed_places(places);
             }
+            Msg::Disks(event) => self.on_disks_event(event),
         }
     }
 

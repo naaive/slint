@@ -1,6 +1,6 @@
 [package]
 name = "nimbus-session"
-description = "Session entry point: environment setup, D-Bus activation, compositor and shell supervision, autostart, and nimbusctl"
+description = "Session entry point: environment setup, D-Bus activation, the Secret Service, compositor and shell supervision, autostart, and nimbusctl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -24,7 +24,11 @@ serde_json = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 nix = { version = "0.30", features = ["signal", "process"] }
 signal-hook = "0.3"
+tokio = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
+nimbus-test-support = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true }
 toml = { workspace = true }

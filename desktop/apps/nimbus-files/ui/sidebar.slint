@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, NavigationItem, Label } from "@nimbus/theme.slint";
+import { Theme, NavigationItem, Label, IconButton, Icons } from "@nimbus/theme.slint";
 import { PlaceItem } from "types.slint";
 import { FileStyle } from "style.slint";
 
@@ -11,6 +11,9 @@ export component Sidebar inherits Rectangle {
     in property <int> current: -1;
 
     callback place-clicked(index: int);
+    callback place-eject(index: int);
+    // A right click on a place, in window coordinates.
+    callback place-context(index: int, x: length, y: length);
 
     background: Theme.surface-sunken;
     accessible-role: list;
@@ -57,12 +60,32 @@ export component Sidebar inherits Rectangle {
                         }
                     }
 
-                    NavigationItem {
-                        text: place.label;
-                        icon: FileStyle.icon(place.kind);
-                        selected: index == root.current;
-                        clicked => {
-                            root.place-clicked(index);
+                    Rectangle {
+                        min-height: item.min-height;
+
+                        item := NavigationItem {
+                            width: parent.width;
+                            height: parent.height;
+                            text: place.label;
+                            icon: FileStyle.icon(place.kind);
+                            selected: index == root.current;
+                            clicked => {
+                                root.place-clicked(index);
+                            }
+                            context-requested(x, y) => {
+                                root.place-context(index, self.absolute-position.x + x, self.absolute-position.y + y);
+                            }
+                        }
+
+                        if place.can-eject: IconButton {
+                            x: parent.width - self.width - Theme.spacing-xs;
+                            y: (parent.height - self.height) / 2;
+                            size: parent.height - 2 * Theme.spacing-xxs;
+                            icon: Icons.eject;
+                            accessible-label: "Eject " + place.label;
+                            clicked => {
+                                root.place-eject(index);
+                            }
                         }
                     }
                 }

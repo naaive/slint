@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! The sidebar's places: XDG user folders, bookmarks, and mounted drives.
+//! The sidebar's places: XDG user folders, bookmarks, mounted drives, and the volumes udisks can mount.
 
 use std::path::{Path, PathBuf};
+
+use nimbus_services::udisks::{Command, Volume};
 
 use super::uri;
 
@@ -33,6 +35,8 @@ pub enum Section {
 pub enum Target {
     Dir(PathBuf),
     Trash,
+    /// A volume that isn't mounted, by its udisks id; opening it mounts it.
+    Volume(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +45,8 @@ pub struct Place {
     pub target: Target,
     pub icon: PlaceIcon,
     pub section: Section,
+    /// The udisks volume behind the place.
+    pub volume: Option<Volume>,
 }
 
 /// The XDG user folder keys shown in the sidebar, with their fallback names and icons.
@@ -101,6 +107,7 @@ pub fn standard_places(home: &Path, user_dirs_text: Option<&str>) -> Vec<Place> 
         target: Target::Dir(home.to_path_buf()),
         icon: PlaceIcon::Home,
         section: Section::Places,
+        volume: None,
     }];
     for (key, _, icon) in USER_DIRS {
         if let Some(path) = user_dir(&entries, key, home).filter(|p| p.is_dir()) {
@@ -111,6 +118,7 @@ pub fn standard_places(home: &Path, user_dirs_text: Option<&str>) -> Vec<Place> 
                 target: Target::Dir(path),
                 icon: *icon,
                 section: Section::Places,
+                volume: None,
             });
         }
     }
@@ -119,6 +127,7 @@ pub fn standard_places(home: &Path, user_dirs_text: Option<&str>) -> Vec<Place> 
         target: Target::Trash,
         icon: PlaceIcon::Trash,
         section: Section::Places,
+        volume: None,
     });
     places
 }
@@ -153,6 +162,7 @@ pub fn bookmark_places(text: &str) -> Vec<Place> {
             target: Target::Dir(path),
             icon: PlaceIcon::Bookmark,
             section: Section::Bookmarks,
+            volume: None,
         })
         .collect()
 }
@@ -285,6 +295,7 @@ pub fn device_places(mounts: &[Mount]) -> Vec<Place> {
         target: Target::Dir(PathBuf::from("/")),
         icon: PlaceIcon::Computer,
         section: Section::Devices,
+        volume: None,
     }];
     for mount in mounts.iter().filter(|m| is_user_mount(m)) {
         let target = Target::Dir(mount.mount_point.clone());
@@ -300,7 +311,44 @@ pub fn device_places(mounts: &[Mount]) -> Vec<Place> {
             target,
             icon: PlaceIcon::Drive,
             section: Section::Devices,
+            volume: None,
         });
+    }
+    places
+}
+
+/// Whether the sidebar offers to eject `volume`: it's mounted, or its drive can be ejected or powered off.
+pub fn can_eject(volume: &Volume) -> bool {
+    volume.mount_point().is_some() || !matches!(volume.removal(), Command::Unmount(_))
+}
+
+/// `places` with the udisks volumes among the devices.
+/// A mounted volume takes over the place of its mount point;
+/// the others follow the devices, and opening one mounts it.
+pub fn with_volumes(places: &[Place], volumes: &[Volume]) -> Vec<Place> {
+    let mut places = places.to_vec();
+    let mut end =
+        places.iter().rposition(|p| p.section == Section::Devices).map_or(places.len(), |i| i + 1);
+    for volume in volumes {
+        let target = match volume.mount_point() {
+            Some(point) => Target::Dir(point.to_path_buf()),
+            None => Target::Volume(volume.id.clone()),
+        };
+        let place = Place {
+            label: volume.name.clone(),
+            target,
+            icon: PlaceIcon::Drive,
+            section: Section::Devices,
+            volume: Some(volume.clone()),
+        };
+        match places.iter_mut().find(|p| p.section == Section::Devices && p.target == place.target)
+        {
+            Some(existing) => *existing = place,
+            None => {
+                places.insert(end, place);
+                end += 1;
+            }
+        }
     }
     places
 }
@@ -352,6 +400,31 @@ garbage line
         assert_eq!(points.last(), Some(&PathBuf::from("/")));
         assert!(!points.contains(&PathBuf::from("/proc")));
         assert!(points.contains(&PathBuf::from("/boot/efi")));
+    }
+
+    #[test]
+    fn volumes_join_the_devices() {
+        let mounts = parse_mountinfo(MOUNTINFO);
+        let mut places = device_places(&mounts);
+        places.extend(bookmark_places("file:///home/ada/Projects\n"));
+        let stick = Volume {
+            id: "/org/freedesktop/UDisks2/block_devices/sdb1".into(),
+            name: "My Stick".into(),
+            mount_points: vec!["/run/media/ada/My Stick".into()],
+            ..Volume::default()
+        };
+        let card = Volume {
+            id: "/org/freedesktop/UDisks2/block_devices/mmcblk0p1".into(),
+            name: "Camera".into(),
+            ..Volume::default()
+        };
+        let joined = with_volumes(&places, &[stick.clone(), card.clone()]);
+        let labels: Vec<&str> = joined.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["Computer", "My Stick", "backup", "nas", "Camera", "Projects"]);
+        assert_eq!(joined[1].volume.as_ref(), Some(&stick));
+        assert_eq!(joined[4].target, Target::Volume(card.id.clone()));
+        assert_eq!(joined[4].section, Section::Devices);
+        assert_eq!(with_volumes(&places, &[]), places);
     }
 
     #[test]

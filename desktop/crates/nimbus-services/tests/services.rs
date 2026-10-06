@@ -33,6 +33,7 @@ fn disabled() -> ServicesConfig {
         bluetooth: false,
         logind: false,
         polkit: false,
+        udisks: false,
     }
 }
 

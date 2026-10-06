@@ -12,7 +12,7 @@ use crate::core::menu::MenuEntry;
 use crate::core::mime::{self, Category};
 use crate::core::names;
 use crate::core::pathbar::{Segment, SegmentKind};
-use crate::core::places::{Place, PlaceIcon, Section};
+use crate::core::places::{self, Place, PlaceIcon, Section, Target};
 use crate::{Crumb, FileItem, IconKind, MenuRow, PlaceItem};
 
 /// Folders with their own icon, such as the XDG user folders.
@@ -27,8 +27,8 @@ impl SpecialFolders {
             .iter()
             .filter(|p| p.section == Section::Places)
             .filter_map(|p| match &p.target {
-                crate::core::places::Target::Dir(path) => Some((path.clone(), place_icon(p.icon))),
-                crate::core::places::Target::Trash => None,
+                Target::Dir(path) => Some((path.clone(), place_icon(p.icon))),
+                Target::Trash | Target::Volume(_) => None,
             })
             .collect();
         Self { folders }
@@ -165,12 +165,15 @@ pub fn place_items(places: &[Place]) -> Vec<PlaceItem> {
                 label: place.label.as_str().into(),
                 kind: place_icon(place.icon),
                 heading: heading.into(),
-                detail: match &place.target {
-                    crate::core::places::Target::Dir(path) => {
-                        path.to_string_lossy().as_ref().into()
+                detail: match (&place.target, &place.volume) {
+                    (Target::Dir(path), _) => path.to_string_lossy().as_ref().into(),
+                    (Target::Trash, _) => "Trash".into(),
+                    (Target::Volume(_), Some(volume)) => {
+                        volume.device.to_string_lossy().as_ref().into()
                     }
-                    crate::core::places::Target::Trash => "Trash".into(),
+                    (Target::Volume(id), None) => id.as_str().into(),
                 },
+                can_eject: place.volume.as_ref().is_some_and(places::can_eject),
             }
         })
         .collect()

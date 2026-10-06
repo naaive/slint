@@ -75,6 +75,11 @@ enabled = true
 # The xwayland-satellite executable; found in PATH by default.
 # path = "/usr/bin/xwayland-satellite"
 
+# USB sticks, memory cards, and other removable media.
+[media]
+# Mount removable media when they're inserted while the session is unlocked.
+automount = true
+
 # Key chords, written as modifiers (Super, Ctrl, Alt, Shift) and an XKB keysym name.
 # Setting this table replaces all default bindings, so keep the ones you still want.
 # Actions without a value are strings such as "lock";
