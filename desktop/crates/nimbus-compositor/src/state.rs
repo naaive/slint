@@ -3,6 +3,7 @@
 //! The compositor state and its Smithay protocol handlers.
 
 mod compositor;
+mod ime;
 mod layer;
 mod protocols;
 mod seat;
@@ -22,7 +23,7 @@ use crate::wm::layout::{self, Rect};
 use crate::wm::{OutputArea, Wm};
 use nimbus_ipc::{CompositorState as IpcState, Event, OutputInfo, ShellCommand, WindowInfo};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
-use smithay::desktop::{PopupManager, WindowSurfaceType, layer_map_for_output};
+use smithay::desktop::{PopupGrab, PopupManager, WindowSurfaceType, layer_map_for_output};
 use smithay::input::keyboard::{KeyboardHandle, Keycode, XkbConfig};
 use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatState};
@@ -45,6 +46,7 @@ use smithay::wayland::foreign_toplevel_list::ForeignToplevelListState;
 use smithay::wayland::fractional_scale::{FractionalScaleManagerState, with_fractional_scale};
 use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
 use smithay::wayland::idle_notify::IdleNotifierState;
+use smithay::wayland::input_method::{InputMethodKeyboardGrab, InputMethodManagerState};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::presentation::PresentationState;
@@ -57,7 +59,9 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -110,7 +114,14 @@ pub struct Nimbus {
     _idle_inhibit_state: IdleInhibitManagerState,
     pub shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub foreign_toplevel_state: ForeignToplevelListState,
+    _text_input_state: TextInputManagerState,
+    /// None without a seat keyboard, which smithay's input method and virtual keyboard unwrap.
+    _input_method_state: Option<(InputMethodManagerState, VirtualKeyboardManagerState)>,
     pub popups: PopupManager,
+    /// The latest xdg popup grab; see [`State::refresh_keyboard_grab`].
+    pub popup_grab: Option<PopupGrab<State>>,
+    /// The input method's keyboard grab, while it holds one; see [`State::refresh_keyboard_grab`].
+    pub input_method_grab: Option<InputMethodKeyboardGrab>,
 
     pub seat: Seat<State>,
     pub keyboard: Option<KeyboardHandle<State>>,
@@ -186,6 +197,12 @@ impl Nimbus {
         let wlr_data_control_state =
             WlrDataControlState::new::<State, _>(&dh, Some(&primary_selection_state), |_| true);
         dh.create_global::<State, ExtSessionLockManagerV1, _>(1, ());
+        let input_method_state = keyboard.is_some().then(|| {
+            (
+                InputMethodManagerState::new::<State, _>(&dh, |_| true),
+                VirtualKeyboardManagerState::new::<State, _>(&dh, |_| true),
+            )
+        });
         Self {
             compositor_state: CompositorState::new::<State>(&dh),
             xdg_shell_state: XdgShellState::new::<State>(&dh),
@@ -209,7 +226,11 @@ impl Nimbus {
             _idle_inhibit_state: IdleInhibitManagerState::new::<State>(&dh),
             shortcuts_inhibit_state: KeyboardShortcutsInhibitState::new::<State>(&dh),
             foreign_toplevel_state: ForeignToplevelListState::new::<State>(&dh),
+            _text_input_state: TextInputManagerState::new::<State>(&dh),
+            _input_method_state: input_method_state,
             popups: PopupManager::default(),
+            popup_grab: None,
+            input_method_grab: None,
             seat_state,
             seat,
             keyboard,
@@ -489,7 +510,7 @@ impl Nimbus {
         self.events.push(Event::ShellCommand { command, output });
     }
 
-    /// Where keyboard input should go, by priority: lock screens, exclusive layer surfaces, windows.
+    /// Where keyboard input should go, by priority: lock screens, grabbing popups, exclusive layer surfaces, windows.
     pub fn keyboard_target(&self) -> Option<WlSurface> {
         if self.is_locked() {
             let client = self.lock.client()?;
@@ -498,6 +519,14 @@ impl Nimbus {
                 .and_then(|name| client.surface(&name))
                 .or_else(|| client.surfaces().next())?;
             return Some(surface.wl_surface().clone());
+        }
+        if let Some(popup) = self
+            .popup_grab
+            .as_ref()
+            .filter(|grab| !grab.has_ended())
+            .and_then(PopupGrab::current_grab)
+        {
+            return Some(popup);
         }
         for output in self.outputs() {
             let map = layer_map_for_output(output);
@@ -586,16 +615,14 @@ impl State {
         }
     }
 
-    /// Applies [`Nimbus::keyboard_target`] to the seat, unless a popup grab owns the keyboard outside a lock screen.
+    /// Applies [`Nimbus::keyboard_target`] to the seat, unless a popup grab owns the keyboard.
     pub fn apply_keyboard_focus(&mut self) {
         let Some(keyboard) = self.nimbus.keyboard.clone() else {
             return;
         };
-        if keyboard.is_grabbed() {
-            if !self.nimbus.is_locked() {
-                return;
-            }
-            keyboard.unset_grab(self);
+        self.refresh_keyboard_grab(&keyboard);
+        if keyboard.is_grabbed() && !ime::is_input_method_grab(&keyboard) {
+            return;
         }
         let target = self.nimbus.keyboard_target();
         if keyboard.current_focus() != target {

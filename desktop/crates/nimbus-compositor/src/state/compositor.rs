@@ -58,6 +58,9 @@ impl CompositorHandler for State {
         {
             tracing::debug!("cannot configure popup: {err}");
         }
+        if let Some(PopupKind::InputMethod(popup)) = self.nimbus.popups.find_popup(surface) {
+            self.nimbus.place_input_method_popup(&popup);
+        }
         self.nimbus.queue_redraw_for_surface(surface);
     }
 }

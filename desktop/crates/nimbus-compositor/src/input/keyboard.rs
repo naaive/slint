@@ -28,6 +28,8 @@ impl State {
         let Some(keyboard) = self.nimbus.keyboard.clone() else {
             return;
         };
+        // A grab taken since the last dispatch mustn't see a key on the lock screen.
+        self.refresh_keyboard_grab(&keyboard);
         let serial = SERIAL_COUNTER.next_serial();
         let action = keyboard.input::<KeyAction, _>(
             self,

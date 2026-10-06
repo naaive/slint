@@ -78,6 +78,7 @@ Modules in `crates/nimbus-compositor/src`:
   output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale,
   ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
   `state/protocols.rs` also serves `ext-session-lock` itself, without Smithay's implementation, on the state in `lock.rs`.
+  `state/ime.rs` serves input methods; see [Input Methods](#input-methods).
 - `outputs/`: displays; see [Displays](#displays).
   `layout.rs` turns `[[outputs]]` into a layout and back, `management.rs` serves wlr-output-management,
   and `edid.rs` reads the make, model, and serial number of a DRM connector's display.
@@ -132,6 +133,26 @@ Clients wait in the sockets' backlog meanwhile, so none is lost while it starts 
 the next connection after an exit starts it again.
 Without a usable satellite, the compositor logs why once and leaves `DISPLAY` unset.
 `NIMBUS_X11_DIR` replaces `/tmp` in tests.
+
+### Input Methods
+
+Input methods such as fcitx5 and IBus work through Smithay's `text-input-v3`, `input-method-v2`, and `virtual-keyboard-v1`.
+Clients type through `text-input-v3`, and one client at a time is the input method.
+Any client may take that role or create a virtual keyboard, as in other wlroots-style compositors.
+The text input follows keyboard focus, whether it's on a window, a layer surface, or a grabbing popup,
+and leaving a surface deactivates the input method.
+
+An input method popup, such as a candidate list, is a popup of the focused surface.
+It goes below the text cursor rectangle, or above it when only that fits, inside the output that shows the cursor.
+It moves when the client reports a new cursor rectangle, when the popup changes size, and when focus moves to another surface.
+
+smithay keeps one keyboard grab, and a new one replaces the last,
+so an xdg popup's grab and the input method's grab take turns (`State::refresh_keyboard_grab`).
+A popup can grab while the input method holds the keyboard, and the input method can grab during a popup's grab;
+either way the keyboard focus stays on the popup, and whichever grab ends first gives the keyboard back to the other.
+Keyboard shortcuts run before either grab sees a key.
+While the session is locked, no grab holds the keyboard, so the input method sees no key of the lock screen;
+it gets its grab back after unlocking.
 
 ## Displays
 
@@ -506,6 +527,11 @@ The release profile aborts on panic, because every process is supervised or rest
   provides Wayland test clients, and starts a private `dbus-daemon`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
+  The input method tests pair a text-input client with an input method client:
+  preedit and commit strings reach the client, activation follows focus between windows and a layer surface,
+  and the keyboard grab takes keys, which a virtual keyboard sends back, but none while locked.
+  They also check that popup grabs and the input method's grab take turns with the keyboard,
+  and find a candidate popup below the text cursor in a screenshot.
   A headless test checks that synthetic clicks focus the window under them and synthetic keys run shortcuts.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.

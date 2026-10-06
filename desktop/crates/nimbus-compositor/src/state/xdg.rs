@@ -80,14 +80,17 @@ impl XdgShellHandler for State {
         }
         if let Some(keyboard) = seat.get_keyboard() {
             if keyboard.is_grabbed()
+                && !super::ime::is_input_method_grab(&keyboard)
                 && !(keyboard.has_grab(serial)
                     || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
             {
                 grab.ungrab(PopupUngrabStrategy::All);
                 return;
             }
+            self.nimbus.remember_input_method_grab(&keyboard);
             keyboard.set_focus(self, grab.current_grab(), serial);
             keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+            self.nimbus.popup_grab = Some(grab.clone());
         }
         if let Some(pointer) = seat.get_pointer() {
             if pointer.is_grabbed()

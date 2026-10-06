@@ -20,6 +20,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   ext-foreign-toplevel-list, wlr-output-management, primary selection, and ext/wlr data control for clipboard tools.
 - Display configuration through wlr-output-management, from Settings or tools such as `wlr-randr` and `kanshi`,
   remembered per display and applied again at startup and on hotplug.
+- Input methods such as fcitx5 and IBus, through text-input-v3, input-method-v2, and virtual-keyboard-v1,
+  with their candidate popups below the text cursor.
 - Keyboard shortcuts from the configuration, with live reload.
 - A control socket that speaks JSON lines, used by the shell, `nimbusctl`, the Settings app, and scripts.
 - No UI of its own: the shell is a separate client, so a crashed shell doesn't take windows down.
@@ -263,6 +265,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   Custom modes, adaptive sync, and output power management aren't supported.
 - Any client may configure displays through wlr-output-management, as in other wlroots-style compositors.
 - Touch, tablet, and pointer-constraint protocols aren't implemented.
+- Input methods have only run against test clients, not fcitx5 or IBus.
+  Apps that speak only text-input-v1 or v2, such as Chromium and Electron by default, get no input method.
+  Any client may become the input method or create a virtual keyboard, as in other wlroots-style compositors.
+  While the session is locked, the input method gets no keys and its popups don't show.
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.
 - When an `ext-session-lock` client dies, the session stays locked and black until another client locks it.
