@@ -103,11 +103,15 @@ env | grep -E '^(WAYLAND_DISPLAY|DISPLAY|NIMBUS_[A-Z_]*|XDG_[A-Z_]*|DBUS_SESSION
 # Compositor state.
 collect nimbusctl-state nimbusctl state
 collect nimbusctl-state-json nimbusctl state --json
+collect nimbusctl-status nimbusctl status
 
 # Configuration.
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}
 collect_file config.toml "$config_dir/nimbus/config.toml"
 collect_file mimeapps.list "$config_dir/mimeapps.list"
+# The titlebar font: [appearance] font_family as fc-match resolves it.
+font=$(sed -n 's/^[[:space:]]*font_family[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' "$config_dir/nimbus/config.toml" 2>/dev/null | head -n1)
+collect fonts fc-match "${font:-Inter}"
 
 # Logs.
 collect journal-user journalctl --user -b --since "$since" --no-pager -o short-precise
@@ -130,6 +134,10 @@ collect drm-info drm_info -j
 collect libinput libinput list-devices
 collect loginctl-session sh -c 'loginctl show-session "${XDG_SESSION_ID:-auto}"; loginctl seat-status seat0 --no-pager'
 collect inhibitors systemd-inhibit --list --no-pager
+collect logind-sleep busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager \
+    InhibitDelayMaxUSec HandleLidSwitch HandleLidSwitchExternalPower HandleLidSwitchDocked HandleSuspendKey
+collect_file mem_sleep /sys/power/mem_sleep
+collect battery upower --dump
 
 # Portals and D-Bus services.
 collect portal-status systemctl --user status --no-pager xdg-desktop-portal xdg-desktop-portal-wlr

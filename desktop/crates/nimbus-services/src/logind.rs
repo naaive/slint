@@ -104,7 +104,7 @@ impl Logind {
         .await
         {
             Ok(fd) => self.sleep_inhibitor = Some(fd),
-            Err(err) => tracing::debug!("Can't delay suspend for locking: {err}"),
+            Err(err) => tracing::warn!("Can't delay suspend for locking: {err}"),
         }
     }
 
@@ -201,7 +201,7 @@ impl BusService for Logind {
             };
             tokio::select! {
                 () = release => {
-                    tracing::debug!("The lock screen didn't report a frame in time; suspending anyway");
+                    tracing::warn!("The lock screen didn't report a frame in time; suspending anyway");
                     self.release_sleep();
                 }
                 message = signals.next() => {

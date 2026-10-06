@@ -59,6 +59,17 @@ fn alt_tab_shows_the_switcher_until_alt_is_released() {
     session.request(Request::Key { code: ALT, pressed: false });
     session.wait_closed("Switcher", 1);
     assert_eq!(focused(), Some(first));
+
+    // Choosing a window closes the launcher, which would keep the keyboard from it.
+    session.request(Request::ToggleLauncher);
+    session.wait_opened("Overlay", 1);
+    session.request(Request::Key { code: ALT, pressed: true });
+    session.press_key(TAB);
+    session.wait_opened("Switcher", 2);
+    session.request(Request::Key { code: ALT, pressed: false });
+    session.wait_closed("Switcher", 2);
+    session.wait_closed("Overlay", 1);
+    assert_ne!(focused(), Some(first));
 }
 
 /// Maximizes a white window and returns its client and its size once it's drawn.

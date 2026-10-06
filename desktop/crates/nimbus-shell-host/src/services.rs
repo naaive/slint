@@ -104,7 +104,12 @@ impl State {
                     shell.view().select_in_switcher(selected);
                 }
             }
-            ShellCommand::SwitcherCommit | ShellCommand::SwitcherCancel => {
+            ShellCommand::SwitcherCommit => {
+                for shell in &self.outputs {
+                    shell.view().commit_switcher();
+                }
+            }
+            ShellCommand::SwitcherCancel => {
                 for shell in &self.outputs {
                     shell.view().close_switcher();
                 }

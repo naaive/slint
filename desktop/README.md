@@ -142,6 +142,16 @@ target/debug/nimbus-session --backend winit --no-autostart
 ```
 
 Apps started from the launcher or with `nimbusctl spawn` open inside the nested session.
+Put `target/debug` in `PATH` first so they find the Nimbus apps.
+
+Without a display, run the nested session in `Xvfb`, which renders through Mesa's llvmpipe:
+
+```sh
+Xvfb :99 -screen 0 1600x1000x24 &
+DISPLAY=:99 dbus-run-session -- target/debug/nimbus-session --backend winit --no-autostart
+```
+
+Drive it with `xdotool` on display `:99`, and take screenshots with `nimbusctl screenshot`.
 
 ### On a TTY or From a Display Manager
 
@@ -197,6 +207,7 @@ Workspaces are numbered from 1, as in the panel.
 ```sh
 nimbusctl state                 # windows, workspaces, and outputs
 nimbusctl state --json          # the same as JSON
+nimbusctl status                # whether the session is locked and the screens are off
 nimbusctl watch                 # one JSON line per event
 nimbusctl spawn nimbus-files    # run a command in the session
 nimbusctl workspace 2
@@ -272,8 +283,9 @@ Attach the archive from `data/nimbus-bug-report.sh` to bug reports; it redacts s
 
 Nimbus is young.
 The headless backend and the shell run end to end in tests, but the udev and winit backends haven't been run on real hardware yet.
+A nested session on the winit backend has run in `Xvfb` with llvmpipe, with the shell, the four apps, titlebars, Alt+Tab, blanking, and the lock screen driven by `xdotool`.
 
-- The shell process hasn't run on the winit or udev backends yet.
+- The shell process hasn't run on the udev backend yet.
   It doesn't take touch input, and it draws the default cursor everywhere.
 - The shell's OpenGL renderer has only run on Mesa's llvmpipe, against the headless compositor.
   It's untested on GPUs, and it redraws whole surfaces for each frame.
@@ -292,7 +304,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
   A client that destroys its decoration object keeps the titlebar.
 - Titlebars have no window menu, take no touch or tablet input, and don't show in window captures.
   The `system` color scheme always draws dark titlebars.
-  Titlebars have only run headless.
+  Titlebars have only run headless and nested in `Xvfb`.
+- Tiling doesn't respect an app's minimum size: a tile narrower than it, such as half of a 1280 pixel screen for Settings and System Monitor, cuts the app off.
 - Display configuration has only run headless.
   On udev, a test checks modes and free CRTCs but not the kernel's bandwidth limits; an apply that hits them rolls back.
 - Display settings are stored per display, not as profiles for each set of connected displays.
@@ -314,7 +327,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
   Suspend waits at most 2 seconds for the compositor to confirm the lock, then goes ahead anyway.
   The confirmation comes with a black frame, so the lock screen itself may first show after resuming.
   Battery toasts don't show while the session is locked or do not disturb is on; they wait in the notification center.
-- Screen blanking has only run headless; turning screens off through DPMS on udev is untested on real displays.
+- Screen blanking has only run headless and nested; turning screens off through DPMS on udev is untested on real displays.
   Blanking doesn't come sooner while the session is locked, and an output that's off shows black in screen captures.
   Any input but a key release turns blanked screens on, and so does plugging in an input device.
 - Overview cards show app icons, not live window thumbnails.

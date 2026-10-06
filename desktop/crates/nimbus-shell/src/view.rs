@@ -377,6 +377,14 @@ impl ShellView {
         self.0.set_switcher(None);
     }
 
+    /// Closes the window switcher once the compositor has focused its selection,
+    /// and the launcher and overview, which would keep the keyboard from that window.
+    pub fn commit_switcher(&self) {
+        self.close_switcher();
+        self.0.set_launcher(false, "");
+        self.0.set_overview(false);
+    }
+
     pub fn switcher_open(&self) -> bool {
         self.0.state.borrow().switcher.is_some()
     }

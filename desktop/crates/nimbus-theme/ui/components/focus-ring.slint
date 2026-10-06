@@ -4,7 +4,7 @@ import { Theme } from "../tokens.slint";
 
 // The keyboard focus indicator; place it as the last child of the focused control.
 // It fills its parent and draws `offset` outside it.
-export component FocusRing {
+export component FocusRing inherits Rectangle {
     in property <length> radius: Theme.radius-medium;
     in property <length> offset: 2px;
 

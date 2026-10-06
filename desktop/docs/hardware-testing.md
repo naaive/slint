@@ -69,19 +69,60 @@ Record results in a copy of the [result table](#result-table) and attach the out
    - Fractional scales don't leave gaps or one-pixel seams between windows and the panel.
 3. Take a screenshot with `nimbusctl screenshot ~/hidpi.png` and attach it.
 
-## 5. Suspend, Lid, and Battery
+## 5. Titlebars and Window Switching
+
+1. Start apps that differ in how they decorate their windows:
+   `nimbus-terminal`, `foot` or `alacritty` (server-side), and `gnome-text-editor` or `gedit` (GTK, client-side).
+2. Check titlebars:
+   - Nimbus apps and `foot` get a Nimbus titlebar with the title and minimize, maximize, and close buttons;
+     GTK apps keep their own and get no second bar on top.
+   - Dragging the titlebar moves the window, double-clicking it maximizes and restores, and each button works on release.
+   - The edges of a floating window resize it and show the matching cursor.
+   - With `nimbusctl layout tiling`, windows get a slim bar with the close button, highlighted on the focused one.
+   - A fullscreen video has no titlebar.
+   - Switching the dark style in quick settings, or changing `[appearance] accent` or `font_size`, restyles every titlebar at once.
+   - Text is sharp at scale 1, 1.5, and 2; note blurry or clipped titles.
+3. With three or more windows on two workspaces, check window switching:
+   - Holding Alt and pressing Tab shows the switcher in the middle of the monitor with the pointer,
+     and releasing Alt focuses the selected window, switching workspace or unminimizing it as needed.
+   - A quick Alt+Tab toggles between the two most recent windows; Alt+Shift+Tab steps backward; Super+Tab works the same.
+   - Escape while Alt is held closes the switcher and leaves focus where it was.
+   - Alt+Tab in a game or a remote desktop client that inhibits shortcuts goes to the app instead.
+4. Collect `nimbusctl state --json`, the output of `nimbusctl watch` while switching, and a screenshot of any misdrawn titlebar.
+
+## 6. Screen Blanking
+
+1. Set `[power] blank_after_minutes = 1` and `lock_after_minutes = 0` in `config.toml`.
+2. Check:
+   - After a minute without input, every monitor turns off: its power light shows standby, not a black but lit panel.
+   - Moving the mouse or pressing a key turns them all back on, within the monitors' own wake-up time.
+   - `nimbusctl blank` turns them off right away, and the key release of its Enter doesn't wake them.
+   - A playing video in Firefox or `mpv` keeps the monitors on; paused, they turn off a minute later.
+   - With `wlopm` installed, `wlopm --off <output>` turns one monitor off, and input doesn't wake it until `wlopm --on <output>`.
+   - Locking with Super+L while blanked doesn't wake the monitors.
+3. Collect `nimbusctl watch` output across a blank and wake, which shows the power state events, and `drm_info` if a monitor stays dark.
+
+## 7. Suspend, Lid, and Battery
 
 1. Suspend from the power dialog, wait ten seconds, and wake the machine.
+   Repeat with `systemctl suspend` from the terminal, so logind starts it instead of the shell.
 2. Close and open the lid (laptop), with and without an external monitor connected.
+   Nimbus doesn't handle the lid itself, so what happens depends on logind's `HandleLidSwitch` settings.
 3. Check:
    - The lock screen is up before the screen turns off, and it's still up after waking; it never shows the desktop first.
+     The lock screen may first appear black for a moment after waking; note how long.
    - The password unlocks it, and fingerprint or other PAM modules work if configured.
-   - `systemd-inhibit --list` shows a `sleep` delay lock held by `nimbus-shell` before suspend and again after resume.
+   - `systemd-inhibit --list --mode=delay` shows a `sleep` lock held by `nimbus-shell` before suspend and again after resume.
+   - Suspend starts within about two seconds; a longer pause points at the inhibitor not being released.
    - The panel's battery level matches `upower -i $(upower -e | grep BAT)`.
+   - On battery, a "Battery low" toast appears at UPower's low level (`PercentageLow` in `/etc/UPower/UPower.conf`, 20% by default),
+     then "Battery critically low" at its critical level; plugging in the charger removes the toast.
+     While the screen is locked or do not disturb is on, they wait in the notification center instead.
    - The backlight keys change brightness and show the OSD.
 4. Collect `journalctl -b -u systemd-logind` and the session log around the suspend.
+   The shell logs `locking` and `locked`, and warns when it couldn't take the inhibitor or suspend went ahead before the lock was confirmed.
 
-## 6. Input Devices
+## 8. Input Devices
 
 1. Keyboard: switch layouts if several are configured, try dead keys and a Compose sequence in the terminal and the launcher.
 2. Touchpad: tap to click, two-finger scrolling, natural scrolling from Settings > Input,
@@ -91,7 +132,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
 5. A game that locks the pointer: the pointer stays locked while the window has focus and is released when another window takes focus.
 6. Collect `libinput list-devices` and `RUST_LOG=nimbus_compositor::input=debug` session logs for any device that misbehaves.
 
-## 7. XWayland Apps
+## 9. XWayland Apps
 
 1. Check `echo $DISPLAY` in the terminal: it prints `:0` (or another number) when `xwayland-satellite` is installed, and nothing otherwise.
 2. Start `xeyes`, `xterm`, and an X11-only app such as an older Electron app or Steam.
@@ -101,7 +142,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
    - Killing `xwayland-satellite` closes X11 apps, and the next X11 app starts it again.
 4. Collect the session log lines mentioning `xwayland` and `xwayland-satellite --version`.
 
-## 8. Input Methods With fcitx5
+## 10. Input Methods With fcitx5
 
 1. Install `fcitx5`, `fcitx5-chinese-addons` (or `fcitx5-mozc`), and set in `~/.config/environment.d/im.conf`:
 
@@ -118,7 +159,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
    - A right-click menu in a text field opens and takes keys while the input method is on.
 4. Chromium and Electron apps need `--enable-wayland-ime --wayland-text-input-version=3`; note whether that works.
 
-## 9. Screen Sharing in a Browser
+## 11. Screen Sharing in a Browser
 
 1. Check `systemctl --user status xdg-desktop-portal xdg-desktop-portal-wlr`.
 2. Open <https://mozilla.github.io/webrtc-landing/gum_test.html> in Firefox and Chromium (with `--ozone-platform=wayland`) and share the screen.
@@ -129,7 +170,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
 4. Run `grim ~/grim.png` and `nimbusctl screenshot ~/ctl.png` and attach both.
 5. Collect `journalctl --user -u xdg-desktop-portal -u xdg-desktop-portal-wlr`.
 
-## 10. polkit Prompt
+## 12. polkit Prompt
 
 1. Run `pkexec true` in the terminal, and change the time zone in Settings > Date & Time.
 2. Check:
@@ -138,7 +179,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
    - Cancel and Escape end the request, and `pkexec` reports it was dismissed.
 3. If no dialog appears, collect the session log lines mentioning `polkit` and `ls -l /usr/lib/polkit-1/polkit-agent-helper-1`.
 
-## 11. Automount and Removable Media
+## 13. Automount and Removable Media
 
 1. Insert a USB stick with a FAT or ext4 file system while the session is unlocked.
 2. Check:
@@ -147,7 +188,7 @@ Record results in a copy of the [result table](#result-table) and attach the out
    - Inserting a stick while locked doesn't mount it until the screen is unlocked.
 3. Collect `udisksctl status` and `udisksctl dump` (the bug report script includes both).
 
-## 12. Network, Bluetooth, Sound, and Keyring
+## 14. Network, Bluetooth, Sound, and Keyring
 
 1. Settings > Network: join a WPA2 network with a wrong password, then the right one; forget it.
 2. Settings > Bluetooth: pair a phone or headset by confirming the code.
@@ -163,7 +204,8 @@ desktop/data/nimbus-bug-report.sh            # writes nimbus-report-<date>.tar.g
 desktop/data/nimbus-bug-report.sh --stdout   # prints the report instead
 ```
 
-It collects versions, the session and user journal, `nimbusctl state`, the configuration, GPU and DRM information, and portal status,
+It collects versions, the session and user journal, `nimbusctl state` and `nimbusctl status`, the configuration and titlebar font,
+GPU and DRM information, logind's sleep and lid settings and inhibitors, the battery, and portal status,
 and redacts passwords, tokens, and Wi-Fi keys.
 Read the report before you share it: it lists your device names, monitor models, and installed packages.
 
@@ -178,11 +220,13 @@ For rendering problems, attach a photo of the screen as well as a screenshot, si
 | 2. Display manager | | | |
 | 3. Multiple monitors | | | |
 | 4. HiDPI | | | |
-| 5. Suspend, lid, and battery | | | |
-| 6. Input devices | | | |
-| 7. XWayland apps | | | |
-| 8. Input methods | | | |
-| 9. Screen sharing | | | |
-| 10. polkit prompt | | | |
-| 11. Automount | | | |
-| 12. Network, Bluetooth, sound, keyring | | | |
+| 5. Titlebars and window switching | | | |
+| 6. Screen blanking | | | |
+| 7. Suspend, lid, and battery | | | |
+| 8. Input devices | | | |
+| 9. XWayland apps | | | |
+| 10. Input methods | | | |
+| 11. Screen sharing | | | |
+| 12. polkit prompt | | | |
+| 13. Automount | | | |
+| 14. Network, Bluetooth, sound, keyring | | | |

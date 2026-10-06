@@ -788,19 +788,22 @@ pub fn display_title(window: &WindowInfo, app_name: &str) -> String {
 
 /// The user's full name from the password database, or the login name.
 fn user_display_name() -> String {
-    let login = std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_default();
-    let full_name = std::fs::read_to_string("/etc/passwd").ok().and_then(|passwd| {
-        passwd.lines().find_map(|line| {
-            let mut fields = line.split(':');
-            (fields.next()? == login).then_some(())?;
-            let gecos = fields.nth(3)?.split(',').next()?.trim();
-            (!gecos.is_empty()).then(|| gecos.to_owned())
-        })
-    });
-    match full_name {
-        Some(name) => name,
-        None if !login.is_empty() => login,
-        None => "User".into(),
+    match nix::unistd::User::from_uid(nix::unistd::Uid::current()) {
+        Ok(Some(user)) => display_name(&user.name, &user.gecos.to_string_lossy()),
+        _ => {
+            let login = std::env::var("USER").or_else(|_| std::env::var("LOGNAME"));
+            display_name(&login.unwrap_or_default(), "")
+        }
+    }
+}
+
+/// The full name in the first field of `gecos`, or else `login`.
+fn display_name(login: &str, gecos: &str) -> String {
+    let full_name = gecos.split(',').next().unwrap_or_default().trim();
+    match (full_name, login) {
+        ("", "") => "User".into(),
+        ("", login) => login.to_owned(),
+        (full_name, _) => full_name.to_owned(),
     }
 }
 
@@ -894,7 +897,10 @@ mod tests {
     }
 
     #[test]
-    fn user_name_is_never_empty() {
+    fn user_name_is_the_full_name_or_the_login() {
         assert!(!user_display_name().is_empty());
+        assert_eq!(display_name("ada", "Ada Lovelace,,,"), "Ada Lovelace");
+        assert_eq!(display_name("ada", " ,Room 1"), "ada");
+        assert_eq!(display_name("", ""), "User");
     }
 }

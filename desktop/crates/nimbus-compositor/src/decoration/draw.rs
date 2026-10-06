@@ -5,7 +5,7 @@
 use super::frame::{self, Button, Style};
 use super::theme::{Palette, Rgba, Theme};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
-use smithay::utils::{Logical, Size};
+use smithay::utils::{Buffer, Logical, Rectangle, Size};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 /// Everything a titlebar's pixels depend on, besides the theme and the scale.
@@ -25,15 +25,14 @@ pub struct Look {
 ///
 /// Returns `None` for an empty titlebar.
 pub fn titlebar(look: &Look, scale: f64, theme: &Theme, font: Option<&FontVec>) -> Option<Pixmap> {
+    let (width, height) = pixel_size(look, scale);
     let scale = scale as f32;
-    let width = (look.size.w as f32 * scale).ceil() as u32;
-    let height = (look.size.h as f32 * scale).ceil() as u32;
     let mut pixmap = Pixmap::new(width, height)?;
     let palette = theme.palette();
     let colors = Colors::new(look, &palette);
 
     let background = if look.rounded {
-        rounded_top(width as f32, height as f32, theme.corner_radius * scale)
+        rounded_top(width as f32, height as f32, corner_radius(look, scale, theme))
     } else {
         Rect::from_xywh(0.0, 0.0, width as f32, height as f32).map(PathBuilder::from_rect)
     };
@@ -115,9 +114,32 @@ fn paint(color: Rgba) -> Paint<'static> {
     paint
 }
 
-/// A rectangle whose top corners are rounded by `radius`.
-fn rounded_top(width: f32, height: f32, radius: f32) -> Option<tiny_skia::Path> {
-    let r = radius.min(width / 2.0).min(height).max(0.0);
+/// The opaque part of the pixels `titlebar` draws: all but its rounded corners.
+pub fn opaque_region(look: &Look, scale: f64, theme: &Theme) -> Vec<Rectangle<i32, Buffer>> {
+    let (width, height) = pixel_size(look, scale);
+    let (width, height) = (width as i32, height as i32);
+    if !look.rounded {
+        return vec![Rectangle::from_size((width, height).into())];
+    }
+    let r = corner_radius(look, scale as f32, theme).ceil() as i32;
+    vec![
+        Rectangle::new((r, 0).into(), (width - 2 * r, r).into()),
+        Rectangle::new((0, r).into(), (width, height - r).into()),
+    ]
+}
+
+fn pixel_size(look: &Look, scale: f64) -> (u32, u32) {
+    let scale = scale as f32;
+    ((look.size.w as f32 * scale).ceil() as u32, (look.size.h as f32 * scale).ceil() as u32)
+}
+
+fn corner_radius(look: &Look, scale: f32, theme: &Theme) -> f32 {
+    let (width, height) = pixel_size(look, scale.into());
+    (theme.corner_radius * scale).min(width as f32 / 2.0).min(height as f32).max(0.0)
+}
+
+/// A rectangle whose top corners are rounded by `r`.
+fn rounded_top(width: f32, height: f32, r: f32) -> Option<tiny_skia::Path> {
     // The control point distance that makes a cubic Bézier curve approximate a quarter circle.
     let k = r * 0.552_284_8;
     let mut path = PathBuilder::new();

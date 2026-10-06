@@ -50,3 +50,36 @@ fn renders_frames_and_writes_png() {
     assert_eq!(&bytes[..info.buffer_size()], expected);
     probe.hide().expect("the window hides");
 }
+
+#[test]
+fn focus_ring_surrounds_its_parent() {
+    let source = r#"
+        import { FocusRing } from "@nimbus/theme.slint";
+        export component Probe inherits Window {
+            background: black;
+            Rectangle {
+                x: 10px;
+                y: 6px;
+                width: 20px;
+                height: 8px;
+                FocusRing { radius: 0; offset: 2px; }
+            }
+        }
+    "#;
+    let mut compiler = slint_interpreter::Compiler::default();
+    compiler.set_library_paths(nimbus_theme::library_paths());
+    let result = spin_on::spin_on(compiler.build_from_source(source.into(), Default::default()));
+    assert!(!result.has_errors(), "{:#?}", result.diagnostics().collect::<Vec<_>>());
+    let headless = Headless::install(40, 20).expect("no platform was set on this thread");
+    let probe = result.component("Probe").unwrap().create().unwrap();
+    probe.show().expect("the window shows");
+
+    let frame = headless.render();
+    let black = Some((0, 0, 0));
+    for (x, y) in [(8, 10), (31, 10), (20, 4), (20, 15)] {
+        assert_ne!(frame.pixel(x, y), black, "no ring at ({x}, {y})");
+    }
+    assert_eq!(frame.pixel(20, 10), black, "the ring is filled");
+    assert_eq!(frame.pixel(5, 10), black, "the ring is too wide");
+    probe.hide().expect("the window hides");
+}

@@ -121,6 +121,23 @@ fn the_titlebar_is_drawn_above_the_content() {
 }
 
 #[test]
+fn rounded_corners_show_what_is_behind() {
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
+    client.app.decoration = Some(Mode::ServerSide);
+    client.create_window("org.nimbus.Floating", "Floating");
+    compositor.wait_state("the window", |s| !s.windows.is_empty());
+    let shot = compositor.screenshot(OUTPUT);
+    let titlebar: Vec<(i32, i32)> = (0..720)
+        .flat_map(|y| (0..1280).map(move |x| (x, y)))
+        .filter(|&(x, y)| rgb(&shot, x, y) == DARK_TITLEBAR)
+        .collect();
+    let left = titlebar.iter().map(|p| p.0).min().expect("a titlebar");
+    let top = titlebar.iter().map(|p| p.1).min().unwrap();
+    assert_ne!(rgb(&shot, left, top), [0; 3], "the backdrop shows in the corner, not black");
+}
+
+#[test]
 fn fullscreen_windows_have_no_titlebar() {
     let compositor = common::start(CONFIG);
     let (mut client, index, id) = maximized_window(&compositor, Some(Mode::ServerSide));

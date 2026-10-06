@@ -3,7 +3,9 @@
 //! `nimbusctl`: control a running Nimbus compositor from the command line.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use nimbus_ipc::{Client, CompositorState, Direction, LayoutMode, Request, Response, WindowId};
+use nimbus_ipc::{
+    Client, CompositorState, Direction, LayoutMode, PowerState, Request, Response, WindowId,
+};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -33,6 +35,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Show whether the session is locked and which screens are off.
+    Status,
     /// Print compositor events as JSON lines until the compositor exits.
     Watch,
     /// Focus a window, switching to its workspace.
@@ -123,6 +127,7 @@ impl Cmd {
     fn request(&self) -> Request {
         match self {
             Self::State { .. } => Request::GetState,
+            Self::Status => Request::GetLockState,
             Self::Watch => Request::Subscribe,
             Self::Activate { id } => Request::Activate { id: *id },
             Self::Close { id } => Request::Close { id: *id },
@@ -238,6 +243,20 @@ fn format_state(state: &CompositorState) -> String {
     out
 }
 
+fn format_status(locked: bool, held: bool, power: &PowerState) -> String {
+    let lock = match (locked, held) {
+        (false, _) => "no",
+        (true, true) => "yes",
+        (true, false) => "yes, with no lock screen",
+    };
+    let screens = match (power.blanked, power.off.as_slice()) {
+        (true, _) => "blanked".to_string(),
+        (false, []) => "on".to_string(),
+        (false, off) => format!("off: {}", off.join(", ")),
+    };
+    format!("Locked: {lock}\nScreens: {screens}\n")
+}
+
 /// Writes left-aligned columns; the last column isn't padded.
 fn table(out: &mut String, header: &[&str], rows: impl Iterator<Item = Vec<String>>) {
     let rows: Vec<Vec<String>> =
@@ -308,6 +327,22 @@ fn run(cli: Cli) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if cli.command == Cmd::Status {
+        let lock = client.request(&Request::GetLockState);
+        let power = client.request(&Request::GetPowerState);
+        return match (lock, power) {
+            (Ok(Response::LockState { locked, held }), Ok(Response::PowerState(power))) => {
+                let _ = stdout.write_all(format_status(locked, held, &power).as_bytes());
+                ExitCode::SUCCESS
+            }
+            (Err(error), _) | (_, Err(error)) => fail(&error),
+            (lock, power) => {
+                eprintln!("nimbusctl: unexpected reply to a status request: {lock:?}, {power:?}");
+                ExitCode::from(EXIT_CONNECTION)
+            }
+        };
+    }
+
     let response = match client.request(&cli.command.request()) {
         Ok(response) => response,
         Err(error) => return fail(&error),
@@ -347,6 +382,7 @@ mod tests {
         let cases: Vec<(&[&str], Request)> = vec![
             (&["state"], Request::GetState),
             (&["state", "--json"], Request::GetState),
+            (&["status"], Request::GetLockState),
             (&["watch"], Request::Subscribe),
             (&["activate", "4"], Request::Activate { id: 4 }),
             (&["close", "4"], Request::Close { id: 4 }),
@@ -417,6 +453,19 @@ mod tests {
             Cli::try_parse_from(["nimbusctl", "--socket", "/nonexistent/nimbus.sock", "lock"])
                 .unwrap();
         assert_eq!(run(missing), ExitCode::from(2));
+    }
+
+    #[test]
+    fn status_names_the_lock_and_screens() {
+        let on = PowerState::default();
+        assert_eq!(format_status(false, false, &on), "Locked: no\nScreens: on\n");
+        let blanked = PowerState { blanked: true, off: vec!["DP-1".into()] };
+        assert_eq!(format_status(true, true, &blanked), "Locked: yes\nScreens: blanked\n");
+        let off = PowerState { blanked: false, off: vec!["DP-1".into(), "eDP-1".into()] };
+        assert_eq!(
+            format_status(true, false, &off),
+            "Locked: yes, with no lock screen\nScreens: off: DP-1, eDP-1\n"
+        );
     }
 
     #[test]

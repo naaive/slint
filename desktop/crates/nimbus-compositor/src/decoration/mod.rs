@@ -20,7 +20,7 @@ use smithay::backend::renderer::element::memory::{
 };
 use smithay::backend::renderer::{ImportMem, Renderer, Texture};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
-use smithay::utils::{Physical, Point, Rectangle, Transform};
+use smithay::utils::{Physical, Point, Transform};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use theme::Theme;
@@ -101,7 +101,7 @@ impl Decorations {
                     (width, height),
                     1,
                     Transform::Normal,
-                    Some(vec![Rectangle::from_size((width, height).into())]),
+                    Some(draw::opaque_region(&look, scale, &self.theme)),
                 );
                 cache.insert(key, (look, buffer.clone()));
                 buffer
@@ -168,8 +168,20 @@ mod tests {
         }
 
         let rounded = Look { rounded: true, ..look };
-        let rounded = draw::titlebar(&rounded, 1.0, &decorations.theme, None).unwrap();
-        assert_eq!(rounded.pixel(0, 0).unwrap().alpha(), 0, "rounded corners are transparent");
+        let pixmap = draw::titlebar(&rounded, 1.0, &decorations.theme, None).unwrap();
+        assert_eq!(pixmap.pixel(0, 0).unwrap().alpha(), 0, "rounded corners are transparent");
+        let opaque = draw::opaque_region(&rounded, 1.0, &decorations.theme);
+        for y in 0..pixmap.height() as i32 {
+            for x in 0..pixmap.width() as i32 {
+                let alpha = pixmap.pixel(x as u32, y as u32).unwrap().alpha();
+                let claimed = opaque.iter().any(|r| r.contains((x, y)));
+                assert!(!claimed || alpha == 255, "({x}, {y}) isn't opaque");
+                assert!(
+                    claimed || (y as f32) < decorations.theme.corner_radius,
+                    "({x}, {y}) is left out of the opaque region"
+                );
+            }
+        }
     }
 
     #[test]

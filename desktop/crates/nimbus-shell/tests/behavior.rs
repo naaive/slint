@@ -238,6 +238,21 @@ fn window_switcher_follows_the_compositor_without_taking_input() {
     assert!(shown().is_empty());
     assert!(f.take_actions().is_empty(), "the compositor focuses the choice, not the shell");
 
+    // Committing closes the launcher and overview, so the chosen window gets the keyboard;
+    // cancelling leaves them open.
+    f.view().toggle_launcher();
+    f.view().open_switcher(vec![1, 2], 2);
+    f.view().close_switcher();
+    assert!(f.view().launcher_open());
+    f.view().open_switcher(vec![1, 2], 2);
+    f.view().commit_switcher();
+    assert!(!f.view().launcher_open() && !f.view().switcher_open());
+    assert!(!f.shows(Part::Overlay));
+    f.view().toggle_overview();
+    f.view().open_switcher(vec![1, 2], 2);
+    f.view().commit_switcher();
+    assert!(!f.view().overview_open());
+
     // Locking closes it, and it doesn't open on the lock screen.
     f.view().open_switcher(vec![1, 2], 2);
     f.model.set_locked(true);

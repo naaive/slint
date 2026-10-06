@@ -144,7 +144,8 @@ Dragging a titlebar more than 4 pixels moves the window, and a double click togg
 The buttons act on release, if the pointer is still on them.
 Floating windows have 8 pixel resize borders outside the frame, which set the matching resize cursor.
 
-`decoration/draw.rs` rasterizes each titlebar with tiny-skia and ab_glyph into a `MemoryRenderBuffer` per window and output scale.
+`decoration/draw.rs` rasterizes each titlebar with tiny-skia and ab_glyph into a `MemoryRenderBuffer` per window and output scale,
+whose opaque region leaves out the rounded corners, so what's behind shows there.
 It's redrawn only when the title, width, scale, focus, maximized state, hovered button, or theme changes.
 The colors follow `nimbus-theme`'s tokens for `[appearance] color_scheme` and `accent`; `system` is dark,
 as the portal reports no preference for it.
@@ -302,6 +303,7 @@ As in wlroots, one power object at a time controls an output; another one for it
 Input doesn't turn on an output that a client turned off; only the client's `on`, or disabling and enabling the output, does.
 Power objects report both kinds of off as `off`.
 `Request::GetPowerState` and `Event::PowerState` report whether outputs are blanked, and which ones are off.
+`nimbusctl status` prints them, with the lock state.
 
 An output that's off isn't rendered, so its clients get no frame callbacks, and captures of it show black.
 On udev, its CRTC goes off through `DrmCompositor::clear`, which turns DPMS off, and the next queued frame turns it on again.
@@ -434,6 +436,7 @@ Without a subscriber, nothing could show the switcher, so each selection takes f
 and Escape gives focus back to the window that had it when the session opened.
 The shell shows the windows it knows from that list on the `Switcher` part of the named output, and closes it elsewhere.
 The part takes neither keyboard nor pointer, so the focused window keeps its keyboard focus until the commit.
+A commit also closes the launcher and overview, whose overlay would otherwise keep the keyboard from the chosen window.
 
 ## Shell Process
 
@@ -700,13 +703,15 @@ The release profile aborts on panic, because every process is supervised or rest
   A stand-in host in `crates/nimbus-shell/tests/support/desk.rs` shows a view's parts on an output of a fixed size,
   laid out as the compositor arranges layer surfaces and popups, routes input to them, and composites them;
   the behavior tests, the shell's screenshots, and `nimbus-shell-preview` use it.
-  The apps render reference screenshots off screen through `nimbus_theme::headless`.
+  The apps render reference screenshots off screen through `nimbus_theme::headless`,
+  and a theme test renders a focus ring around its parent the same way.
 - `nimbus-test-support` holds the shared harness: it starts the headless compositor in a temporary directory,
   provides Wayland test clients, and starts a private `dbus-daemon`.
   Its test client asks for client-side decorations unless a test chooses otherwise, so its windows get exactly the size the compositor gives.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   The decoration tests check the negotiated mode, that maximized and tiled windows lose the full and slim titlebar's height,
-  that a screenshot shows the titlebar above the content and turns light with the configuration, and none on fullscreen windows,
+  that a screenshot shows the titlebar above the content and turns light with the configuration, the backdrop in a floating titlebar's corner,
+  and no titlebar on fullscreen windows,
   and click the close, maximize, and minimize buttons and double-click the titlebar;
   unit tests cover the titlebar geometry, button hit-testing, and resize borders.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
@@ -743,6 +748,7 @@ The release profile aborts on panic, because every process is supervised or rest
   the panel and dock reserve their space and an autohidden dock none, the launcher takes typing and closes on Escape,
   quick settings open in a popup that a click outside dismisses, a toast shows on its own surface until it expires,
   `Request::Lock` shows the lock screen on a lock surface, Alt+Tab opens the switcher's surface until Alt is released and focuses its choice,
+  and closes the launcher when it does,
   an input method client from `nimbus-test-support` composes and commits Chinese text in the launcher search and sees the field's new text,
   the lock screen's password field asks for the `password` purpose without its text,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
@@ -774,6 +780,7 @@ The release profile aborts on panic, because every process is supervised or rest
   The timedated test reads, changes, and follows a fake timedated that appears after the client starts.
 - The sound client test runs against a shell script standing in for `pactl`, which keeps its devices in files and follows them with `tail -f` for `subscribe`.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
+- A nested session runs in `Xvfb` without a GPU, as the README describes, for trying the whole desktop by hand.
 - `docs/hardware-testing.md` is the checklist for real machines,
   and `data/nimbus-bug-report.sh` collects versions, logs, compositor state, configuration, GPU, and portal information for a report, with secrets redacted.
 
