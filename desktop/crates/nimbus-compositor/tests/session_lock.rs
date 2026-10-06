@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 
-//! ext-session-lock: only the client holding the lock can unlock it.
+//! ext-session-lock: the compositor owns the lock state, and only the client holding the lock can unlock it.
 
 mod common;
 
 use common::{Compositor, TIMEOUT};
+use nimbus_ipc::{Event, Request, ShellCommand};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -128,4 +129,53 @@ fn only_the_lock_holder_unlocks() {
     let mut next = connect();
     assert_eq!(next.lock(), LockState::Locked);
     next.unlock();
+}
+
+#[test]
+fn a_new_client_locks_after_the_holder_dies() {
+    let compositor = Compositor::start("", &[]);
+    let connect = || Locker::connect(&compositor.runtime_dir(), &compositor.display);
+
+    let mut owner = connect();
+    assert_eq!(owner.lock(), LockState::Locked);
+    drop(owner);
+    assert!(compositor.locked(), "the dead holder unlocked the session");
+
+    let mut next = connect();
+    assert_eq!(next.lock(), LockState::Locked);
+    assert_eq!(connect().lock(), LockState::Finished, "the new holder is live");
+    next.unlock();
+    assert!(!compositor.locked());
+}
+
+#[test]
+fn the_lock_request_locks_and_asks_the_shell_for_a_lock_screen() {
+    let compositor = Compositor::start("", &[]);
+    let events = compositor.subscribe();
+    compositor.request(Request::Lock);
+    let command = events.wait("shell command", |event| match event {
+        Event::ShellCommand { command, output } => Some((command, output)),
+        _ => None,
+    });
+    assert_eq!(command, (ShellCommand::Lock, Some("HEADLESS-1".into())));
+    assert!(compositor.locked());
+    assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
+
+    // The lock screen client takes over the lock and ends it.
+    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    assert_eq!(locker.lock(), LockState::Locked);
+    locker.unlock();
+    assert!(!compositor.locked());
+    assert!(!nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
+}
+
+#[test]
+fn a_compositor_started_locked_waits_for_a_lock_client() {
+    let compositor = Compositor::start_with_args("", &["--locked"]);
+    assert!(compositor.locked(), "{}", compositor.log());
+    assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
+    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    assert_eq!(locker.lock(), LockState::Locked);
+    locker.unlock();
+    assert!(!compositor.locked());
 }

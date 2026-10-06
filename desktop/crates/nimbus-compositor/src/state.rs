@@ -13,6 +13,7 @@ use crate::config::ConfigManager;
 use crate::cursor::CursorThemeManager;
 use crate::ipc::IpcServer;
 use crate::keybindings::Bindings;
+use crate::lock::SessionLock;
 use crate::lock_marker::LockMarker;
 use crate::process::Children;
 use crate::render::Wallpaper;
@@ -27,7 +28,6 @@ use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, DisconnectReason, GlobalId,
 };
@@ -48,7 +48,7 @@ use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
-use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState, SessionLocker};
+use smithay::wayland::session_lock::SessionLockManagerState;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
@@ -73,16 +73,6 @@ impl ClientData for ClientState {
 pub struct State {
     pub backend: Backend,
     pub nimbus: Nimbus,
-}
-
-/// ext-session-lock state.
-#[derive(Default)]
-pub enum SessionLock {
-    #[default]
-    Unlocked,
-    /// Locked once every output rendered a frame without client content.
-    Pending(SessionLocker),
-    Locked,
 }
 
 /// Where keyboard input goes.
@@ -153,10 +143,7 @@ pub struct Nimbus {
     pub shell: Option<ShellHost>,
     pub children: Children,
     pub lock_marker: LockMarker,
-    pub session_lock: SessionLock,
-    /// The ext-session-lock that is pending or active.
-    pub lock_owner: Option<ExtSessionLockV1>,
-    pub lock_surfaces: HashMap<String, LockSurface>,
+    pub lock: SessionLock,
     pub idle_inhibitors: HashSet<WlSurface>,
     pub last_activity: Instant,
     pub pending_redraws: HashSet<String>,
@@ -174,6 +161,7 @@ pub struct NimbusInit {
     pub config: ConfigManager,
     pub ipc: IpcServer,
     pub lock_marker: LockMarker,
+    pub locked: bool,
 }
 
 impl Nimbus {
@@ -186,6 +174,7 @@ impl Nimbus {
             config,
             ipc,
             lock_marker,
+            locked,
         } = init;
         let clock = Clock::<Monotonic>::new();
         let mut seat_state = SeatState::new();
@@ -247,9 +236,7 @@ impl Nimbus {
             shell: None,
             children: Children::default(),
             lock_marker,
-            session_lock: SessionLock::Unlocked,
-            lock_owner: None,
-            lock_surfaces: HashMap::new(),
+            lock: if locked { SessionLock::Locked(None) } else { SessionLock::Unlocked },
             idle_inhibitors: HashSet::new(),
             last_activity: Instant::now(),
             pending_redraws: HashSet::new(),
@@ -319,7 +306,7 @@ impl Nimbus {
                 map.unmap_layer(&layer);
             }
         }
-        self.lock_surfaces.remove(&output.name());
+        self.lock.remove_output(&output.name());
         self.pending_redraws.remove(&output.name());
         if let Some(shell) = self.shell.as_mut() {
             shell.remove_output(&output.name());
@@ -487,18 +474,23 @@ impl Nimbus {
         events
     }
 
-    pub fn is_session_locked(&self) -> bool {
-        !matches!(self.session_lock, SessionLock::Unlocked)
+    pub fn is_locked(&self) -> bool {
+        self.lock.is_locked()
     }
 
-    pub fn is_shell_locked(&self) -> bool {
-        self.shell.as_ref().is_some_and(ShellHost::is_locked)
+    /// Whether the in-process shell draws the lock screen, because no ext-session-lock client holds the lock.
+    pub fn shell_draws_lock(&self) -> bool {
+        self.is_locked() && self.lock.client().is_none() && self.shell.is_some()
     }
 
-    /// Creates the lock marker once any lock screen is up and removes it after an unlock.
     pub fn sync_lock_marker(&mut self) {
         let locked = self.is_locked();
         self.lock_marker.sync(locked);
+    }
+
+    /// Queues an event for control socket subscribers.
+    pub fn emit(&mut self, event: Event) {
+        self.events.push(event);
     }
 
     /// Tells the shell which outputs presented a frame in the last render, from the redraws queued before it.
@@ -513,15 +505,21 @@ impl Nimbus {
 
     /// Where keyboard input should go, by priority: lock screens, the shell, exclusive layer surfaces, windows.
     pub fn keyboard_target(&self) -> KeyboardTarget {
-        if self.is_session_locked() {
+        if let Some(client) = self.lock.client() {
             let output = self.active_output().map(|o| o.name());
             let surface = output
-                .and_then(|name| self.lock_surfaces.get(&name))
-                .or_else(|| self.lock_surfaces.values().next())
+                .and_then(|name| client.surface(&name))
+                .or_else(|| client.surfaces().next())
                 .map(|s| s.wl_surface().clone());
             return surface.map_or(KeyboardTarget::None, KeyboardTarget::Surface);
         }
-        if self.is_shell_locked() || self.shell.as_ref().is_some_and(ShellHost::wants_keyboard) {
+        if self.shell_draws_lock() {
+            return KeyboardTarget::Shell;
+        }
+        if self.is_locked() {
+            return KeyboardTarget::None;
+        }
+        if self.shell.as_ref().is_some_and(ShellHost::wants_keyboard) {
             return KeyboardTarget::Shell;
         }
         for output in self.outputs() {
@@ -535,7 +533,7 @@ impl Nimbus {
                 }
             }
         }
-        if let Some(surface) = self.layer_focus.as_ref().filter(|s| s.is_alive() && is_mapped(s)) {
+        if let Some(surface) = self.layer_focus.as_ref().filter(|s| self.layer_takes_focus(s)) {
             return KeyboardTarget::Surface(surface.clone());
         }
         self.wm
@@ -544,16 +542,25 @@ impl Nimbus {
             .map_or(KeyboardTarget::None, KeyboardTarget::Surface)
     }
 
+    /// Whether `surface` is a mapped layer surface that accepts keyboard focus.
+    pub fn layer_takes_focus(&self, surface: &WlSurface) -> bool {
+        surface.is_alive()
+            && is_mapped(surface)
+            && self.outputs().any(|o| {
+                layer_map_for_output(o)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some_and(|l| {
+                        l.cached_state().keyboard_interactivity != KeyboardInteractivity::None
+                    })
+            })
+    }
+
     /// Confirms a pending ext-session-lock once every output rendered without client content.
     pub fn confirm_session_lock(&mut self) {
         let live: HashSet<String> = self.outputs().map(|o| o.name()).collect();
         self.pending_redraws.retain(|name| live.contains(name));
-        if matches!(self.session_lock, SessionLock::Pending(_))
-            && self.pending_redraws.is_empty()
-            && let SessionLock::Pending(locker) =
-                std::mem::replace(&mut self.session_lock, SessionLock::Locked)
-        {
-            locker.lock();
+        if self.pending_redraws.is_empty() {
+            self.lock.confirm();
         }
     }
 

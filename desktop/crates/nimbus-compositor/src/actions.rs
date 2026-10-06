@@ -5,7 +5,7 @@
 use crate::state::State;
 use crate::wm::WindowMode;
 use nimbus_config::Action;
-use nimbus_ipc::{Direction, LayoutMode, Request, Response, WindowId};
+use nimbus_ipc::{Direction, Event, LayoutMode, Request, Response, ShellCommand, WindowId};
 use nimbus_services::{ServiceCommand, SystemState};
 use nimbus_shell::Osd;
 use std::path::PathBuf;
@@ -16,10 +16,6 @@ const LEVEL_STEP: f32 = 0.05;
 
 fn unknown_window(id: WindowId) -> Response {
     Response::Error { message: format!("no window with id {id}") }
-}
-
-fn no_shell() -> Response {
-    Response::Error { message: "the shell isn't running (started with --no-shell)".into() }
 }
 
 impl State {
@@ -99,17 +95,16 @@ impl State {
                 Err(err) => Response::Error { message: format!("cannot run '{command}': {err}") },
             },
             Request::ToggleLauncher => {
-                self.with_shell_on_active_output(|shell, output| shell.toggle_launcher(output))
+                self.shell_command(ShellCommand::ToggleLauncher);
+                Response::Ok
             }
             Request::ToggleOverview => {
-                self.with_shell_on_active_output(|shell, output| shell.toggle_overview(output))
+                self.shell_command(ShellCommand::ToggleOverview);
+                Response::Ok
             }
             Request::Lock => {
-                if self.lock_session() {
-                    Response::Ok
-                } else {
-                    no_shell()
-                }
+                self.shell_command(ShellCommand::Lock);
+                Response::Ok
             }
             Request::GetLockState => Response::LockState { locked: self.nimbus.is_locked() },
             Request::ReloadConfig => match self.nimbus.config.reload() {
@@ -214,33 +209,60 @@ impl State {
         Response::Ok
     }
 
-    fn with_shell_on_active_output(
-        &mut self,
-        f: impl FnOnce(&mut crate::shell_host::ShellHost, &str),
-    ) -> Response {
-        let output = self.nimbus.active_output().map(|o| o.name()).unwrap_or_default();
-        match self.nimbus.shell.as_mut() {
-            Some(shell) => {
-                f(shell, &output);
-                Response::Ok
+    /// Emits `command` to control socket subscribers and carries it out in the in-process shell.
+    pub fn shell_command(&mut self, command: ShellCommand) {
+        let output = self.nimbus.active_output().map(|o| o.name());
+        self.nimbus.emit(Event::ShellCommand { command, output: output.clone() });
+        let output = output.unwrap_or_default();
+        match command {
+            ShellCommand::ToggleLauncher => {
+                if let Some(shell) = self.nimbus.shell.as_mut() {
+                    shell.toggle_launcher(&output);
+                }
             }
-            None => no_shell(),
+            ShellCommand::ToggleOverview => {
+                if let Some(shell) = self.nimbus.shell.as_mut() {
+                    shell.toggle_overview(&output);
+                }
+            }
+            ShellCommand::VolumeUp => self.change_volume(LEVEL_STEP),
+            ShellCommand::VolumeDown => self.change_volume(-LEVEL_STEP),
+            ShellCommand::ToggleMute => self.toggle_mute(),
+            ShellCommand::BrightnessUp => self.change_brightness(LEVEL_STEP),
+            ShellCommand::BrightnessDown => self.change_brightness(-LEVEL_STEP),
+            ShellCommand::Lock => self.lock_session(),
         }
     }
 
-    /// Shows the shell's lock screen on every output; returns `false` without a shell.
-    pub fn lock_session(&mut self) -> bool {
+    /// Locks the session without a lock client.
+    /// Until one takes over, the in-process shell's lock screen, or black, covers every output.
+    pub fn lock_session(&mut self) {
         let output = self.nimbus.active_output().map(|o| o.name());
-        let Some(shell) = self.nimbus.shell.as_mut() else {
-            return false;
-        };
-        // Typing goes to the lock screen in front of the user.
-        shell.focus_output(output.as_deref());
-        shell.set_locked(true);
+        if let Some(shell) = self.nimbus.shell.as_mut() {
+            // Typing goes to the lock screen in front of the user.
+            shell.focus_output(output.as_deref());
+        }
+        if self.nimbus.lock.lock() {
+            self.lock_changed();
+        }
+    }
+
+    pub fn unlock_session(&mut self) {
+        tracing::info!("unlocked");
+        self.nimbus.lock.unlock();
+        self.nimbus.last_activity = std::time::Instant::now();
+        self.lock_changed();
+    }
+
+    /// Brings the shell's lock screen, the lock marker, grabs, and the screen in line with the lock state.
+    pub fn lock_changed(&mut self) {
+        let locked = self.nimbus.is_locked();
+        if let Some(shell) = self.nimbus.shell.as_mut() {
+            shell.set_locked(locked);
+        }
         self.nimbus.sync_lock_marker();
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
-        true
     }
 
     /// Runs a keybinding action.
@@ -286,23 +308,23 @@ impl State {
                 None
             }
             Action::VolumeUp => {
-                self.change_volume(LEVEL_STEP);
+                self.shell_command(ShellCommand::VolumeUp);
                 None
             }
             Action::VolumeDown => {
-                self.change_volume(-LEVEL_STEP);
+                self.shell_command(ShellCommand::VolumeDown);
                 None
             }
             Action::ToggleMute => {
-                self.toggle_mute();
+                self.shell_command(ShellCommand::ToggleMute);
                 None
             }
             Action::BrightnessUp => {
-                self.change_brightness(LEVEL_STEP);
+                self.shell_command(ShellCommand::BrightnessUp);
                 None
             }
             Action::BrightnessDown => {
-                self.change_brightness(-LEVEL_STEP);
+                self.shell_command(ShellCommand::BrightnessDown);
                 None
             }
             Action::Quit => Some(Request::Quit),

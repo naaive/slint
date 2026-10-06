@@ -27,7 +27,7 @@ use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
-use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
+use smithay::wayland::shell::wlr_layer::Layer;
 use std::time::Duration;
 
 const BTN_LEFT: u32 = 0x110;
@@ -104,17 +104,16 @@ impl Nimbus {
         let name = output.name();
         let local = pos - output_geo.loc.to_f64();
 
-        if self.is_session_locked() {
-            return self.lock_surfaces.get(&name).map_or(PointerTarget::None, |lock| {
-                PointerTarget::Surface {
-                    surface: lock.wl_surface().clone(),
-                    location: output_geo.loc.to_f64(),
-                }
-            });
-        }
         let shell = |name: &str| PointerTarget::Shell { output: name.to_owned(), local };
-        if self.is_shell_locked() {
+        if self.shell_draws_lock() {
             return shell(&name);
+        }
+        if self.is_locked() {
+            let lock = self.lock.client().and_then(|c| c.surface(&name));
+            return lock.map_or(PointerTarget::None, |lock| PointerTarget::Surface {
+                surface: lock.wl_surface().clone(),
+                location: output_geo.loc.to_f64(),
+            });
         }
 
         let layer_hit = |layers: &[Layer]| -> Option<PointerTarget> {
@@ -170,11 +169,6 @@ impl Nimbus {
                 found
             })
             .map(|w| w.id)
-    }
-
-    /// Whether a lock screen is up, either an ext-session-lock client or the shell's.
-    pub fn is_locked(&self) -> bool {
-        self.is_session_locked() || self.is_shell_locked()
     }
 
     /// Sends `popup_done` to every popup of every window and layer surface.
@@ -294,7 +288,9 @@ impl State {
     fn has_grabs(&self) -> bool {
         self.nimbus.pointer.is_grabbed()
             || self.nimbus.keyboard.as_ref().is_some_and(|k| k.is_grabbed())
-            || (self.nimbus.is_session_locked() && self.nimbus.input.shell_grab.is_some())
+            || (self.nimbus.is_locked()
+                && !self.nimbus.shell_draws_lock()
+                && self.nimbus.input.shell_grab.is_some())
     }
 
     /// Ends client grabs and popups once a lock screen is up, so it gets all input.
@@ -316,7 +312,7 @@ impl State {
         if pointer.is_grabbed() {
             pointer.unset_grab(self, serial, time);
         }
-        if self.nimbus.is_session_locked() {
+        if !self.nimbus.shell_draws_lock() {
             self.nimbus.input.shell_grab = None;
         }
         // Moves pointer focus off client windows, onto the lock screen.
@@ -381,10 +377,10 @@ impl State {
             self.nimbus.suppressed_keys.insert(code);
             return FilterResult::Intercept(KeyAction::SwitchVt(vt));
         }
-        if self.nimbus.is_session_locked() {
+        if self.nimbus.lock.client().is_some() {
             return FilterResult::Forward;
         }
-        let locked = self.nimbus.is_shell_locked();
+        let locked = self.nimbus.is_locked();
         if is_emergency_quit(modified, &raw_syms, modifiers, locked) {
             self.nimbus.suppressed_keys.insert(code);
             return FilterResult::Intercept(KeyAction::EmergencyQuit);
@@ -635,16 +631,8 @@ impl State {
             self.nimbus.arrange();
             return;
         }
-        let layer_wants_focus = self.nimbus.outputs().any(|o| {
-            layer_map_for_output(o).layer_for_surface(surface, WindowSurfaceType::ALL).is_some_and(
-                |l| {
-                    l.cached_state().keyboard_interactivity != KeyboardInteractivity::None
-                        && crate::state::is_mapped(l.wl_surface())
-                },
-            )
-        });
-        if layer_wants_focus {
-            let root = root_surface(surface);
+        let root = root_surface(surface);
+        if self.nimbus.layer_takes_focus(&root) {
             self.nimbus.layer_focus = Some(root);
         }
     }

@@ -384,7 +384,7 @@ impl Controller {
                     state.outputs = outputs.clone();
                     update_scale(&mut state);
                 }
-                Event::LayoutChanged { .. } => return,
+                Event::LayoutChanged { .. } | Event::ShellCommand { .. } => return,
             }
         }
         self.refresh_windows(ui);

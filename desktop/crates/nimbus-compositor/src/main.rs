@@ -10,6 +10,7 @@ mod cursor;
 mod input;
 mod ipc;
 mod keybindings;
+mod lock;
 mod lock_marker;
 mod process;
 mod render;
@@ -61,9 +62,9 @@ struct Args {
     /// Run without the desktop shell (panel, dock, launcher) and its system services.
     #[arg(long)]
     no_shell: bool,
-    /// Start with the lock screen up; nimbus-session passes this after a crash while locked.
+    /// Start locked; nimbus-session passes this after a crash while locked.
     /// The compositor also starts locked when the lock marker in $XDG_RUNTIME_DIR/nimbus exists.
-    #[arg(long, conflicts_with = "no_shell")]
+    #[arg(long)]
     locked: bool,
     /// Headless backend only: write a PNG of every output to this directory after a few frames.
     #[arg(long)]
@@ -112,11 +113,8 @@ fn run(args: Args) -> anyhow::Result<()> {
         .context("XDG_RUNTIME_DIR must name an existing directory")?;
     let lock_marker = lock_marker::LockMarker::new(&runtime_dir);
     let start_locked = args.locked || lock_marker.is_present();
-    if start_locked && args.no_shell {
-        anyhow::bail!(
-            "cannot start locked without the shell; remove {} to start unlocked",
-            nimbus_ipc::lock_marker_path(&runtime_dir).display()
-        );
+    if start_locked {
+        tracing::info!("starting locked");
     }
     let mut config = ConfigManager::load(args.config.clone());
 
@@ -180,10 +178,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         let mut shell =
             ShellHost::new(&handle, config.current(), config.path().map(Path::to_path_buf))?;
         // Before any output exists, so every shell starts with the lock screen and no frame shows the desktop.
-        if start_locked {
-            tracing::info!("starting locked");
-            shell.set_locked(true);
-        }
+        shell.set_locked(start_locked);
         Some(shell)
     };
     config.watch(&handle);
@@ -195,6 +190,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         config,
         ipc,
         lock_marker,
+        locked: start_locked,
     });
     nimbus.shell = shell;
 
@@ -256,7 +252,7 @@ fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
             if let Some(timeout) = state.lock_timeout()
                 && state.nimbus.last_activity.elapsed() >= timeout
                 && !state.nimbus.idle_inhibited()
-                && !state.nimbus.is_shell_locked()
+                && !state.nimbus.is_locked()
                 && state.nimbus.shell.is_some()
             {
                 tracing::info!("locking after {timeout:?} of inactivity");

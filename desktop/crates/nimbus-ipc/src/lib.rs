@@ -109,10 +109,13 @@ pub enum Request {
     Spawn {
         command: String,
     },
+    /// Emit [`ShellCommand::ToggleLauncher`] to subscribers.
     ToggleLauncher,
+    /// Emit [`ShellCommand::ToggleOverview`] to subscribers.
     ToggleOverview,
+    /// Lock the session and emit [`ShellCommand::Lock`] to subscribers.
     Lock,
-    /// Ask whether a lock screen is up; the answer is [`Response::LockState`].
+    /// Ask whether the session is locked; the answer is [`Response::LockState`].
     GetLockState,
     ReloadConfig,
     /// Save a PNG of an output: the named one, or the one with the pointer.
@@ -141,10 +144,40 @@ pub enum Response {
 pub enum Event {
     WindowOpened(WindowInfo),
     WindowChanged(WindowInfo),
-    WindowClosed { id: WindowId },
-    WorkspaceActivated { workspace: WorkspaceId },
-    OutputsChanged { outputs: Vec<OutputInfo> },
-    LayoutChanged { layout: LayoutMode },
+    WindowClosed {
+        id: WindowId,
+    },
+    WorkspaceActivated {
+        workspace: WorkspaceId,
+    },
+    OutputsChanged {
+        outputs: Vec<OutputInfo>,
+    },
+    LayoutChanged {
+        layout: LayoutMode,
+    },
+    /// Something the shell should do, triggered in the compositor by a shortcut or a request.
+    ShellCommand {
+        command: ShellCommand,
+        /// The output the user is working on, the one with the pointer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+}
+
+/// A command for the shell, delivered as [`Event::ShellCommand`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShellCommand {
+    ToggleLauncher,
+    ToggleOverview,
+    VolumeUp,
+    VolumeDown,
+    ToggleMute,
+    BrightnessUp,
+    BrightnessDown,
+    /// Show a lock screen through ext-session-lock; the session is locked and black until one appears.
+    Lock,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -177,7 +210,7 @@ pub fn socket_path_for(runtime_dir: &Path, display: &str) -> PathBuf {
     runtime_dir.join(format!("nimbus-{display}.sock"))
 }
 
-/// Returns the file that exists while the compositor shows a lock screen, in `runtime_dir`.
+/// Returns the file that exists while the session is locked, in `runtime_dir`.
 ///
 /// `nimbus-session` restarts a compositor that exits while this file exists with `--locked`,
 /// so a crash never unlocks the session.
@@ -282,6 +315,22 @@ mod tests {
         assert_eq!(json, r#"{"request":"get-lock-state"}"#);
         let json = serde_json::to_string(&Response::LockState { locked: true }).unwrap();
         assert_eq!(json, r#"{"response":"lock-state","locked":true}"#);
+    }
+
+    #[test]
+    fn shell_command_wire_format() {
+        let event = Event::ShellCommand {
+            command: ShellCommand::ToggleLauncher,
+            output: Some("DP-1".into()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"event":"shell-command","command":"toggle-launcher","output":"DP-1"}"#
+        );
+        let back: Event =
+            serde_json::from_str(r#"{"event":"shell-command","command":"volume-up"}"#).unwrap();
+        assert_eq!(back, Event::ShellCommand { command: ShellCommand::VolumeUp, output: None });
     }
 
     #[test]

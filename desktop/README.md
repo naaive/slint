@@ -199,6 +199,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Touch, tablet, and pointer-constraint protocols aren't implemented.
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.
+- When an `ext-session-lock` client such as `swaylock` dies, the session stays locked behind the shell's lock screen;
+  with `--no-shell`, the screen stays black until another client locks it.
 - The lock marker is per `XDG_RUNTIME_DIR`, so a nested compositor or session in the same runtime directory can create or remove the real session's marker.
 - If `nimbus-session` is killed with SIGKILL, autostarted apps keep running.
   An app that moves itself to a new process group or session isn't stopped at logout either.

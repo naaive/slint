@@ -57,17 +57,23 @@ nimbus-portal ──> nimbus-config
 Modules in `crates/nimbus-compositor/src`:
 
 - `main.rs`: argument parsing (`--backend winit|udev|headless`), logging, startup.
-- `lock_marker.rs`: keeps the lock marker in step with the lock state; see [Locking](#locking).
+- `lock.rs`: the session lock state and the `ext-session-lock` client holding it; see [Locking](#locking).
+- `lock_marker.rs`: keeps the lock marker in step with the lock state.
 - `state.rs`: the `Nimbus` state struct and Smithay handler implementations
   (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, ext and wlr data control,
-  output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale).
+  output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale,
+  ext-session-lock, ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
 - `backend/winit.rs`: nested session in a window, for development.
 - `backend/udev.rs`: DRM/KMS, GBM, libinput, and libseat for a real session, with hotplug.
 - `backend/headless.rs`: no output device; renders with Pixman into memory, for tests and screenshots.
 - `wm/`: window management: workspaces, focus stack, floating placement, a tiling layout (master-stack),
-  maximize/fullscreen/minimize, interactive move and resize, and the shell's exclusive zone.
+  maximize/fullscreen/minimize, interactive move and resize,
+  and the exclusive zones of the shell and of layer-shell surfaces.
   Layouts implement a `Layout` trait so more can be added.
-- `input.rs`: keyboard shortcuts from `nimbus-config`, pointer and keyboard routing between the shell and clients.
+- `input.rs`: keyboard shortcuts from `nimbus-config`, pointer and keyboard routing between the shell and clients,
+  and user activity for `ext-idle-notify`.
+  Layer surfaces with `exclusive` keyboard interactivity on the top or overlay layer take the keyboard;
+  `on_demand` ones take it when clicked.
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
 - `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform`,
   creates one `MinimalSoftwareWindow` per output, renders damaged regions into a `MemoryRenderBuffer`,
@@ -80,7 +86,7 @@ Modules in `crates/nimbus-compositor/src`:
 Command line, which `nimbus-session` relies on:
 
 ```text
-nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell | --locked]
+nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell] [--locked]
 ```
 
 When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
@@ -113,17 +119,27 @@ Surfaces:
   and the compositor answers with `Shell::set_locked(false)` or `Shell::unlock_failed()`.
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
+Shortcuts and requests aimed at the shell also go out on the control socket as `Event::ShellCommand`:
+toggling the launcher or overview, volume and brightness keys, and lock requests.
+The in-process shell carries them out directly; the events are for a shell in its own process.
+
 ## Locking
 
-The session locks through the shell's lock screen, or through an `ext-session-lock` client.
-While it's locked, the compositor draws only the lock screen over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
+Locked is compositor state, apart from whatever draws the lock screen.
+An `ext-session-lock` lock, `Request::Lock`, `--locked`, or the lock marker at startup locks the session.
+`Request::Lock` also emits `ShellCommand::Lock`, which asks the shell for a lock screen.
+While it's locked, the compositor draws the lock client's surfaces over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
+Without a live lock client, it draws the in-process shell's lock screen, or black without the shell.
+It then accepts a new `ext-session-lock` lock, but refuses one while a live client holds the session.
+A lock client that dies leaves the session locked, so a restarted shell or compositor can lock again.
+Only the holder's `unlock_and_destroy` unlocks.
+Without a live lock client, a password the in-process lock screen accepts, or logind's unlock signal, unlocks too.
 `Request::GetLockState` reports the lock state over the control socket.
 
 The lock marker, `$XDG_RUNTIME_DIR/nimbus/locked` (`nimbus_ipc::lock_marker_path`), exists while the session is locked.
 The compositor creates it, with mode 0600 in a 0700 directory, as a lock starts and before any locked frame.
 It removes the marker once the session unlocks.
 A compositor started with `--locked`, or with the marker present, starts locked before it creates any output.
-`--locked` can't be combined with `--no-shell`.
 
 `nimbus-session` deletes a stale marker when the session starts.
 When the compositor crashes with the marker present, the session restarts it with `--locked`.
@@ -185,6 +201,7 @@ Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent:
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   The shell tests run it with the real shell and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle over IPC, maximized windows stay below the panel, and notifications show toasts.
+  Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, and `wlr-layer-shell` with their own clients.
 - `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 

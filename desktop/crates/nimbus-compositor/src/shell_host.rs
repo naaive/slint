@@ -441,10 +441,6 @@ impl ShellHost {
         }
     }
 
-    pub fn is_locked(&self) -> bool {
-        self.locked
-    }
-
     /// Sends [`ServiceCommand::LockPresented`] once each of `outputs` presented a locked frame.
     pub fn await_lock_presented(&mut self, outputs: HashSet<String>) {
         self.lock_unpresented = Some(outputs);
@@ -729,7 +725,7 @@ impl State {
     }
 
     fn handle_shell_action(&mut self, action: ShellAction) {
-        if self.nimbus.is_shell_locked() && !allowed_while_locked(&action) {
+        if self.nimbus.is_locked() && !allowed_while_locked(&action) {
             tracing::warn!("ignoring a shell action while locked: {action:?}");
             return;
         }
@@ -794,17 +790,19 @@ impl State {
 
     /// Applies the outcome of a lock screen password check.
     pub fn unlock_result(&mut self, ok: bool) {
-        let Some(shell) = self.nimbus.shell.as_mut() else {
-            return;
-        };
         if ok {
-            tracing::info!("unlocked");
-            shell.set_locked(false);
-            self.nimbus.last_activity = Instant::now();
-        } else {
+            self.unlock_from_shell();
+        } else if let Some(shell) = self.nimbus.shell.as_ref() {
             shell.unlock_failed();
+            self.nimbus.queue_redraw_all();
         }
-        self.nimbus.queue_redraw_all();
+    }
+
+    /// Unlocks the session for the shell's lock screen, unless an ext-session-lock client holds the lock.
+    fn unlock_from_shell(&mut self) {
+        if self.nimbus.shell_draws_lock() {
+            self.unlock_session();
+        }
     }
 
     pub fn handle_service_event(&mut self, event: ServiceEvent) {
@@ -815,12 +813,15 @@ impl State {
             return;
         }
         if event == ServiceEvent::LockRequested {
-            if self.lock_session() {
-                let outputs = self.nimbus.outputs().map(|o| o.name()).collect();
-                if let Some(shell) = self.nimbus.shell.as_mut() {
-                    shell.await_lock_presented(outputs);
-                }
+            self.lock_session();
+            let outputs = self.nimbus.outputs().map(|o| o.name()).collect();
+            if let Some(shell) = self.nimbus.shell.as_mut() {
+                shell.await_lock_presented(outputs);
             }
+            return;
+        }
+        if event == ServiceEvent::UnlockRequested {
+            self.unlock_from_shell();
             return;
         }
         let Some(shell) = self.nimbus.shell.as_mut() else {
@@ -828,12 +829,8 @@ impl State {
         };
         match &event {
             ServiceEvent::State(system) => shell.system_state = Some(system.clone()),
-            ServiceEvent::UnlockRequested => {
-                shell.set_locked(false);
-                self.nimbus.queue_redraw_all();
-                return;
-            }
             ServiceEvent::LockRequested
+            | ServiceEvent::UnlockRequested
             | ServiceEvent::LogoutRequested
             | ServiceEvent::Notification(_)
             | ServiceEvent::NotificationClosed { .. } => {}
@@ -953,9 +950,9 @@ mod tests {
         host.add_test_output(&output("A", (800, 600), 1.0));
         host.set_locked(true);
         host.remove_output("A");
-        assert!(host.is_locked());
+        assert!(host.locked);
         host.add_test_output(&output("A", (800, 600), 1.0));
-        assert!(host.is_locked());
+        assert!(host.locked);
         assert_eq!(locked_instances(&host), [true]);
     }
 
@@ -966,10 +963,10 @@ mod tests {
         host.add_test_output(&output("B", (800, 600), 1.0));
         host.set_locked(true);
         host.instances[0].shell.set_locked(false);
-        assert!(host.is_locked());
+        assert!(host.locked);
         host.set_locked(false);
         assert_eq!(locked_instances(&host), [false, false]);
-        assert!(!host.is_locked());
+        assert!(!host.locked);
     }
 
     #[test]

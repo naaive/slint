@@ -89,25 +89,24 @@ where
         )
     };
 
-    if nimbus.is_session_locked() {
-        if let Some(lock) = nimbus.lock_surfaces.get(&name) {
-            elements.extend(render_elements_from_surface_tree(
-                renderer,
-                lock.wl_surface(),
-                Point::<i32, Physical>::from((0, 0)),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            ));
+    let shell_element = |renderer: &mut R| {
+        nimbus.shell.as_ref().and_then(|shell| shell.render_element(renderer, &name, output_scale))
+    };
+    if nimbus.is_locked() {
+        if let Some(client) = nimbus.lock.client() {
+            if let Some(lock) = client.surface(&name) {
+                elements.extend(render_elements_from_surface_tree(
+                    renderer,
+                    lock.wl_surface(),
+                    Point::<i32, Physical>::from((0, 0)),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                ));
+            }
+        } else {
+            elements.extend(shell_element(renderer).map(OutputRenderElement::Memory));
         }
-        elements.push(OutputRenderElement::Solid(full_output()));
-        return elements;
-    }
-
-    let shell_element =
-        nimbus.shell.as_ref().and_then(|shell| shell.render_element(renderer, &name, output_scale));
-    if nimbus.is_shell_locked() {
-        elements.extend(shell_element.map(OutputRenderElement::Memory));
         elements.push(OutputRenderElement::Solid(full_output()));
         return elements;
     }
@@ -117,7 +116,7 @@ where
     let fullscreen = nimbus.wm.fullscreen_on(&name).map(|w| w.window.clone());
     let shell_above_fullscreen = nimbus.shell.as_ref().is_some_and(|s| s.wants_keyboard_on(&name));
     if fullscreen.is_none() || shell_above_fullscreen {
-        elements.extend(shell_element.map(OutputRenderElement::Memory));
+        elements.extend(shell_element(renderer).map(OutputRenderElement::Memory));
     }
 
     let window_elements =
@@ -289,7 +288,7 @@ pub fn post_repaint(
     }
     drop(map);
     let this_output = |_: &_, _: &_| Some(output.clone());
-    if let Some(lock) = nimbus.lock_surfaces.get(&output.name()) {
+    if let Some(lock) = nimbus.lock.client().and_then(|c| c.surface(&output.name())) {
         send_frames_surface_tree(
             lock.wl_surface(),
             output,

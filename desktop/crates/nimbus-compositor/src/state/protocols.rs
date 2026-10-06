@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use super::{SessionLock, State};
+use super::State;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
@@ -134,49 +134,35 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        // A new locker may replace one that died, but never a live one.
-        if self.nimbus.is_session_locked()
-            && self.nimbus.lock_owner.as_ref().is_some_and(|l| l.is_alive())
-        {
-            // Dropping the locker sends `finished`.
+        if !self.nimbus.lock.accept(confirmation) {
             tracing::warn!("refusing a second session lock");
             return;
         }
-        self.nimbus.lock_surfaces.clear();
-        self.nimbus.lock_owner = Some(confirmation.ext_session_lock().clone());
-        self.nimbus.session_lock = SessionLock::Pending(confirmation);
-        self.nimbus.sync_lock_marker();
-        self.break_grabs_for_lock();
-        self.nimbus.queue_redraw_all();
+        self.lock_changed();
     }
 
     /// Only the confirmed lock holder gets here; see the `ExtSessionLockV1` dispatch below.
     fn unlock(&mut self) {
-        self.nimbus.session_lock = SessionLock::Unlocked;
-        self.nimbus.lock_owner = None;
-        self.nimbus.lock_surfaces.clear();
-        self.nimbus.queue_redraw_all();
+        self.unlock_session();
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
         let Some(output) = Output::from_resource(&output) else {
             return;
         };
-        let owner = self.nimbus.lock_owner.as_ref().and_then(|l| l.client());
-        if owner.is_none() || surface.wl_surface().client() != owner {
+        let Some(geo) = self.nimbus.output_geometry(&output) else {
+            return;
+        };
+        if !self.nimbus.lock.add_surface(output.name(), surface.clone()) {
             tracing::warn!(
                 "ignoring a lock surface from a client that doesn't hold the session lock"
             );
             return;
         }
-        if let Some(geo) = self.nimbus.output_geometry(&output) {
-            let size: Size<u32, Logical> =
-                (u32::try_from(geo.size.w).unwrap_or(0), u32::try_from(geo.size.h).unwrap_or(0))
-                    .into();
-            surface.with_pending_state(|state| state.size = Some(size));
-            surface.send_configure();
-        }
-        self.nimbus.lock_surfaces.insert(output.name(), surface);
+        let size: Size<u32, Logical> =
+            (u32::try_from(geo.size.w).unwrap_or(0), u32::try_from(geo.size.h).unwrap_or(0)).into();
+        surface.with_pending_state(|state| state.size = Some(size));
+        surface.send_configure();
         self.nimbus.queue_redraw(&output);
     }
 }
@@ -212,10 +198,10 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
         dh: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        let owner = state.nimbus.lock_owner.as_ref() == Some(lock);
+        let owner = state.nimbus.lock.is_held_by(lock);
         match &request {
             ext_session_lock_v1::Request::UnlockAndDestroy
-                if !(owner && matches!(state.nimbus.session_lock, SessionLock::Locked)) =>
+                if !owner || state.nimbus.lock.awaits_confirmation() =>
             {
                 tracing::warn!(
                     "refusing an unlock from a client that doesn't hold the session lock"
@@ -249,6 +235,10 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
         <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::destroyed(
             state, client, lock, data,
         );
+        if state.nimbus.lock.release(lock) {
+            tracing::warn!("the session lock client went away; the session stays locked");
+            state.nimbus.queue_redraw_all();
+        }
     }
 }
 delegate_foreign_toplevel_list!(State);

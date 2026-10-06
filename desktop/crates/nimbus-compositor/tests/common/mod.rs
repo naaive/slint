@@ -42,6 +42,11 @@ impl Compositor {
         Self::launch(config, extra_env, false, &[], |_| {})
     }
 
+    /// Starts `--backend headless --no-shell` with `extra_args`.
+    pub fn start_with_args(config: &str, extra_args: &[&str]) -> Self {
+        Self::launch(config, &[], false, extra_args, |_| {})
+    }
+
     /// Starts `--backend headless` with the shell.
     /// Applications come from an empty data directory and D-Bus is unreachable unless `extra_env` says otherwise.
     pub fn start_with_shell(config: &str, extra_env: &[(&str, &str)]) -> Self {
@@ -150,6 +155,27 @@ impl Compositor {
         }
     }
 
+    /// Subscribes to events, which a thread reads so waits can time out.
+    pub fn subscribe(&self) -> Events {
+        let (tx, rx) = mpsc::channel();
+        let events = self.ipc().subscribe().expect("subscribe");
+        std::thread::spawn(move || {
+            for event in events.map_while(Result::ok) {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        Events(rx)
+    }
+
+    pub fn locked(&self) -> bool {
+        match self.ipc().request(&nimbus_ipc::Request::GetLockState).expect("get-lock-state") {
+            nimbus_ipc::Response::LockState { locked } => locked,
+            other => panic!("unexpected response {other:?}"),
+        }
+    }
+
     pub fn request(&self, request: nimbus_ipc::Request) {
         let response = self.ipc().request(&request).expect("request");
         assert_eq!(response, nimbus_ipc::Response::Ok);
@@ -213,6 +239,22 @@ impl Drop for Compositor {
         let _ = self.child.wait();
         if std::thread::panicking() {
             eprintln!("--- compositor log ---\n{}", self.log());
+        }
+    }
+}
+
+pub struct Events(mpsc::Receiver<nimbus_ipc::Event>);
+
+impl Events {
+    /// Waits for the first event that `pick` maps to a value.
+    pub fn wait<T>(&self, what: &str, pick: impl Fn(nimbus_ipc::Event) -> Option<T>) -> T {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let event = self.0.recv_timeout(left).unwrap_or_else(|_| panic!("no {what}"));
+            if let Some(value) = pick(event) {
+                return value;
+            }
         }
     }
 }
