@@ -7,6 +7,8 @@ import { Nav } from "globals.slint";
 // The pages in sidebar order, matching `Page::ALL` in Rust.
 export global PageList {
     out property <[{title: string, icon: image}]> pages: [
+        { title: "Network", icon: Icons.wifi-3 },
+        { title: "Bluetooth", icon: Icons.bluetooth },
         { title: "Appearance", icon: Icons.palette },
         { title: "Panel & Dock", icon: Icons.desktop },
         { title: "Workspaces & Windows", icon: Icons.workspaces },

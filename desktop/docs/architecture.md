@@ -33,7 +33,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, and runs autostart; `nimbusctl` is the command-line client. |
-| `nimbus-settings` | app | System settings, editing `nimbus-config`, and display configuration through wlr-output-management. |
+| `nimbus-settings` | app | System settings, editing `nimbus-config`; display configuration through wlr-output-management; networks and Bluetooth through `nimbus-services`. |
 | `nimbus-files` | app | File manager. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
 | `nimbus-monitor` | app | System monitor on `sysinfo`. |
@@ -50,7 +50,7 @@ nimbus-shell-host ──> nimbus-shell ──> nimbus-theme ──> nimbus-confi
 nimbus-compositor ──> nimbus-ipc, nimbus-config, nimbus-xdg
 apps ──> nimbus-theme[headless], nimbus-config
 nimbus-files ──> nimbus-xdg
-nimbus-settings ──> nimbus-ipc
+nimbus-settings ──> nimbus-ipc, nimbus-services
 nimbus-session ──> nimbus-ipc, nimbus-config
 nimbus-portal ──> nimbus-theme, nimbus-config
 ```
@@ -175,6 +175,35 @@ It arranges displays by dragging, attaching each to the nearest edge of another,
 sends only what the user changed,
 and reverts an applied configuration unless the user keeps it within 15 seconds.
 Without the protocol, it lists the outputs that the control socket reports, read-only.
+
+## Network and Bluetooth
+
+The Network and Bluetooth pages in Settings use two clients in `nimbus-services`, apart from `Services`:
+`nm::Client` for NetworkManager and `bluez::Client` for BlueZ.
+Each runs a `BusService` on a thread of its own with a Tokio runtime (`worker.rs`), so it follows its daemon as it comes and goes,
+and reports a whole snapshot, re-read after each burst of signals, as one event.
+The shell can use them too, such as for a network list in quick settings.
+
+`nm::Client` lists the first Wi-Fi device's access points, one network per SSID at its strongest access point,
+marked when a saved connection has its SSID, and the Ethernet devices, with the addresses, gateway, and DNS of each active connection.
+Connecting activates the saved connection to the SSID, after storing a new password in it if one was typed.
+Without one, it sends `AddAndActivateConnection` with `802-11-wireless-security` set from the access point's flags:
+`wpa-psk`, `sae`, `owe`, or WEP, with the password; enterprise networks aren't supported.
+It follows the active connection's `StateChanged` until it's activated or fails.
+A connection it added that fails is deleted again.
+A failure for missing secrets or a failed login asks for the password through `Event::ConnectFailed`.
+Forgetting deletes every saved connection with the SSID; disconnecting calls `Disconnect` on the Wi-Fi device, which keeps it from connecting again by itself.
+
+`bluez::Client` lists the first adapter and its devices from the object manager, leaving out devices that are neither paired nor named.
+It registers `org.bluez.Agent1` with the `KeyboardDisplay` capability and makes it the default agent while it runs,
+so pairing from Settings, or a device that asks to pair, reaches the app as `Event::Pairing`.
+The agent answers only BlueZ's unique name, and waits for `Command::Answer` until BlueZ cancels the request.
+`Pair`, `Connect`, and `Disconnect` calls run in the background with a 90-second timeout, since BlueZ waits for the device and the user;
+a device that paired is trusted and connected.
+
+The Network page scans when it opens, and the Bluetooth page looks for devices while it shows and the adapter is on.
+Both report failures in the banner.
+The shell's quick settings open the pages with `nimbus-settings --page network` and `--page bluetooth`.
 
 ## Shell
 
@@ -466,10 +495,16 @@ The release profile aborts on panic, because every process is supervised or rest
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
+  The Settings behavior tests drive the Network and Bluetooth pages against in-process sample clients:
+  passwords, saved networks, forgetting, pairing by confirming a code, and discovery that follows the page.
 - `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` toast test run against a private `dbus-daemon`,
   and skip with a message when it's missing.
   The polkit test registers the agent with a fake polkitd and logind there, and calls `BeginAuthentication` and `CancelAuthentication`;
   unit tests drive the helper protocol with shell scripts standing in for `polkit-agent-helper-1`.
+  The NetworkManager client test lists networks and wired details from a fake NetworkManager,
+  connects with a wrong and a right password, changes the password, disconnects, and forgets.
+  The BlueZ client test powers a fake adapter, discovers, pairs through the agent by confirming and by declining, disconnects and removes devices,
+  and checks that the agent refuses callers other than BlueZ.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running

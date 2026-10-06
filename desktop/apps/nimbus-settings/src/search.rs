@@ -66,6 +66,12 @@ const fn entry(page: Page, title: &'static str, keywords: &'static str) -> Entry
 }
 
 pub const ENTRIES: &[Entry] = &[
+    entry(Page::Network, "Wi-Fi", "wifi wireless wlan networks internet ssid connect password"),
+    entry(Page::Network, "Wired", "ethernet cable lan internet"),
+    entry(Page::Network, "IP address", "ipv4 ipv6 dns gateway mac hardware address"),
+    entry(Page::Bluetooth, "Bluetooth", "wireless devices headphones speaker keyboard mouse"),
+    entry(Page::Bluetooth, "Pair a device", "pairing connect discover passkey pin"),
+    entry(Page::Bluetooth, "Visible to other devices", "discoverable bluetooth name"),
     entry(Page::Appearance, "Style", "color scheme dark light mode theme night system"),
     entry(Page::Appearance, "Accent color", "colour highlight tint hex custom"),
     entry(Page::Appearance, "Background", "wallpaper picture image desktop background"),
@@ -146,6 +152,8 @@ mod tests {
         assert_eq!(search("tiling")[0].page, Page::Workspaces);
         assert_eq!(search("keybindings")[0].page, Page::Shortcuts);
         assert_eq!(search("kernel")[0].page, Page::About);
+        assert_eq!(search("wifi password")[0].page, Page::Network);
+        assert_eq!(search("headphones")[0].page, Page::Bluetooth);
         assert!(search("zzzz").is_empty());
         assert!(search("suspend").is_empty(), "lid suspend isn't implemented");
         assert!(search("dpms").is_empty(), "screen blanking isn't implemented");

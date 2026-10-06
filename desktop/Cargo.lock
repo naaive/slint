@@ -3061,6 +3061,7 @@ dependencies = [
  "md-5",
  "nimbus-config",
  "nimbus-ipc",
+ "nimbus-services",
  "nimbus-test-support",
  "nimbus-theme",
  "png",

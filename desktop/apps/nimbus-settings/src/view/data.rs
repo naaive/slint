@@ -85,6 +85,8 @@ impl Inner {
             deliver,
         );
         self.start_displays();
+        self.start_network();
+        self.start_bluetooth();
     }
 
     pub(super) fn handle_data(&self, message: Message) {
@@ -125,6 +127,8 @@ impl Inner {
             Message::About(info, logo) => self.show_about(&info, logo),
             Message::Outputs(result) => self.handle_outputs(result),
             Message::Display(event) => self.handle_display(event),
+            Message::Network(event) => self.handle_network(event),
+            Message::Bluetooth(event) => self.handle_bluetooth(event),
             other @ (Message::ExternalConfig(_) | Message::Saved(_) | Message::Theme(_)) => {
                 self.handle(other)
             }

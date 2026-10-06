@@ -8,11 +8,32 @@ use std::path::{Path, PathBuf};
 use chrono::{NaiveDate, NaiveDateTime};
 use image::RgbaImage;
 use nimbus_ipc::OutputInfo;
+use nimbus_services::{BusAddress, bluez, nm};
 
 use crate::about::{Probe, SystemInfo};
 use crate::displays::{DisplayControl, DisplayEvent, DisplayEvents, Head, HeadConfig, HeadMode};
 use crate::wallpapers::{self, Wallpaper};
 use crate::xkb;
+
+/// Where a client of a system service, such as NetworkManager, reports its events.
+pub type Events<E> = Box<dyn Fn(E) + Send + Sync>;
+
+/// Sends commands to a client of a system service; the outcomes arrive as its events.
+pub trait Control<C>: 'static {
+    fn send(&self, command: C);
+}
+
+impl Control<nm::Command> for nm::Client {
+    fn send(&self, command: nm::Command) {
+        nm::Client::send(self, command);
+    }
+}
+
+impl Control<bluez::Command> for bluez::Client {
+    fn send(&self, command: bluez::Command) {
+        bluez::Client::send(self, command);
+    }
+}
 
 pub trait Sources: Send + Sync + 'static {
     fn wallpapers(&self) -> Vec<Wallpaper>;
@@ -27,6 +48,10 @@ pub trait Sources: Send + Sync + 'static {
     fn display_control(&self, events: DisplayEvents) -> Option<Box<dyn DisplayControl>>;
     /// The outputs, read-only.
     fn outputs(&self) -> Result<Vec<OutputInfo>, String>;
+    /// Starts reporting networks to `events`, with a way to manage them.
+    fn network(&self, events: Events<nm::Event>) -> Box<dyn Control<nm::Command>>;
+    /// Starts reporting Bluetooth devices and pairing requests to `events`, with a way to manage them.
+    fn bluetooth(&self, events: Events<bluez::Event>) -> Box<dyn Control<bluez::Command>>;
     /// The time used for clock previews.
     fn now(&self) -> NaiveDateTime;
 }
@@ -84,6 +109,14 @@ impl Sources for SystemSources {
 
     fn outputs(&self) -> Result<Vec<OutputInfo>, String> {
         crate::displays::fetch().map_err(|e| e.to_string())
+    }
+
+    fn network(&self, events: Events<nm::Event>) -> Box<dyn Control<nm::Command>> {
+        Box::new(nm::Client::spawn(BusAddress::Default, events))
+    }
+
+    fn bluetooth(&self, events: Events<bluez::Event>) -> Box<dyn Control<bluez::Command>> {
+        Box::new(bluez::Client::spawn(BusAddress::Default, events))
     }
 
     fn now(&self) -> NaiveDateTime {
@@ -189,6 +222,14 @@ impl Sources for SampleSources {
                 refresh_mhz: 59_997,
             },
         ])
+    }
+
+    fn network(&self, events: Events<nm::Event>) -> Box<dyn Control<nm::Command>> {
+        Box::new(crate::network::SampleNetwork::new(events))
+    }
+
+    fn bluetooth(&self, events: Events<bluez::Event>) -> Box<dyn Control<bluez::Command>> {
+        Box::new(crate::bluetooth::SampleBluetooth::new(events))
     }
 
     fn now(&self) -> NaiveDateTime {

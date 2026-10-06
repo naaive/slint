@@ -7,12 +7,14 @@
 slint::include_modules!();
 
 pub mod about;
+pub mod bluetooth;
 pub mod cli;
 pub mod clock;
 pub mod dispatch;
 pub mod displays;
 pub mod fonts;
 pub mod imaging;
+pub mod network;
 pub mod page;
 pub mod screenshot;
 pub mod search;

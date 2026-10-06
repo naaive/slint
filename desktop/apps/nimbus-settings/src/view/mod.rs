@@ -2,8 +2,10 @@
 
 //! The UI: binds the Slint `AppWindow` to the [`ConfigStore`] and the data [`Sources`].
 
+mod bluetooth;
 mod data;
 mod displays;
+mod network;
 mod picker;
 mod shortcuts;
 mod sync;
@@ -76,6 +78,8 @@ pub(crate) enum Message {
     About(Box<crate::about::SystemInfo>, Option<SharedPixelBuffer<Rgba8Pixel>>),
     Outputs(Result<Vec<nimbus_ipc::OutputInfo>, String>),
     Display(crate::displays::DisplayEvent),
+    Network(nimbus_services::nm::Event),
+    Bluetooth(nimbus_services::bluez::Event),
 }
 
 thread_local! {
@@ -116,6 +120,8 @@ pub(crate) struct State {
     /// The user chose "Custom" for the clock, so the custom field stays visible even for a preset format.
     pub custom_clock: bool,
     pub displays: displays::Displays,
+    pub network: network::Network,
+    pub bluetooth: bluetooth::Bluetooth,
     pub applied_appearance: Option<Appearance>,
     /// Plain copies of the last pushed list models, to skip pushes that change nothing.
     pub pushed_sources: Vec<(String, String, bool)>,
@@ -187,6 +193,7 @@ impl App {
         wire(&ui, &inner);
         inner.sync_all();
         inner.load_data();
+        inner.page_shown(options.page);
 
         let watcher = if options.watch {
             let path = inner.store.borrow().path().to_path_buf();
@@ -279,6 +286,14 @@ impl Inner {
         }
     }
 
+    /// Refreshes what a page shows when it opens: networks are scanned, and Bluetooth looks for devices.
+    pub fn page_shown(&self, page: Page) {
+        if page == Page::Network {
+            self.send_network(nimbus_services::nm::Command::Scan);
+        }
+        self.show_bluetooth_page(page == Page::Bluetooth);
+    }
+
     pub fn handle(&self, message: Message) {
         match message {
             Message::ExternalConfig(config) => {
@@ -318,6 +333,14 @@ fn wire(ui: &AppWindow, inner: &Rc<Inner>) {
     let nav = ui.global::<Nav>();
     let h = with.clone();
     nav.on_search_edited(move |text| h(&|i| i.sync_search(text.as_str())));
+    let h = with.clone();
+    nav.on_page_shown(move |page| {
+        h(&|i| {
+            if let Some(page) = Page::from_index(page) {
+                i.page_shown(page);
+            }
+        })
+    });
     let h = with.clone();
     nav.on_dismiss_banner(move || h(&|i| i.with_ui(|ui| ui.global::<Nav>().set_banner("".into()))));
     let ui_weak = ui.as_weak();
@@ -363,6 +386,8 @@ fn wire(ui: &AppWindow, inner: &Rc<Inner>) {
     picker::wire(ui, &with);
     shortcuts::wire(ui, &with);
     displays::wire(ui, &with);
+    network::wire(ui, &with);
+    bluetooth::wire(ui, &with);
 }
 
 /// A UI index as `usize`; negative indices, which name nothing, become `usize::MAX`.

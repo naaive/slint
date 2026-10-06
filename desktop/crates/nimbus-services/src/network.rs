@@ -11,11 +11,11 @@ use crate::bus::{self, BusService, Props, Wake};
 use crate::hub::{Update, Updates};
 use crate::{ConnectionKind, Network};
 
-const PATH: &str = "/org/freedesktop/NetworkManager";
-const INTERFACE: &str = "org.freedesktop.NetworkManager";
-const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
-const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
-const ACCESS_POINT_INTERFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
+pub(crate) const PATH: &str = "/org/freedesktop/NetworkManager";
+pub(crate) const INTERFACE: &str = "org.freedesktop.NetworkManager";
+pub(crate) const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
+pub(crate) const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
+pub(crate) const ACCESS_POINT_INTERFACE: &str = "org.freedesktop.NetworkManager.AccessPoint";
 
 // NMConnectivityState values.
 const CONNECTIVITY_UNKNOWN: u32 = 0;
@@ -50,7 +50,7 @@ pub(crate) fn ssid_to_string(ssid: &[u8]) -> Option<String> {
     (!ssid.is_empty()).then_some(ssid)
 }
 
-fn real_path(path: Option<OwnedObjectPath>) -> Option<OwnedObjectPath> {
+pub(crate) fn real_path(path: Option<OwnedObjectPath>) -> Option<OwnedObjectPath> {
     path.filter(|path| path.as_str() != "/")
 }
 

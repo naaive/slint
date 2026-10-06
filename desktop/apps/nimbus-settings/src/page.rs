@@ -7,6 +7,8 @@ use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Page {
+    Network,
+    Bluetooth,
     #[default]
     Appearance,
     Panel,
@@ -20,7 +22,9 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 11] = [
+        Page::Network,
+        Page::Bluetooth,
         Page::Appearance,
         Page::Panel,
         Page::Workspaces,
@@ -35,6 +39,8 @@ impl Page {
     /// The identifier used by `--page`.
     pub fn id(self) -> &'static str {
         match self {
+            Page::Network => "network",
+            Page::Bluetooth => "bluetooth",
             Page::Appearance => "appearance",
             Page::Panel => "panel",
             Page::Workspaces => "workspaces",
@@ -49,6 +55,8 @@ impl Page {
 
     pub fn title(self) -> &'static str {
         match self {
+            Page::Network => "Network",
+            Page::Bluetooth => "Bluetooth",
             Page::Appearance => "Appearance",
             Page::Panel => "Panel & Dock",
             Page::Workspaces => "Workspaces & Windows",
@@ -79,7 +87,7 @@ impl fmt::Display for Page {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unknown page '{0}'; expected one of: appearance, panel, workspaces, input, shortcuts, power, displays, notifications, about"
+    "unknown page '{0}'; expected one of: network, bluetooth, appearance, panel, workspaces, input, shortcuts, power, displays, notifications, about"
 )]
 pub struct UnknownPage(pub String);
 
@@ -106,6 +114,6 @@ mod tests {
         assert_eq!(" About ".parse::<Page>(), Ok(Page::About));
         assert!("sound".parse::<Page>().is_err());
         assert_eq!(Page::from_index(-1), None);
-        assert_eq!(Page::from_index(9), None);
+        assert_eq!(Page::from_index(11), None);
     }
 }

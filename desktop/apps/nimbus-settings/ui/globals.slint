@@ -76,6 +76,33 @@ export struct OptionGroup {
     current: int,
 }
 
+export struct WifiNetworkItem {
+    name: string,
+    status: string,
+    // Signal bars, from 0 to 3.
+    bars: int,
+    secured: bool,
+    active: bool,
+    known: bool,
+}
+
+export struct WiredItem {
+    title: string,
+    status: string,
+    connected: bool,
+    details: [InfoRow],
+}
+
+export struct BluetoothDeviceItem {
+    name: string,
+    status: string,
+    // 0: other, 1: audio, 2: keyboard, 3: mouse, 4: computer.
+    kind: int,
+    paired: bool,
+    connected: bool,
+    busy: bool,
+}
+
 // Navigation, search, and the status banner.
 export global Nav {
     in-out property <int> page;
@@ -88,6 +115,8 @@ export global Nav {
     callback search-edited(text: string);
     callback dismiss-banner();
     callback quit();
+    // The window shows another page.
+    callback page-shown(page: int);
 }
 
 // The values of every setting, in the shape the widgets need.
@@ -234,4 +263,65 @@ export global AboutModel {
     in property <color> brand: #3584e4;
     in property <[InfoRow]> hardware;
     in property <[InfoRow]> software;
+}
+
+export global NetworkModel {
+    // 0: loading, 1: ready, 2: NetworkManager isn't running.
+    in property <int> state;
+    in property <bool> has-wifi;
+    in-out property <bool> wifi-enabled;
+    // Off with a hardware switch, which the switch can't override.
+    in property <bool> wifi-blocked;
+    in property <string> wifi-status;
+    in property <[WifiNetworkItem]> networks;
+    // The name and details of the active Wi-Fi connection; empty without one.
+    in property <string> connection-name;
+    in property <[InfoRow]> connection-details;
+    in property <[WiredItem]> wired;
+
+    callback set-wifi-enabled(enabled: bool);
+    callback scan();
+    // Connects to the network at this index in `networks`, asking for a password when it needs one.
+    callback activate(index: int);
+    callback disconnect();
+    callback forget(index: int);
+
+    // The dialog asking for a Wi-Fi password.
+    in property <bool> password-open;
+    in property <string> password-network;
+    // Why the password is asked for again, such as a wrong password.
+    in property <string> password-error;
+    in-out property <string> password;
+    pure callback password-acceptable(text: string) -> bool;
+    callback password-submit();
+    callback password-cancel();
+}
+
+export global BluetoothModel {
+    // 0: loading, 1: ready, 2: no adapter or BlueZ isn't running.
+    in property <int> state;
+    in property <string> adapter-name;
+    in-out property <bool> powered;
+    in-out property <bool> discoverable;
+    in property <bool> discovering;
+    in property <string> status;
+    in property <[BluetoothDeviceItem]> devices;
+
+    callback set-powered(on: bool);
+    callback set-discoverable(on: bool);
+    callback pair(index: int);
+    callback connect(index: int);
+    callback disconnect(index: int);
+    callback remove(index: int);
+
+    // The pairing dialog. Kinds: 0: confirm a code, 1: type a code on the device, 2: enter a passkey, 3: enter a PIN, 4: allow.
+    in property <bool> pairing-open;
+    in property <int> pairing-kind;
+    in property <string> pairing-title;
+    in property <string> pairing-message;
+    in property <string> pairing-code;
+    in-out property <string> pairing-input;
+    pure callback pairing-input-valid(text: string) -> bool;
+    callback pairing-accept();
+    callback pairing-cancel();
 }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
-// Modal dialogs drawn over the window: the searchable picker and the shortcut capture.
+// Modal dialogs drawn over the window: the searchable picker, the shortcut capture, and the network and pairing prompts.
 
 import { ListView } from "std-widgets.slint";
 import {
     Theme, Motion, Icons, Icon, Label, Button, IconButton, Popover, SearchField, TextField, Dropdown,
 } from "@nimbus/theme.slint";
-import { Picker, ShortcutsModel, DisplaysModel } from "globals.slint";
+import { Picker, ShortcutsModel, DisplaysModel, NetworkModel, BluetoothModel } from "globals.slint";
 import { Keycap } from "widgets.slint";
 
 // Dims the window and swallows clicks outside the dialog.
@@ -376,6 +376,211 @@ export component KeepDisplaysDialog {
                 variant: primary;
                 clicked => {
                     DisplaysModel.keep();
+                }
+            }
+        }
+    }
+}
+
+// Asks for the password of a Wi-Fi network.
+export component WifiPasswordDialog {
+    private property <bool> show-password;
+    private property <bool> acceptable: NetworkModel.password-acceptable(NetworkModel.password);
+
+    init => {
+        field.focus();
+    }
+
+    Scrim {
+        dismissed => {
+            NetworkModel.password-cancel();
+        }
+    }
+
+    FocusScope {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.spacing-xl, (parent.height - self.height) / 3);
+        width: min(420px, parent.width - 2 * Theme.spacing-xl);
+        height: popover.preferred-height;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                NetworkModel.password-cancel();
+                return accept;
+            }
+            reject
+        }
+
+        popover := Popover {
+            content-padding: Theme.spacing-lg;
+            spacing: Theme.spacing-md;
+            accessible-role: groupbox;
+            accessible-label: "Wi-Fi Password";
+
+            Label {
+                text: "Wi-Fi Password";
+                style: Theme.title;
+            }
+
+            Label {
+                text: "Enter the password for “" + NetworkModel.password-network + "”.";
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-xs;
+
+                field := TextField {
+                    placeholder: "Password";
+                    icon: Icons.lock;
+                    password: !root.show-password;
+                    invalid: NetworkModel.password-error != "";
+                    text <=> NetworkModel.password;
+                    accessible-label: "Password";
+                    accepted => {
+                        if root.acceptable {
+                            NetworkModel.password-submit();
+                        }
+                    }
+                }
+
+                IconButton {
+                    icon: root.show-password ? Icons.eye-off : Icons.eye;
+                    checked: root.show-password;
+                    accessible-label: root.show-password ? "Hide password" : "Show password";
+                    clicked => {
+                        root.show-password = !root.show-password;
+                    }
+                }
+            }
+
+            if NetworkModel.password-error != "": HorizontalLayout {
+                spacing: Theme.spacing-sm;
+
+                Icon {
+                    source: Icons.warning;
+                    color: Theme.error;
+                }
+
+                Label {
+                    horizontal-stretch: 1;
+                    text: NetworkModel.password-error;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                alignment: end;
+
+                Button {
+                    text: "Cancel";
+                    variant: flat;
+                    clicked => {
+                        NetworkModel.password-cancel();
+                    }
+                }
+
+                Button {
+                    text: "Connect";
+                    variant: primary;
+                    enabled: root.acceptable;
+                    clicked => {
+                        NetworkModel.password-submit();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Shows or asks for a code while a Bluetooth device pairs.
+export component PairingDialog {
+    private property <bool> typed: BluetoothModel.pairing-kind == 2 || BluetoothModel.pairing-kind == 3;
+    private property <bool> answers: BluetoothModel.pairing-kind != 1;
+    private property <bool> acceptable: !root.typed || BluetoothModel.pairing-input-valid(BluetoothModel.pairing-input);
+
+    init => {
+        if root.typed {
+            field.focus();
+        } else {
+            keys.focus();
+        }
+    }
+
+    Scrim { }
+
+    keys := FocusScope {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.spacing-xl, (parent.height - self.height) / 3);
+        width: min(420px, parent.width - 2 * Theme.spacing-xl);
+        height: popover.preferred-height;
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape {
+                BluetoothModel.pairing-cancel();
+                return accept;
+            }
+            reject
+        }
+
+        popover := Popover {
+            content-padding: Theme.spacing-lg;
+            spacing: Theme.spacing-md;
+            accessible-role: groupbox;
+            accessible-label: BluetoothModel.pairing-title;
+
+            Label {
+                text: BluetoothModel.pairing-title;
+                style: Theme.title;
+            }
+
+            Label {
+                text: BluetoothModel.pairing-message;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            if BluetoothModel.pairing-code != "": Label {
+                text: BluetoothModel.pairing-code;
+                style: Theme.headline;
+                horizontal-alignment: center;
+                letter-spacing: 4px;
+                accessible-label: "Code " + BluetoothModel.pairing-code;
+            }
+
+            field := TextField {
+                visible: root.typed;
+                height: root.typed ? self.min-height : 0;
+                placeholder: BluetoothModel.pairing-kind == 2 ? "Six-digit code" : "PIN";
+                text <=> BluetoothModel.pairing-input;
+                accessible-label: BluetoothModel.pairing-kind == 2 ? "Code" : "PIN";
+                accepted => {
+                    if root.acceptable {
+                        BluetoothModel.pairing-accept();
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.spacing-sm;
+                alignment: end;
+
+                Button {
+                    text: "Cancel";
+                    variant: flat;
+                    clicked => {
+                        BluetoothModel.pairing-cancel();
+                    }
+                }
+
+                if root.answers: Button {
+                    text: BluetoothModel.pairing-kind == 4 ? "Allow" : "Pair";
+                    variant: primary;
+                    enabled: root.acceptable;
+                    clicked => {
+                        BluetoothModel.pairing-accept();
+                    }
                 }
             }
         }

@@ -67,6 +67,16 @@ pub(crate) fn stream_ended() -> zbus::Error {
     zbus::Error::Failure("signal stream ended".into())
 }
 
+/// The reason in an error, for people to read: a daemon's own message when it sent one.
+pub(crate) fn reason(err: &zbus::Error) -> String {
+    match err {
+        zbus::Error::MethodError(_, Some(message), _) | zbus::Error::Failure(message) => {
+            message.clone()
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Calls `method` and returns the reply, failing after [`CALL_TIMEOUT`] since the bus never times out calls itself.
 pub(crate) async fn call<B>(
     conn: &Connection,
@@ -343,6 +353,7 @@ pub(crate) async fn supervise<S: BusService>(
     };
     if watch.owner().is_none() {
         tracing::debug!("{} isn't running yet", S::NAME);
+        service.unavailable();
     }
     let mut retry = RETRY_MIN;
     loop {

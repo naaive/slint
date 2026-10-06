@@ -11,8 +11,8 @@ pub const USAGE: &str = "\
 Usage: nimbus-settings [--page <page>] [--config <path>]
 
 Options:
-  --page <page>     Open a page: appearance, panel, workspaces, input, shortcuts,
-                    power, displays, notifications, or about
+  --page <page>     Open a page: network, bluetooth, appearance, panel, workspaces,
+                    input, shortcuts, power, displays, notifications, or about
   --config <path>   Edit this file instead of $XDG_CONFIG_HOME/nimbus/config.toml
   -h, --help        Print this help
   -V, --version     Print the version";
@@ -109,6 +109,13 @@ mod tests {
         assert_eq!(options.page, Page::About);
         assert_eq!(options.screenshot, Some(PathBuf::from("out.png")));
         assert!(options.screenshot_light);
+        // The shell's quick settings open these.
+        for (id, page) in [("network", Page::Network), ("bluetooth", Page::Bluetooth)] {
+            let Ok(Command::Run(options)) = run(&["--page", id]) else {
+                panic!("expected options")
+            };
+            assert_eq!(options.page, page);
+        }
     }
 
     #[test]

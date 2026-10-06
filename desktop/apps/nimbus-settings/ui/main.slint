@@ -2,10 +2,12 @@
 
 import { Palette } from "std-widgets.slint";
 import { Theme, Icons, IconButton, HeaderBar } from "@nimbus/theme.slint";
-import { Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel } from "globals.slint";
+import { Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel } from "globals.slint";
 import { Banner } from "widgets.slint";
 import { Sidebar, PageList } from "sidebar.slint";
-import { PickerDialog, CaptureDialog, KeepDisplaysDialog } from "dialogs.slint";
+import { PickerDialog, CaptureDialog, KeepDisplaysDialog, WifiPasswordDialog, PairingDialog } from "dialogs.slint";
+import { NetworkPage } from "pages/network.slint";
+import { BluetoothPage } from "pages/bluetooth.slint";
 import { AppearancePage } from "pages/appearance.slint";
 import { PanelPage } from "pages/panel.slint";
 import { WorkspacesPage } from "pages/workspaces.slint";
@@ -16,10 +18,11 @@ import { DisplaysPage } from "pages/displays.slint";
 import { NotificationsPage } from "pages/notifications.slint";
 import { AboutPage } from "pages/about.slint";
 
-export { Theme, Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel }
+export { Theme, Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel, NetworkModel, BluetoothModel }
 
 export component AppWindow inherits Window {
     private property <bool> dark: Theme.dark;
+    private property <int> page: Nav.page;
 
     function sync-palette() {
         Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
@@ -31,6 +34,9 @@ export component AppWindow inherits Window {
 
     changed dark => {
         root.sync-palette();
+    }
+    changed page => {
+        Nav.page-shown(root.page);
     }
     init => {
         root.sync-palette();
@@ -87,7 +93,7 @@ export component AppWindow inherits Window {
                     title: PageList.pages[Nav.page].title;
                     background: Theme.background;
 
-                    if Nav.page == 6 && !DisplaysModel.editable: IconButton {
+                    if Nav.page == 8 && !DisplaysModel.editable: IconButton {
                         icon: Icons.refresh;
                         accessible-label: "Refresh displays";
                         clicked => {
@@ -112,15 +118,17 @@ export component AppWindow inherits Window {
                 Rectangle {
                     vertical-stretch: 1;
 
-                    if Nav.page == 0: AppearancePage { }
-                    if Nav.page == 1: PanelPage { }
-                    if Nav.page == 2: WorkspacesPage { }
-                    if Nav.page == 3: InputPage { }
-                    if Nav.page == 4: ShortcutsPage { }
-                    if Nav.page == 5: PowerPage { }
-                    if Nav.page == 6: DisplaysPage { }
-                    if Nav.page == 7: NotificationsPage { }
-                    if Nav.page == 8: AboutPage { }
+                    if Nav.page == 0: NetworkPage { }
+                    if Nav.page == 1: BluetoothPage { }
+                    if Nav.page == 2: AppearancePage { }
+                    if Nav.page == 3: PanelPage { }
+                    if Nav.page == 4: WorkspacesPage { }
+                    if Nav.page == 5: InputPage { }
+                    if Nav.page == 6: ShortcutsPage { }
+                    if Nav.page == 7: PowerPage { }
+                    if Nav.page == 8: DisplaysPage { }
+                    if Nav.page == 9: NotificationsPage { }
+                    if Nav.page == 10: AboutPage { }
                 }
             }
         }
@@ -130,5 +138,9 @@ export component AppWindow inherits Window {
         if ShortcutsModel.capture-open: CaptureDialog { }
 
         if DisplaysModel.confirm-seconds > 0: KeepDisplaysDialog { }
+
+        if NetworkModel.password-open: WifiPasswordDialog { }
+
+        if BluetoothModel.pairing-open: PairingDialog { }
     }
 }

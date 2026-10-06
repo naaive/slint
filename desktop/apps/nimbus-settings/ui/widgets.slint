@@ -7,6 +7,7 @@ import {
     Theme, Motion, Icons, Icon, Label, Card, ListRow, ToggleSwitch, Slider, Dropdown, SegmentedControl, Divider,
     IconButton, FocusRing,
 } from "@nimbus/theme.slint";
+import { InfoRow } from "globals.slint";
 
 // A page body: a vertically scrolling column, centered and limited to a readable width.
 export component PageScroll inherits ScrollView {
@@ -65,6 +66,39 @@ export component RowDivider {
     Divider {
         x: Theme.spacing-md;
         width: parent.width - 2 * Theme.spacing-md;
+    }
+}
+
+// Labeled values, one per row, for a `Group`.
+export component InfoRows {
+    in property <[InfoRow]> rows;
+
+    VerticalLayout {
+        for row[index] in root.rows: VerticalLayout {
+            if index > 0: RowDivider { }
+
+            ListRow {
+                title: row.label;
+                clickable: false;
+
+                Label {
+                    max-width: 440px;
+                    text: row.value;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}
+
+// A titled group of labeled values.
+export component InfoGroup inherits Group {
+    in property <[InfoRow]> rows;
+
+    InfoRows {
+        rows: root.rows;
     }
 }
 

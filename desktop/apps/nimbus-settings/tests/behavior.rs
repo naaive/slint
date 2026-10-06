@@ -7,7 +7,7 @@ use nimbus_config::{Action, ColorScheme, Config};
 use nimbus_settings::page::Page;
 use nimbus_settings::screenshot::sample_app;
 use nimbus_settings::view::App;
-use nimbus_settings::{Nav, Picker, Prefs, ShortcutsModel};
+use nimbus_settings::{BluetoothModel, Nav, NetworkModel, Picker, Prefs, ShortcutsModel};
 use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle, Model, SharedString};
 
@@ -264,4 +264,137 @@ fn displays_are_edited_applied_and_reverted() {
     displays.invoke_choose_resolution(1, 1);
     assert_eq!(item(1).refresh_rates.row_data(0).as_deref(), Some("59.95 Hz"));
     assert_eq!(f.saved().outputs, [], "the compositor saves displays, not Settings");
+}
+
+/// The index of the row named `name` in a list model of items with a `name`.
+fn index_of<T>(
+    model: slint::ModelRc<T>,
+    name: &str,
+    row_name: impl Fn(&T) -> &SharedString,
+) -> i32 {
+    model
+        .iter()
+        .position(|row| row_name(&row) == name)
+        .unwrap_or_else(|| panic!("no row named {name}")) as i32
+}
+
+#[test]
+fn network_page_connects_forgets_and_asks_for_passwords() {
+    let f = Fixture::new(Page::Network);
+    let window = f.app.window();
+    let network = window.global::<NetworkModel>();
+    let nav = window.global::<Nav>();
+    let row = |name: &str| index_of(network.get_networks(), name, |n| &n.name);
+    let item = |name: &str| network.get_networks().row_data(row(name) as usize).expect("a network");
+    assert_eq!(network.get_state(), 1);
+    assert!(network.get_has_wifi() && network.get_wifi_enabled());
+    assert_eq!(network.get_wifi_status(), "Connected to Nimbus HQ");
+    assert_eq!(network.get_networks().row_count(), 6);
+    assert!(item("Nimbus HQ").active && item("Nimbus HQ").secured);
+    assert_eq!(item("Nimbus HQ").status, "Connected · Secured");
+    assert_eq!(item("Nimbus HQ").bars, 3);
+    assert_eq!(network.get_connection_name(), "Nimbus HQ");
+    let details: Vec<SharedString> =
+        network.get_connection_details().iter().map(|r| r.label).collect();
+    assert!(details.iter().any(|label| label == "IPv4 address"), "{details:?}");
+    let wired = network.get_wired().row_data(0).expect("a wired device");
+    assert_eq!(
+        (wired.title.as_str(), wired.status.as_str()),
+        ("Ethernet (enp0s31f6)", "Cable unplugged")
+    );
+
+    // A secured network asks for a password first.
+    network.invoke_activate(row("Neighbor 5G"));
+    assert!(network.get_password_open());
+    assert_eq!(network.get_password_network(), "Neighbor 5G");
+    assert_eq!(network.get_password_error(), "");
+    assert!(!network.invoke_password_acceptable("short".into()), "WPA needs 8 characters");
+    assert!(network.invoke_password_acceptable("long enough".into()));
+    network.set_password("long enough".into());
+    network.invoke_password_submit();
+    assert!(!network.get_password_open());
+    assert_eq!(network.get_password(), "", "the password doesn't stay in the UI");
+    assert!(item("Neighbor 5G").active && item("Neighbor 5G").known);
+    assert_eq!(network.get_connection_name(), "Neighbor 5G");
+
+    // A saved network whose password is missing asks for it when NetworkManager fails.
+    network.invoke_activate(row("Library"));
+    assert!(network.get_password_open());
+    assert_eq!(network.get_password_network(), "Library");
+    network.invoke_password_cancel();
+    assert!(!network.get_password_open());
+    assert!(!item("Library").active);
+
+    network.invoke_forget(row("Library"));
+    assert!(!item("Library").known);
+    network.invoke_disconnect();
+    assert_eq!(network.get_connection_details().row_count(), 0);
+    assert_eq!(network.get_wifi_status(), "Not connected");
+
+    network.invoke_activate(row("Nimbus Guest"));
+    assert!(!network.get_password_open(), "open networks connect right away");
+    assert!(item("Nimbus Guest").active);
+
+    network.invoke_activate(row("eduroam"));
+    assert!(nav.get_banner().contains("enterprise networks"), "{}", nav.get_banner());
+
+    network.invoke_set_wifi_enabled(false);
+    assert!(!network.get_wifi_enabled());
+    assert_eq!(network.get_wifi_status(), "Off");
+}
+
+#[test]
+fn bluetooth_page_discovers_pairs_and_manages_devices() {
+    let f = Fixture::new(Page::Bluetooth);
+    let window = f.app.window();
+    let bluetooth = window.global::<BluetoothModel>();
+    let nav = window.global::<Nav>();
+    let row = |name: &str| index_of(bluetooth.get_devices(), name, |d| &d.name);
+    let device =
+        |name: &str| bluetooth.get_devices().row_data(row(name) as usize).expect("a device");
+    assert_eq!(bluetooth.get_state(), 1);
+    assert!(bluetooth.get_powered());
+    assert!(bluetooth.get_discovering(), "the open page looks for devices");
+    assert_eq!(bluetooth.get_devices().row_count(), 4);
+    let headphones = device("WH-1000XM5");
+    assert_eq!((headphones.kind, headphones.status.as_str()), (1, "Connected · Battery 70%"));
+
+    bluetooth.invoke_pair(row("Pixel 8"));
+    assert!(bluetooth.get_pairing_open());
+    assert_eq!(bluetooth.get_pairing_kind(), 0);
+    assert_eq!(bluetooth.get_pairing_title(), "Pair with Pixel 8?");
+    assert_eq!(bluetooth.get_pairing_code(), "482913");
+    assert!(device("Pixel 8").busy);
+    bluetooth.invoke_pairing_accept();
+    assert!(!bluetooth.get_pairing_open());
+    let phone = device("Pixel 8");
+    assert!(phone.paired && phone.connected && !phone.busy);
+
+    bluetooth.invoke_pair(row("MX Master 3S"));
+    assert!(bluetooth.get_pairing_open());
+    bluetooth.invoke_pairing_cancel();
+    assert!(!bluetooth.get_pairing_open());
+    assert!(!device("MX Master 3S").paired);
+    assert!(nav.get_banner().contains("MX Master 3S"), "{}", nav.get_banner());
+
+    bluetooth.invoke_disconnect(row("WH-1000XM5"));
+    assert!(!device("WH-1000XM5").connected);
+    bluetooth.invoke_connect(row("MX Keys"));
+    assert!(device("MX Keys").connected);
+    bluetooth.invoke_remove(row("MX Keys"));
+    assert_eq!(bluetooth.get_devices().row_count(), 3);
+
+    bluetooth.invoke_set_discoverable(true);
+    assert!(bluetooth.get_discoverable());
+    assert_eq!(bluetooth.get_status(), "Visible as “workstation”");
+
+    nav.set_page(Page::Appearance.index() as i32);
+    slint::platform::update_timers_and_animations();
+    assert!(!bluetooth.get_discovering(), "leaving the page stops looking");
+
+    bluetooth.invoke_set_powered(false);
+    assert!(!bluetooth.get_powered());
+    nav.set_page(Page::Bluetooth.index() as i32);
+    slint::platform::update_timers_and_animations();
+    assert!(!bluetooth.get_discovering(), "a powered-off adapter doesn't look");
 }

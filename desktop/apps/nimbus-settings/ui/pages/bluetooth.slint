@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Label, ListRow, Button, IconButton, Spinner } from "@nimbus/theme.slint";
+import { BluetoothModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, EmptyState, SwitchRow } from "../widgets.slint";
+
+// A device with the actions its state allows.
+component DeviceRow inherits ListRow {
+    in property <int> kind;
+    in property <bool> paired;
+    in property <bool> connected;
+    in property <bool> busy;
+
+    callback pair();
+    callback connect();
+    callback disconnect();
+    callback remove();
+
+    icon: root.kind == 1 ? Icons.volume-high : root.kind == 2 ? Icons.keyboard : root.kind == 3 ? Icons.mouse : root.kind == 4 ? Icons.desktop : Icons.bluetooth;
+    clickable: false;
+
+    if root.busy: Spinner {
+        size: 18px;
+    }
+
+    if !root.busy: Button {
+        text: !root.paired ? "Pair" : root.connected ? "Disconnect" : "Connect";
+        compact: true;
+        clicked => {
+            if !root.paired {
+                root.pair();
+            } else if root.connected {
+                root.disconnect();
+            } else {
+                root.connect();
+            }
+        }
+    }
+
+    if root.paired: IconButton {
+        icon: Icons.trash;
+        size: Theme.control-height-small + 4px;
+        enabled: !root.busy;
+        accessible-label: "Remove " + root.title;
+        clicked => {
+            root.remove();
+        }
+    }
+}
+
+export component BluetoothPage inherits PageScroll {
+    if BluetoothModel.state == 0: HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xxl;
+
+        Spinner {
+            size: 20px;
+        }
+
+        Label {
+            text: "Looking for Bluetooth…";
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    if BluetoothModel.state == 2: EmptyState {
+        icon: Icons.bluetooth-off;
+        title: "No Bluetooth Adapter";
+        description: "Plug in a Bluetooth adapter, or check that the Bluetooth service, BlueZ, is running.";
+    }
+
+    if BluetoothModel.state == 1: Group {
+        title: "Bluetooth";
+
+        SwitchRow {
+            icon: BluetoothModel.powered ? Icons.bluetooth : Icons.bluetooth-off;
+            title: "Bluetooth";
+            subtitle: BluetoothModel.status;
+            checked <=> BluetoothModel.powered;
+            toggled(checked) => {
+                BluetoothModel.set-powered(checked);
+            }
+        }
+
+        RowDivider { }
+
+        SwitchRow {
+            title: "Visible to other devices";
+            subtitle: "Others can find this computer as “" + BluetoothModel.adapter-name + "”";
+            checked <=> BluetoothModel.discoverable;
+            enabled: BluetoothModel.powered;
+            toggled(checked) => {
+                BluetoothModel.set-discoverable(checked);
+            }
+        }
+    }
+
+    if BluetoothModel.state == 1 && BluetoothModel.powered: VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            Label {
+                horizontal-stretch: 1;
+                text: "Devices";
+                style: Theme.body-strong;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+
+            if BluetoothModel.discovering: Spinner {
+                size: 16px;
+            }
+
+            if BluetoothModel.discovering: Label {
+                text: "Searching for devices…";
+                style: Theme.caption;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+            }
+        }
+
+        Group {
+            if BluetoothModel.devices.length == 0: ListRow {
+                title: "No devices found";
+                subtitle: "Make sure the device is on and ready to pair";
+                clickable: false;
+            }
+
+            for device[index] in BluetoothModel.devices: VerticalLayout {
+                if index > 0: RowDivider { }
+
+                DeviceRow {
+                    title: device.name;
+                    subtitle: device.status;
+                    kind: device.kind;
+                    paired: device.paired;
+                    connected: device.connected;
+                    busy: device.busy;
+                    pair => {
+                        BluetoothModel.pair(index);
+                    }
+                    connect => {
+                        BluetoothModel.connect(index);
+                    }
+                    disconnect => {
+                        BluetoothModel.disconnect(index);
+                    }
+                    remove => {
+                        BluetoothModel.remove(index);
+                    }
+                }
+            }
+        }
+    }
+
+    if BluetoothModel.state == 1 && !BluetoothModel.powered: Label {
+        text: "Turn on Bluetooth to connect headphones, keyboards, and other devices.";
+        color: Theme.text-secondary;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+}

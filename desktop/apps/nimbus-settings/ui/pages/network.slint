@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Icons, Icon, Label, ListRow, Button, IconButton, Spinner } from "@nimbus/theme.slint";
+import { NetworkModel } from "../globals.slint";
+import { PageScroll, Group, RowDivider, EmptyState, SwitchRow, InfoRows } from "../widgets.slint";
+
+// A Wi-Fi network; activating it connects.
+component NetworkRow inherits ListRow {
+    in property <int> bars;
+    in property <bool> secured;
+    in property <bool> active;
+    in property <bool> known;
+
+    callback disconnect();
+    callback forget();
+
+    icon: root.bars >= 3 ? Icons.wifi-3 : root.bars == 2 ? Icons.wifi-2 : root.bars == 1 ? Icons.wifi-1 : Icons.wifi-0;
+    clickable: !root.active;
+
+    if root.secured: Icon {
+        source: Icons.lock;
+        color: Theme.text-secondary;
+        accessible-role: image;
+        accessible-label: "Secured";
+    }
+
+    if root.active: Button {
+        text: "Disconnect";
+        compact: true;
+        clicked => {
+            root.disconnect();
+        }
+    }
+
+    if root.known: IconButton {
+        icon: Icons.trash;
+        size: Theme.control-height-small + 4px;
+        accessible-label: "Forget " + root.title;
+        clicked => {
+            root.forget();
+        }
+    }
+}
+
+export component NetworkPage inherits PageScroll {
+    if NetworkModel.state == 0: HorizontalLayout {
+        alignment: center;
+        spacing: Theme.spacing-sm;
+        padding: Theme.spacing-xxl;
+
+        Spinner {
+            size: 20px;
+        }
+
+        Label {
+            text: "Looking for networks…";
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    if NetworkModel.state == 2: EmptyState {
+        icon: Icons.network-off;
+        title: "Networking Isn't Available";
+        description: "NetworkManager isn't running, so Nimbus can't manage network connections.";
+    }
+
+    if NetworkModel.state == 1 && NetworkModel.has-wifi: Group {
+        title: "Wi-Fi";
+
+        SwitchRow {
+            icon: NetworkModel.wifi-enabled ? Icons.wifi-3 : Icons.wifi-off;
+            title: "Wi-Fi";
+            subtitle: NetworkModel.wifi-status;
+            checked <=> NetworkModel.wifi-enabled;
+            enabled: !NetworkModel.wifi-blocked;
+            toggled(checked) => {
+                NetworkModel.set-wifi-enabled(checked);
+            }
+        }
+    }
+
+    if NetworkModel.state == 1 && NetworkModel.has-wifi && NetworkModel.wifi-enabled: VerticalLayout {
+        spacing: Theme.spacing-sm;
+
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+
+            Label {
+                horizontal-stretch: 1;
+                text: "Visible Networks";
+                style: Theme.body-strong;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+
+            IconButton {
+                icon: Icons.refresh;
+                size: Theme.control-height-small + 4px;
+                accessible-label: "Scan for networks";
+                clicked => {
+                    NetworkModel.scan();
+                }
+            }
+        }
+
+        Group {
+            if NetworkModel.networks.length == 0: ListRow {
+                title: "No networks found";
+                clickable: false;
+            }
+
+            for network[index] in NetworkModel.networks: VerticalLayout {
+                if index > 0: RowDivider { }
+
+                NetworkRow {
+                    title: network.name;
+                    subtitle: network.status;
+                    bars: network.bars;
+                    secured: network.secured;
+                    active: network.active;
+                    known: network.known;
+                    clicked => {
+                        NetworkModel.activate(index);
+                    }
+                    disconnect => {
+                        NetworkModel.disconnect();
+                    }
+                    forget => {
+                        NetworkModel.forget(index);
+                    }
+                }
+            }
+        }
+    }
+
+    if NetworkModel.state == 1 && NetworkModel.connection-details.length > 0: Group {
+        title: NetworkModel.connection-name;
+        description: "The connection in use";
+
+        InfoRows {
+            rows: NetworkModel.connection-details;
+        }
+    }
+
+    for device in NetworkModel.wired: Group {
+        title: "Wired";
+
+        ListRow {
+            icon: Icons.ethernet;
+            title: device.title;
+            subtitle: device.status;
+            clickable: false;
+        }
+
+        if device.details.length > 0: RowDivider { }
+
+        InfoRows {
+            rows: device.details;
+        }
+    }
+
+    if NetworkModel.state == 1 && !NetworkModel.has-wifi && NetworkModel.wired.length == 0: EmptyState {
+        icon: Icons.network-off;
+        title: "No Network Adapters";
+        description: "Connect a Wi-Fi or Ethernet adapter to get online.";
+    }
+}

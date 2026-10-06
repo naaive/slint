@@ -47,6 +47,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 
 - `org.freedesktop.Notifications`, UPower, NetworkManager, BlueZ, MPRIS, logind, PipeWire or PulseAudio volume, and backlight.
 - The session's polkit authentication agent, which checks responses through polkit's setuid `polkit-agent-helper-1`, never in process.
+- NetworkManager and BlueZ clients for network and Bluetooth settings, with a BlueZ pairing agent, which apps run on a thread of their own.
 - Each service degrades on its own: a missing daemon hides its feature and is picked up again when it appears.
 
 ### Portal (`nimbus-portal`)
@@ -57,6 +58,9 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 
 - **Settings** (`nimbus-settings`): appearance, panel and dock, workspaces, keyboard and mouse, shortcuts, power, notifications, about,
   and displays, which you arrange by dragging and set up with resolution, refresh rate, scale, and rotation.
+  Join Wi-Fi networks with a password, forget them, and see the addresses of each connection, wired ones too, through NetworkManager.
+  Pair Bluetooth devices by confirming or entering a code, then connect, disconnect, or remove them, through BlueZ.
+  Quick settings open these pages from the Wi-Fi and Bluetooth tiles.
 - **Files** (`nimbus-files`): grid and list views, search, a freedesktop trash, thumbnails, and copy and move with conflict handling and undo.
 - **Terminal** (`nimbus-terminal`): tabs, color schemes, search, true color, and box drawing, on `alacritty_terminal`.
 - **System Monitor** (`nimbus-monitor`): processes with sorting, tree view, and signals; CPU, memory, network, and disk graphs; and file systems.
@@ -260,5 +264,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   It registers only inside a logind session, so a nested session leaves polkit to the host desktop's agent.
   It doesn't use polkit's socket-activated helper, which distributions that drop the helper's setuid bit need.
 - polkit requests wait while the session is locked, and their dialog shows once it unlocks.
+- The Network and Bluetooth pages have only run against fake NetworkManager and BlueZ daemons.
+  They show only the first Wi-Fi device and the first Bluetooth adapter.
+- Settings can't join enterprise or hidden Wi-Fi networks, and doesn't edit IP settings, VPNs, or proxies.
+  It saves Wi-Fi passwords with the connection, for every user, as `nmcli` does, and isn't a NetworkManager secret agent.
+- Settings is BlueZ's pairing agent only while it runs; with it closed, a device that asks to pair needs another agent.
 - The UI is English only.
 - Each crate's README lists its own gaps.

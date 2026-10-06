@@ -13,9 +13,9 @@ use crate::Bluetooth;
 use crate::bus::{self, BusService, Wake};
 use crate::hub::{Update, Updates};
 
-const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
-const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
-const DEVICE_INTERFACE: &str = "org.bluez.Device1";
+pub(crate) const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
+pub(crate) const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
+pub(crate) const DEVICE_INTERFACE: &str = "org.bluez.Device1";
 
 pub(crate) type ManagedObjects =
     HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;

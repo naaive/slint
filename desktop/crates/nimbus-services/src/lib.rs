@@ -6,6 +6,8 @@
 //! (UPower, NetworkManager, MPRIS, logind, the session's `org.freedesktop.Notifications` server, and its polkit agent)
 //! and to PipeWire or PulseAudio through `wpctl`/`pactl`.
 //! Every service degrades gracefully: a missing bus or daemon leaves its part of [`SystemState`] at `None` or default.
+//!
+//! [`nm`] and [`bluez`] are clients for network and Bluetooth settings, each on a thread of its own.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -22,6 +24,10 @@ mod network;
 mod notifications;
 mod polkit;
 mod upower;
+mod worker;
+
+pub mod bluez;
+pub mod nm;
 
 pub use notifications::DEFAULT_TIMEOUT as DEFAULT_NOTIFICATION_TIMEOUT;
 pub use polkit::{AuthenticationCommand, AuthenticationEvent, AuthenticationRequest, Secret};
