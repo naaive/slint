@@ -32,7 +32,7 @@ use workspace::Workspaces;
 pub struct OutputArea {
     pub name: String,
     pub geometry: Rect,
-    /// The geometry minus the shell's and layer-shell surfaces' exclusive zones.
+    /// The geometry minus the exclusive zones of layer surfaces.
     pub usable: Rect,
 }
 

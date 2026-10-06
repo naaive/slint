@@ -119,14 +119,13 @@ pub fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-/// Returns `nimbus-compositor` next to `current_exe`, or the bare name for a `PATH` lookup.
-pub fn compositor_program(current_exe: Option<&Path>) -> PathBuf {
-    const NAME: &str = "nimbus-compositor";
+/// Returns the executable `name` next to `current_exe`, or the bare name for a `PATH` lookup.
+pub fn sibling_program(name: &str, current_exe: Option<&Path>) -> PathBuf {
     current_exe
         .and_then(Path::parent)
-        .map(|dir| dir.join(NAME))
+        .map(|dir| dir.join(name))
         .filter(|p| is_executable(p))
-        .unwrap_or_else(|| PathBuf::from(NAME))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 #[cfg(test)]
@@ -213,11 +212,12 @@ mod tests {
         assert_eq!(find_in_path(exe.to_str().unwrap(), None), Some(exe.clone()));
 
         let sibling = dir.path().join("nimbus-compositor");
+        let session = dir.path().join("nimbus-session");
         assert_eq!(
-            compositor_program(Some(&dir.path().join("nimbus-session"))),
+            sibling_program("nimbus-compositor", Some(&session)),
             PathBuf::from("nimbus-compositor")
         );
         std::fs::copy(&exe, &sibling).unwrap();
-        assert_eq!(compositor_program(Some(&dir.path().join("nimbus-session"))), sibling);
+        assert_eq!(sibling_program("nimbus-compositor", Some(&session)), sibling);
     }
 }

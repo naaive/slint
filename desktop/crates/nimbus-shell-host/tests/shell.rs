@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! End-to-end tests of `nimbus-shell` against a headless compositor running with `--no-shell`.
+//! End-to-end tests of `nimbus-shell` against a headless compositor.
 
 mod common;
 
@@ -10,7 +10,7 @@ use nix::sys::signal::Signal;
 use std::process::{Child, Command, Stdio};
 
 #[test]
-fn panel_renders_and_launcher_toggles() {
+fn panel_renders_and_launcher_and_overview_toggle() {
     let session = Session::start(CONFIG, None);
     // The clock in the center of the panel draws light text on the dark bar.
     let idle = session.wait_screenshot("the panel and its clock", |shot| {
@@ -26,6 +26,10 @@ fn panel_renders_and_launcher_toggles() {
     session.wait_screenshot("the launcher", |shot| changed_fraction(&idle, shot) > 0.3);
     session.request(Request::ToggleLauncher);
     session.wait_screenshot("the launcher to close", |shot| changed_fraction(&idle, shot) < 0.02);
+    session.request(Request::ToggleOverview);
+    session.wait_screenshot("the overview", |shot| changed_fraction(&idle, shot) > 0.2);
+    session.request(Request::ToggleOverview);
+    session.wait_screenshot("the overview to close", |shot| changed_fraction(&idle, shot) < 0.02);
 }
 
 #[test]

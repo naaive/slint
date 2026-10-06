@@ -2897,32 +2897,24 @@ name = "nimbus-compositor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytemuck",
  "clap",
  "dirs",
  "image",
  "libc",
  "nimbus-config",
  "nimbus-ipc",
- "nimbus-services",
- "nimbus-shell",
  "nimbus-xdg",
- "nix 0.30.1",
  "serde",
  "serde_json",
- "slint",
  "smithay",
  "tempfile",
  "thiserror 2.0.21",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
  "xcursor",
- "zbus",
- "zeroize",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 mod common;
 
 use common::{Compositor, TIMEOUT, TestClient};
-use nimbus_ipc::{Event, LayoutMode, Request, Response};
+use nimbus_ipc::{Event, LayoutMode, Request, Response, ShellCommand};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
@@ -102,6 +102,24 @@ fn subscribers_receive_window_events() {
     client.destroy_window(index);
     client.roundtrip();
     next(&|e| matches!(e, Event::WindowClosed { id } if *id == info.id));
+}
+
+#[test]
+fn shell_requests_become_shell_command_events() {
+    let compositor = Compositor::start(CONFIG, &[]);
+    let events = compositor.subscribe();
+    for (request, expected) in [
+        (Request::ToggleLauncher, ShellCommand::ToggleLauncher),
+        (Request::ToggleOverview, ShellCommand::ToggleOverview),
+    ] {
+        compositor.request(request);
+        let command = events.wait("a shell command", |event| match event {
+            Event::ShellCommand { command, output } => Some((command, output)),
+            _ => None,
+        });
+        assert_eq!(command, (expected, Some("HEADLESS-1".into())));
+    }
+    assert!(!compositor.locked());
 }
 
 #[test]

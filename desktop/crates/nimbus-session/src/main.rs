@@ -47,15 +47,15 @@ struct Cli {
     /// Configuration file instead of $XDG_CONFIG_HOME/nimbus/config.toml.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
-    /// Run the compositor without the desktop shell.
-    #[arg(long)]
-    no_shell: bool,
     /// Skip the configuration's `autostart` commands and XDG autostart entries.
     #[arg(long)]
     no_autostart: bool,
     /// Compositor executable instead of the one next to nimbus-session or on PATH.
     #[arg(long, value_name = "PATH")]
     compositor: Option<PathBuf>,
+    /// Shell executable instead of the one next to nimbus-session or on PATH.
+    #[arg(long, value_name = "PATH")]
+    shell: Option<PathBuf>,
     /// Seconds to wait for the compositor to report readiness.
     #[arg(long, value_name = "SECONDS", default_value_t = 30)]
     ready_timeout: u64,
@@ -69,13 +69,15 @@ fn default_backend(lookup: impl Fn(&str) -> Option<String>) -> Backend {
 /// The compositor's arguments, except `--socket` and `--locked`, which the supervisor adds.
 fn compositor_args(cli: &Cli, backend: Backend) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["--backend".into(), backend.as_arg().into()];
-    if let Some(config) = &cli.config {
-        args.extend(["--config".into(), config.into()]);
-    }
-    if cli.no_shell {
-        args.push("--no-shell".into());
-    }
+    args.extend(config_args(cli));
     args
+}
+
+fn config_args(cli: &Cli) -> Vec<OsString> {
+    match &cli.config {
+        Some(config) => vec!["--config".into(), config.into()],
+        None => Vec::new(),
+    }
 }
 
 /// Loads the configuration for its `autostart` commands; the compositor reports configuration errors.
@@ -151,10 +153,10 @@ fn main() -> ExitCode {
     }
 
     let backend = cli.backend.unwrap_or_else(|| default_backend(lookup_env));
-    let program = cli
-        .compositor
-        .clone()
-        .unwrap_or_else(|| env::compositor_program(std::env::current_exe().ok().as_deref()));
+    let current_exe = std::env::current_exe().ok();
+    let program = |path: &Option<PathBuf>, name: &str| {
+        path.clone().unwrap_or_else(|| env::sibling_program(name, current_exe.as_deref()))
+    };
     let run_autostart = !cli.no_autostart;
     let desktops: Vec<String> = session_env
         .get("XDG_CURRENT_DESKTOP")
@@ -165,11 +167,14 @@ fn main() -> ExitCode {
 
     let config_path = cli.config.clone();
     let plan = supervisor::SessionPlan {
-        compositor: supervisor::CompositorCommand {
-            program,
+        compositor: supervisor::Program {
+            path: program(&cli.compositor, "nimbus-compositor"),
             args: compositor_args(&cli, backend),
-            socket: cli.socket.clone(),
-            can_lock: !cli.no_shell,
+        },
+        socket: cli.socket.clone(),
+        shell: supervisor::Program {
+            path: program(&cli.shell, "nimbus-shell"),
+            args: config_args(&cli),
         },
         env: session_env,
         autostart: Box::new(move || {
@@ -215,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn options_pass_through_to_the_compositor() {
+    fn options_pass_through_to_the_compositor_and_shell() {
         let cli = Cli::try_parse_from([
             "nimbus-session",
             "--backend",
@@ -224,19 +229,20 @@ mod tests {
             "wayland-9",
             "--config",
             "/tmp/c.toml",
-            "--no-shell",
         ])
         .unwrap();
         let backend = cli.backend.unwrap();
         let args: Vec<_> =
             compositor_args(&cli, backend).into_iter().map(|a| a.into_string().unwrap()).collect();
-        assert_eq!(args, ["--backend", "headless", "--config", "/tmp/c.toml", "--no-shell"]);
+        assert_eq!(args, ["--backend", "headless", "--config", "/tmp/c.toml"]);
+        assert_eq!(config_args(&cli), [OsString::from("--config"), "/tmp/c.toml".into()]);
 
         let cli = Cli::try_parse_from(["nimbus-session"]).unwrap();
         assert_eq!(
             compositor_args(&cli, Backend::Udev),
             [OsString::from("--backend"), "udev".into()]
         );
+        assert!(config_args(&cli).is_empty());
         assert!(Cli::try_parse_from(["nimbus-session", "--backend", "x11"]).is_err());
     }
 

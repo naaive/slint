@@ -12,7 +12,7 @@ const CONFIG: &str = "[appearance]\nanimations = false\n";
 
 #[test]
 fn a_lock_marker_at_startup_starts_locked() {
-    let compositor = Compositor::start_with_shell_in(CONFIG, &[], |runtime| {
+    let compositor = Compositor::start_in(CONFIG, &[], |runtime| {
         let marker = nimbus_ipc::lock_marker_path(runtime);
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
         std::fs::write(&marker, "").unwrap();
@@ -23,14 +23,14 @@ fn a_lock_marker_at_startup_starts_locked() {
 
 #[test]
 fn the_locked_flag_starts_locked_and_creates_the_marker() {
-    let compositor = Compositor::start_with_shell_in(CONFIG, &["--locked"], |_| {});
+    let compositor = Compositor::start_with_args(CONFIG, &["--locked"]);
     assert!(compositor.locked(), "{}", compositor.log());
     assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
 }
 
 #[test]
 fn locking_creates_a_private_marker() {
-    let compositor = Compositor::start_with_shell(CONFIG, &[]);
+    let compositor = Compositor::start(CONFIG, &[]);
     let marker = nimbus_ipc::lock_marker_path(&compositor.runtime_dir());
     assert!(!compositor.locked());
     assert!(!marker.exists());

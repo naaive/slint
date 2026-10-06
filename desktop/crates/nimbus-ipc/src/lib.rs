@@ -67,7 +67,7 @@ pub enum Direction {
     Down,
 }
 
-/// A command for the compositor, from the in-process shell or from a socket client.
+/// A command for the compositor from a control socket client, such as the shell.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case")]
 pub enum Request {

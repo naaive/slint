@@ -61,6 +61,7 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# Every process is supervised or activated on demand and restarts into a safe state; see docs/architecture.md, "Panics".
 [profile.release]
 panic = "abort"
 [profile.dev.package.resvg]

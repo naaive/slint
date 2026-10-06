@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Runs `nimbus-session` against shell scripts that stand in for the compositor.
+//! Runs `nimbus-session` against shell scripts that stand in for the compositor and the shell.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,9 @@ impl Sandbox {
             std::fs::create_dir_all(dir.path().join(sub)).unwrap();
         }
         std::fs::write(dir.path().join("config/nimbus/config.toml"), config).unwrap();
-        Self { dir }
+        let sandbox = Self { dir };
+        sandbox.shell("exec sleep 60");
+        sandbox
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -36,15 +38,26 @@ impl Sandbox {
         path
     }
 
-    fn spawn(&self, compositor: &Path) -> Child {
-        self.spawn_with(compositor, &[])
+    /// Replaces the fake shell, which records `<pid> $WAYLAND_DISPLAY $NIMBUS_SOCKET <time> <args>` per start.
+    fn shell(&self, body: &str) {
+        let path = self.path("fake-shell");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$$ $WAYLAND_DISPLAY $NIMBUS_SOCKET $(date +%s.%N) $*\" >> '{}'\n{body}\n",
+                self.path("shell-starts").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn spawn_with(&self, compositor: &Path, args: &[&str]) -> Child {
+    fn spawn(&self, compositor: &Path) -> Child {
         Command::new(env!("CARGO_BIN_EXE_nimbus-session"))
             .args(["--backend", "headless", "--ready-timeout", "5", "--compositor"])
             .arg(compositor)
-            .args(args)
+            .arg("--shell")
+            .arg(self.path("fake-shell"))
             .env("DBUS_SESSION_BUS_ADDRESS", "disabled:")
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_CONFIG_DIRS", self.path("xdg"))
@@ -59,12 +72,35 @@ impl Sandbox {
     }
 
     fn starts(&self) -> Vec<String> {
-        std::fs::read_to_string(self.path("starts"))
+        self.lines("starts")
+    }
+
+    /// Each shell start's fields: pid, `WAYLAND_DISPLAY`, `NIMBUS_SOCKET`, time, and arguments.
+    fn shell_starts(&self) -> Vec<Vec<String>> {
+        let lines = self.lines("shell-starts");
+        lines.iter().map(|line| line.split_whitespace().map(str::to_string).collect()).collect()
+    }
+
+    fn lines(&self, name: &str) -> Vec<String> {
+        std::fs::read_to_string(self.path(name))
             .unwrap_or_default()
             .lines()
             .map(str::to_string)
             .collect()
     }
+
+    /// A shell command that waits up to 15 seconds for `name` to have at least `count` lines.
+    fn wait_lines(&self, name: &str, count: impl std::fmt::Display) -> String {
+        format!(
+            "i=0; while [ $(cat '{}' 2>/dev/null | wc -l) -lt {count} ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done",
+            self.path(name).display()
+        )
+    }
+}
+
+/// Whether the process `pid` is gone, or a zombie until its new parent reaps it.
+fn is_gone(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().is_none_or(|s| s.contains(") Z "))
 }
 
 fn wait_with_timeout(child: &mut Child, timeout: Duration) -> std::process::ExitStatus {
@@ -127,6 +163,9 @@ fn clean_exit_runs_autostart_then_stops_it() {
     );
     assert_eq!(wait_for_file(&from_config, Duration::from_secs(1)), "wayland\n");
     assert_eq!(sandbox.starts(), vec!["--backend headless"]);
+    let shells = sandbox.shell_starts();
+    assert_eq!(shells.len(), 1, "{shells:?}");
+    assert_eq!(shells[0][1..3], ["wayland-test", "/tmp/nimbus"], "the shell gets the sockets");
 }
 
 #[test]
@@ -154,6 +193,9 @@ fn sigterm_is_forwarded_and_ends_the_session() {
     let status = wait_with_timeout(&mut session, Duration::from_secs(10));
     assert!(status.success(), "{status}");
     assert_eq!(sandbox.starts().len(), 1);
+    let shells = sandbox.shell_starts();
+    assert_eq!(shells.len(), 1);
+    assert!(is_gone(&shells[0][0]), "the shell outlived the session");
 }
 
 #[test]
@@ -220,16 +262,6 @@ fn crash_while_locked_restarts_locked() {
 }
 
 #[test]
-fn crash_while_locked_without_the_shell_ends_the_session() {
-    let sandbox = Sandbox::new("");
-    let compositor = crash_while_locked(&sandbox);
-    let mut session = sandbox.spawn_with(&compositor, &["--no-shell"]);
-    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
-    assert_eq!(status.code(), Some(1));
-    assert_eq!(sandbox.starts(), vec!["--backend headless --no-shell"]);
-}
-
-#[test]
 fn lock_marker_from_an_earlier_session_is_ignored() {
     let sandbox = Sandbox::new("");
     let marker = sandbox.path("runtime/nimbus/locked");
@@ -260,11 +292,51 @@ fn a_failed_restart_still_stops_autostarted_processes() {
     assert!(!status.success(), "{status}");
 
     let pid = wait_for_file(&pid_file, Duration::from_secs(1));
-    let stat = PathBuf::from(format!("/proc/{}/stat", pid.trim()));
     let deadline = Instant::now() + Duration::from_secs(5);
-    // Once killed, the process is gone, or a zombie until its new parent reaps it.
-    while std::fs::read_to_string(&stat).is_ok_and(|s| !s.contains(") Z ")) {
+    while !is_gone(pid.trim()) {
         assert!(Instant::now() < deadline, "the autostarted process outlived the session");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn crashing_shell_is_restarted_with_backoff() {
+    let sandbox = Sandbox::new("");
+    sandbox.shell("exit 1");
+    // Logs out once the shell started three times.
+    let compositor = sandbox.compositor(&format!(
+        "echo 'NIMBUS_READY WAYLAND_DISPLAY=wayland-s NIMBUS_SOCKET=/tmp/s.sock'\n{}\nexit 0",
+        sandbox.wait_lines("shell-starts", 3)
+    ));
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(30));
+    assert!(status.success(), "{status}");
+    assert_eq!(sandbox.starts().len(), 1, "a shell crash leaves the compositor alone");
+    let times: Vec<f64> = sandbox.shell_starts().iter().map(|s| s[3].parse().unwrap()).collect();
+    assert!(times.len() >= 3, "{times:?}");
+    let (first, second) = (times[1] - times[0], times[2] - times[1]);
+    assert!(first >= 0.4, "restarted after {first}s");
+    assert!(second > first, "the delay grows: {first}s, then {second}s");
+}
+
+#[test]
+fn compositor_crash_restarts_the_compositor_and_the_shell() {
+    let sandbox = Sandbox::new("");
+    // Crashes once its shell started, then logs out once the second shell started.
+    let compositor = sandbox.compositor(&format!(
+        "echo 'NIMBUS_READY WAYLAND_DISPLAY=wayland-c NIMBUS_SOCKET=/tmp/c.sock'\n\
+         runs=$(wc -l < '{starts}')\n{wait}\n[ \"$runs\" -lt 2 ] && exit 3\nexit 0",
+        starts = sandbox.path("starts").display(),
+        wait = sandbox.wait_lines("shell-starts", "$runs"),
+    ));
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
+    assert!(status.success(), "{status}");
+    assert_eq!(
+        sandbox.starts(),
+        vec!["--backend headless", "--backend headless --socket wayland-c"]
+    );
+    let shells = sandbox.shell_starts();
+    assert_eq!(shells.len(), 2, "{shells:?}");
+    assert!(shells.iter().all(|shell| is_gone(&shell[0])), "every shell was stopped");
 }

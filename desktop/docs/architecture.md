@@ -8,11 +8,12 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - **Wayland only.** There's no X11 session; XWayland is optional and runs on demand.
 - **The shell is a client.** `nimbus-shell` shows the shell on `wlr-layer-shell` and `ext-session-lock` surfaces,
   and talks to the compositor over the control socket, so a crashed shell never takes windows down.
-  Until `nimbus-session` starts it, the compositor still hosts the same shell in-process unless started with `--no-shell`.
+  The compositor has no Slint, no system services, and no PAM; it speaks Wayland protocols and the control socket.
 - **Crates are boundaries.** Domain crates (`nimbus-ipc`, `nimbus-config`, `nimbus-xdg`, `nimbus-services`) have no UI.
   The shell is a view over them and doesn't know how it's displayed.
-  The compositor and the shell process are the only crates that wire them together.
-- **Single-threaded UI, async edges.** The compositor and the shell process each run one `calloop` event loop on the main thread, which also drives Slint.
+  The shell process is the only crate that wires them together.
+- **Single-threaded UI, async edges.** The compositor and the shell process each run one `calloop` event loop on the main thread;
+  the shell's also drives Slint.
   D-Bus work runs on a Tokio runtime in `nimbus-services` and reaches the main thread through a `calloop` channel.
 - **Degrade, don't fail.** A missing D-Bus daemon, backlight, or battery hides that feature; it never stops the session.
 - **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind, the portal Settings interface,
@@ -28,10 +29,10 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output. |
-| `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, shell hosting, control socket. |
+| `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
-| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and runs autostart; `nimbusctl` is the command-line client. |
+| `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, and runs autostart; `nimbusctl` is the command-line client. |
 | `nimbus-settings` | app | System settings, editing `nimbus-config`. |
 | `nimbus-files` | app | File manager. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
@@ -40,17 +41,28 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 Dependency direction (arrows point at dependencies):
 
 ```text
-nimbus-compositor ──> nimbus-shell ──> nimbus-theme ──> nimbus-config
-nimbus-shell-host ──┘      │
+nimbus-shell-host ──> nimbus-shell ──> nimbus-theme ──> nimbus-config
         │                  ├──> nimbus-ipc
         │                  ├──> nimbus-xdg
         │                  └──> nimbus-services
         └──> (all of the above)
+nimbus-compositor ──> nimbus-ipc, nimbus-config, nimbus-xdg
 apps ──> nimbus-theme[headless], nimbus-config
 nimbus-files ──> nimbus-xdg
 nimbus-settings ──> nimbus-ipc
 nimbus-session ──> nimbus-ipc, nimbus-config
 nimbus-portal ──> nimbus-config
+```
+
+Processes in a session (arrows point from the starting process):
+
+```text
+display manager or TTY
+  └─> nimbus-session ─┬─> nimbus-compositor   restarted after a crash, with --locked while the lock marker exists
+                      ├─> nimbus-shell        started once the compositor is ready; restarted whenever it exits
+                      └─> autostart           once per session, each in its own process group
+nimbus-shell ──Wayland and control socket──> nimbus-compositor
+D-Bus activation ──> nimbus-portal
 ```
 
 ## Compositor
@@ -69,27 +81,23 @@ Modules in `crates/nimbus-compositor/src`:
 - `backend/headless.rs`: no output device; renders with Pixman into memory, for tests and screenshots.
 - `wm/`: window management: workspaces, focus stack, floating placement, a tiling layout (master-stack),
   maximize/fullscreen/minimize, interactive move and resize,
-  and the exclusive zones of the shell and of layer-shell surfaces.
+  and the exclusive zones of layer-shell surfaces, such as the shell's panel and dock.
   Layouts implement a `Layout` trait so more can be added.
-- `input.rs`: keyboard shortcuts from `nimbus-config`, pointer and keyboard routing between the shell and clients,
-  and user activity for `ext-idle-notify`.
+- `input/`: input routing and user activity for `ext-idle-notify`.
+  `keyboard.rs` runs keyboard shortcuts from `nimbus-config`, VT switches, and the emergency exit;
+  `pointer.rs` finds the surface under the pointer, focuses on click or hover, and runs interactive move and resize.
   Layer surfaces with `exclusive` keyboard interactivity on the top or overlay layer take the keyboard;
   `on_demand` ones take it when clicked.
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
-- `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform` and holds the `ShellModel`.
-  Each output gets a `ShellView`, plus a `LockView` above it while locked, each in a `MinimalSoftwareWindow`
-  that renders damaged regions into a `MemoryRenderBuffer`.
-  It forwards input inside `ShellView::input_region()`, or to the lock screen while locked,
-  and maps `ShellAction`s to compositor requests, services, and launches.
-- `auth.rs`: checks lock screen passwords through PAM on a worker thread and reports back through a `calloop` channel.
-  It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
+- `actions.rs`: control requests and keybinding actions.
+  Shortcuts aimed at the shell become `Event::ShellCommand`s; see [Shell](#shell).
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 - `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshots.
 
 Command line, which `nimbus-session` relies on:
 
 ```text
-nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--no-shell] [--locked]
+nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--locked]
 ```
 
 When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
@@ -97,10 +105,7 @@ for its children and prints exactly one line to standard output:
 `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`.
 All logging goes to standard error.
 The headless backend creates one 1920x1080 virtual output, or the sizes listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
-
-Slint's platform is process-global and must be set before the first component is created.
-Its timers and animations advance from the `calloop` loop through `slint::platform::update_timers_and_animations()`,
-and the loop wakes at `slint::platform::duration_until_next_timer_update()`.
+`Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
 
 ## Shell
 
@@ -128,16 +133,16 @@ Surfaces:
 - **OSD**: volume and brightness feedback.
 - **Lock screen**: clock and password field; authentication goes through PAM in the process hosting the shell.
   The shell hands passwords to the handler registered with `ShellModel::on_unlock_attempt`,
-  and the compositor answers with `ShellModel::set_locked(false)` or `ShellModel::unlock_failed()`.
+  and its host answers with `ShellModel::set_locked(false)` or `ShellModel::unlock_failed()`.
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
-Shortcuts and requests aimed at the shell also go out on the control socket as `Event::ShellCommand`:
+Shortcuts and requests aimed at the shell reach it on the control socket as `Event::ShellCommand`:
 toggling the launcher or overview, volume and brightness keys, and lock requests.
-The in-process shell carries them out directly; the events are for a shell in its own process.
+The compositor handles the keys and names the output under the pointer; the shell carries the commands out.
 
 ## Shell Process
 
-`nimbus-shell` runs the shell as a client of a compositor started with `--no-shell`.
+`nimbus-shell` runs the shell as a Wayland client of the compositor; `nimbus-session` starts it once the compositor is ready.
 It finds the compositor through `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`, and takes `--config <path>` like the compositor.
 It exits with status 0 on SIGTERM or SIGINT, and with a failure when it loses either connection.
 One `calloop` loop drives the Wayland connection (through `smithay-client-toolkit`), Slint's timers,
@@ -159,7 +164,8 @@ Modules in `crates/nimbus-shell-host/src`:
   The view's surface takes pointer input only inside `ShellView::input_region()`.
   It has no keyboard interactivity until the view wants the keyboard; then it's exclusive and moves to the overlay layer, above fullscreen windows.
 - `lock.rs`: locking through `ext-session-lock-v1`; see [Locking](#locking).
-- `auth.rs`: PAM on a worker thread, as in the compositor.
+- `auth.rs`: checks lock screen passwords through PAM on a worker thread and reports back through a `calloop` channel.
+  It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
 - `idle.rs`: an `ext-idle-notify-v1` notification after `power.lock_after_minutes`, which locks.
 - `input.rs`: pointer and keyboard input; keys go through the compositor's XKB keymap, with its repeat rate.
 - `ipc.rs`: one control socket connection, subscribed to events, which also carries requests; responses reach callbacks in request order.
@@ -172,7 +178,7 @@ Locked is compositor state, apart from whatever draws the lock screen.
 An `ext-session-lock` lock, `Request::Lock`, `--locked`, or the lock marker at startup locks the session.
 `Request::Lock` also emits `ShellCommand::Lock`, which asks the shell for a lock screen.
 While it's locked, the compositor draws the lock client's surfaces over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
-Without a live lock client, it draws the in-process shell's lock screen, or black without the shell.
+Without a live lock client, it draws black and gives keyboard and pointer to no one.
 `nimbus-shell` asks for the lock state when it starts, and locks with `ext-session-lock` if the session is locked,
 so a restarted shell shows its lock screen again.
 It creates its lock surfaces once the compositor confirms the lock, because the compositor rejects surfaces of a lock it refused.
@@ -180,7 +186,6 @@ logind's lock signal, `Event::ShellCommand` with `lock`, and inactivity also mak
 It then accepts a new `ext-session-lock` lock, but refuses one while a live client holds the session.
 A lock client that dies leaves the session locked, so a restarted shell or compositor can lock again.
 Only the holder's `unlock_and_destroy` unlocks.
-Without a live lock client, a password the in-process lock screen accepts, or logind's unlock signal, unlocks too.
 `Request::GetLockState` reports the lock state over the control socket.
 
 The lock marker, `$XDG_RUNTIME_DIR/nimbus/locked` (`nimbus_ipc::lock_marker_path`), exists while the session is locked.
@@ -189,8 +194,7 @@ It removes the marker once the session unlocks.
 A compositor started with `--locked`, or with the marker present, starts locked before it creates any output.
 
 `nimbus-session` deletes a stale marker when the session starts.
-When the compositor crashes with the marker present, the session restarts it with `--locked`.
-Without the shell, it ends the session instead.
+When the compositor crashes with the marker present, the session restarts it with `--locked`, then restarts the shell, which locks again.
 The marker is per runtime directory, so a nested compositor in the same `XDG_RUNTIME_DIR` shares it with the real session.
 
 ## Portal
@@ -221,8 +225,8 @@ Every Nimbus UI imports it, so the shell and apps look like one product.
 ## Configuration
 
 `$XDG_CONFIG_HOME/nimbus/config.toml`; see `nimbus-config` for the schema.
-The compositor watches the file and applies changes live, so the Settings app only writes the file.
-The shell saves its own changes, such as the dark style toggle and dock pins, to the file the compositor was started with.
+The compositor and the shell watch the file and apply changes live, so the Settings app only writes the file.
+The shell saves its own changes, such as the dark style toggle and dock pins, to the file named by `--config`, or the default one.
 The shell and Settings both write through `nimbus_config::update` or `update_with`,
 which hold a lock on `config.toml.lock` from load to save,
 so neither loses the other's changes.
@@ -230,15 +234,36 @@ Settings and the compositor parse key chords with the same `nimbus_config::chord
 
 ## Sessions and Logout
 
-`nimbus-session` treats a compositor exit status of 0 as a logout and anything else as a crash to restart.
+`nimbus-session` treats a compositor exit status of 0 as a logout and anything else as a crash.
+It restarts a crashed compositor up to three times a minute, then ends the session.
 A restarted compositor reuses the first one's Wayland socket name, so clients keep a valid `WAYLAND_DISPLAY`.
+
+It starts `nimbus-shell` once the compositor reports readiness, with the compositor's `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`,
+and passes it `--config` when the session has one.
+A shell that exits, for any reason, is restarted after a delay that doubles from half a second up to 30 seconds,
+and drops back to half a second once a shell ran for 30 seconds.
+A shell never ends the session.
+When the compositor exits, the session stops the shell, and starts a new one with the restarted compositor.
 
 `nimbus-session` owns autostart, and runs it once per session, after the first compositor reports readiness.
 It runs each `config.autostart` command through `/bin/sh -c`, then the XDG autostart entries.
 Each autostarted process leads its own process group.
 The session terminates these groups when it ends, for any reason, but not when the compositor restarts.
 Logging out asks logind to end the session.
-Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested` and the compositor exits with status 0.
+Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested`,
+and the shell sends `Request::Quit`, so the compositor exits with status 0.
+
+### Panics
+
+The release profile aborts on panic, because every process is supervised or restarted on demand, and each one restarts into a safe state:
+
+- The compositor keeps the lock marker on disk while locked, so a restarted compositor starts locked.
+  Unwinding gains nothing, since the session restarts it either way.
+- The shell asks the compositor for the lock state when it starts, so a restarted shell shows the lock screen again.
+  Aborting also covers its worker threads, such as the D-Bus runtime and the PAM worker:
+  a panic there ends the process instead of leaving a shell that silently stops answering.
+- `nimbus-portal` is started again by D-Bus activation on the next request.
+- `nimbus-session` is the root of the session, which a panic ends whether it unwinds or not.
 
 ## Testing
 
@@ -246,22 +271,23 @@ Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent:
 - The shell has tests on Slint's testing backend.
   The shell and apps render reference screenshots off screen through `nimbus_theme::headless`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
-  The shell tests run it with the real shell and check the composited output through `Request::Screenshot`:
-  the panel renders, the launcher and overview toggle over IPC, maximized windows stay below the panel, and notifications show toasts.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, and `wlr-layer-shell` with their own clients.
-- The `nimbus-shell` tests run it against the headless compositor with `--no-shell`, which they build first:
-  the panel renders, the launcher toggles through shell command events, maximized windows stay below the panel,
+- The `nimbus-shell` tests run it against the headless compositor, which they build first,
+  and check the composited output through `Request::Screenshot`:
+  the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,
   notifications show toasts, `Request::Lock` shows the lock screen on a lock surface,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
+- The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
 - `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running
 
-- Nested, inside an existing Wayland or X11 session: `cargo run -p nimbus-compositor -- --backend winit`.
+- Nested, inside an existing Wayland or X11 session: `nimbus-session --backend winit`, after building the workspace,
+  so it finds `nimbus-compositor` and `nimbus-shell` next to itself.
 - On a TTY: `nimbus-session`, or select "Nimbus" from a display manager using `data/nimbus.desktop`.
 - Headless, for tests and screenshots: `nimbus-compositor --backend headless`, with apps started as `SLINT_BACKEND=winit-software`.
-- The shell as its own process: start `nimbus-compositor --no-shell`, then `nimbus-shell` with the `WAYLAND_DISPLAY` and `NIMBUS_SOCKET` it prints.
+- By hand: start `nimbus-compositor`, then `nimbus-shell` with the `WAYLAND_DISPLAY` and `NIMBUS_SOCKET` it prints.
 
 The workspace's `dev` profile keeps only line tables for its own crates and no debug info for dependencies,
 because Slint's generated code makes full debug info several hundred megabytes per binary.

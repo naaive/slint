@@ -3,7 +3,6 @@
 //! The Nimbus Wayland compositor.
 
 mod actions;
-mod auth;
 mod backend;
 mod config;
 mod cursor;
@@ -14,7 +13,6 @@ mod lock;
 mod lock_marker;
 mod process;
 mod render;
-mod shell_host;
 mod state;
 mod wm;
 
@@ -23,7 +21,6 @@ use backend::Backend;
 use clap::{Parser, ValueEnum};
 use config::ConfigManager;
 use ipc::IpcServer;
-use shell_host::ShellHost;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
@@ -31,7 +28,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use state::{ClientState, Nimbus, NimbusInit, State};
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,9 +56,6 @@ struct Args {
     /// Configuration file; defaults to $XDG_CONFIG_HOME/nimbus/config.toml.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Run without the desktop shell (panel, dock, launcher) and its system services.
-    #[arg(long)]
-    no_shell: bool,
     /// Start locked; nimbus-session passes this after a crash while locked.
     /// The compositor also starts locked when the lock marker in $XDG_RUNTIME_DIR/nimbus exists.
     #[arg(long)]
@@ -163,7 +157,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let ipc_path = nimbus_ipc::socket_path_for(&runtime_dir, &socket_name);
     let ipc = IpcServer::bind(ipc_path.clone(), &handle)?;
 
-    // SAFETY: no other threads exist yet; services, scanners, and watchers start below.
+    // SAFETY: no other threads exist yet; the configuration watcher starts below.
     unsafe {
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
         std::env::set_var(nimbus_ipc::SOCKET_ENV, &ipc_path);
@@ -172,15 +166,6 @@ fn run(args: Args) -> anyhow::Result<()> {
         std::env::remove_var("WAYLAND_SOCKET");
     }
 
-    let shell = if args.no_shell {
-        None
-    } else {
-        let mut shell =
-            ShellHost::new(&handle, config.current(), config.path().map(Path::to_path_buf))?;
-        // Before any output exists, so every shell starts with the lock screen and no frame shows the desktop.
-        shell.set_locked(start_locked);
-        Some(shell)
-    };
     config.watch(&handle);
     let mut nimbus = Nimbus::new(NimbusInit {
         display_handle,
@@ -192,7 +177,6 @@ fn run(args: Args) -> anyhow::Result<()> {
         lock_marker,
         locked: start_locked,
     });
-    nimbus.shell = shell;
 
     let backend = match prepared {
         PreparedBackend::Winit(window) => Backend::Winit(Box::new(
@@ -241,7 +225,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reaps children and locks the session after the configured idle time.
+/// Reaps children and refreshes idle inhibition.
 fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
     let handle = state.nimbus.loop_handle.clone();
     handle
@@ -249,15 +233,6 @@ fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
             state.nimbus.children.reap();
             // Visibility changes, such as minimizing or switching workspaces, can end an inhibition.
             state.nimbus.refresh_idle_inhibit();
-            if let Some(timeout) = state.lock_timeout()
-                && state.nimbus.last_activity.elapsed() >= timeout
-                && !state.nimbus.idle_inhibited()
-                && !state.nimbus.is_locked()
-                && state.nimbus.shell.is_some()
-            {
-                tracing::info!("locking after {timeout:?} of inactivity");
-                state.lock_session();
-            }
             TimeoutAction::ToDuration(Duration::from_secs(1))
         })
         .map_err(|e| anyhow!("cannot start housekeeping: {e}"))?;
@@ -265,16 +240,10 @@ fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
 }
 
 impl State {
-    /// How long the event loop may sleep before Slint or the backend's frame clock needs it.
+    /// How long the event loop may sleep before the backend's frame clock needs it.
     fn next_timeout(&self) -> Option<Duration> {
-        let now = Instant::now();
-        let backend =
-            self.backend.next_deadline(&self.nimbus).map(|t| t.saturating_duration_since(now));
-        let shell = self.nimbus.shell.as_ref().and_then(ShellHost::next_wakeup);
-        match (backend, shell) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let deadline = self.backend.next_deadline(&self.nimbus)?;
+        Some(deadline.saturating_duration_since(Instant::now()))
     }
 }
 

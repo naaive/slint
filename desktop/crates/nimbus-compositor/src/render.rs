@@ -55,7 +55,7 @@ pub struct SceneOptions {
 }
 
 /// Builds the elements of one output, front to back:
-/// cursor, lock screens, overlay layers, the shell, top layers (or a fullscreen window above them),
+/// cursor, lock screens, overlay layers, top layers (or a fullscreen window above them),
 /// windows, bottom and background layers, and the wallpaper.
 pub fn output_elements<R>(
     renderer: &mut R,
@@ -89,23 +89,16 @@ where
         )
     };
 
-    let shell_element = |renderer: &mut R| {
-        nimbus.shell.as_ref().and_then(|shell| shell.render_element(renderer, &name, output_scale))
-    };
     if nimbus.is_locked() {
-        if let Some(client) = nimbus.lock.client() {
-            if let Some(lock) = client.surface(&name) {
-                elements.extend(render_elements_from_surface_tree(
-                    renderer,
-                    lock.wl_surface(),
-                    Point::<i32, Physical>::from((0, 0)),
-                    scale,
-                    1.0,
-                    Kind::Unspecified,
-                ));
-            }
-        } else {
-            elements.extend(shell_element(renderer).map(OutputRenderElement::Memory));
+        if let Some(lock) = nimbus.lock.client().and_then(|client| client.surface(&name)) {
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                lock.wl_surface(),
+                Point::<i32, Physical>::from((0, 0)),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            ));
         }
         elements.push(OutputRenderElement::Solid(full_output()));
         return elements;
@@ -114,10 +107,6 @@ where
     push_layers(renderer, output, output_scale, &[Layer::Overlay], &mut elements);
 
     let fullscreen = nimbus.wm.fullscreen_on(&name).map(|w| w.window.clone());
-    let shell_above_fullscreen = nimbus.shell.as_ref().is_some_and(|s| s.wants_keyboard_on(&name));
-    if fullscreen.is_none() || shell_above_fullscreen {
-        elements.extend(shell_element(renderer).map(OutputRenderElement::Memory));
-    }
 
     let window_elements =
         |renderer: &mut R, window: &smithay::desktop::Window| -> Vec<OutputRenderElement<R>> {

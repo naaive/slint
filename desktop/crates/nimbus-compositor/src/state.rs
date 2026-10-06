@@ -17,7 +17,6 @@ use crate::lock::SessionLock;
 use crate::lock_marker::LockMarker;
 use crate::process::Children;
 use crate::render::Wallpaper;
-use crate::shell_host::ShellHost;
 use crate::wm::layout::{self, Rect};
 use crate::wm::{OutputArea, Wm};
 use nimbus_ipc::{CompositorState as IpcState, Event, OutputInfo, WindowInfo};
@@ -57,7 +56,7 @@ use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Default)]
 pub struct ClientState {
@@ -73,15 +72,6 @@ impl ClientData for ClientState {
 pub struct State {
     pub backend: Backend,
     pub nimbus: Nimbus,
-}
-
-/// Where keyboard input goes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum KeyboardTarget {
-    /// The in-process shell, which takes keys through Slint.
-    Shell,
-    Surface(WlSurface),
-    None,
 }
 
 pub struct Nimbus {
@@ -128,11 +118,8 @@ pub struct Nimbus {
     pub dnd_icon: Option<WlSurface>,
     /// Keys whose press triggered a compositor action; their releases don't reach clients.
     pub suppressed_keys: HashSet<Keycode>,
-    /// Keys whose press went to the shell; their releases go there too.
-    pub shell_keys: HashSet<Keycode>,
     /// The layer surface that took keyboard focus on click.
     pub layer_focus: Option<WlSurface>,
-    pub input: crate::input::InputState,
 
     pub wm: Wm,
     pub output_globals: HashMap<String, GlobalId>,
@@ -140,12 +127,10 @@ pub struct Nimbus {
     pub config: ConfigManager,
     pub bindings: Bindings,
     pub ipc: IpcServer,
-    pub shell: Option<ShellHost>,
     pub children: Children,
     pub lock_marker: LockMarker,
     pub lock: SessionLock,
     pub idle_inhibitors: HashSet<WlSurface>,
-    pub last_activity: Instant,
     pub pending_redraws: HashSet<String>,
 
     window_snapshot: Vec<WindowInfo>,
@@ -224,21 +209,17 @@ impl Nimbus {
             cursor_theme: CursorThemeManager::from_env(),
             dnd_icon: None,
             suppressed_keys: HashSet::new(),
-            shell_keys: HashSet::new(),
             layer_focus: None,
-            input: crate::input::InputState::default(),
             wm,
             output_globals: HashMap::new(),
             wallpaper,
             config,
             bindings,
             ipc,
-            shell: None,
             children: Children::default(),
             lock_marker,
             lock: if locked { SessionLock::Locked(None) } else { SessionLock::Unlocked },
             idle_inhibitors: HashSet::new(),
-            last_activity: Instant::now(),
             pending_redraws: HashSet::new(),
             window_snapshot: Vec::new(),
             events: Vec::new(),
@@ -286,10 +267,6 @@ impl Nimbus {
         {
             self.pointer_location = layout::center(geo).into();
         }
-        let wm_state = self.wm_state();
-        if let Some(shell) = self.shell.as_mut() {
-            shell.add_output(&output, &wm_state);
-        }
         tracing::info!(name = %output.name(), "output added");
         self.outputs_changed();
     }
@@ -308,9 +285,6 @@ impl Nimbus {
         }
         self.lock.remove_output(&output.name());
         self.pending_redraws.remove(&output.name());
-        if let Some(shell) = self.shell.as_mut() {
-            shell.remove_output(&output.name());
-        }
         tracing::info!(name = %output.name(), "output removed");
         self.outputs_changed();
     }
@@ -337,9 +311,6 @@ impl Nimbus {
         self.wm.reassign_outputs(&areas, &moved);
         self.clamp_pointer();
         self.arrange();
-        if let Some(shell) = self.shell.as_mut() {
-            shell.outputs_changed(&outputs);
-        }
         self.events.push(Event::OutputsChanged { outputs: self.output_infos() });
     }
 
@@ -365,13 +336,7 @@ impl Nimbus {
                 let geometry = self.wm.space.output_geometry(output)?;
                 let mut zone = layer_map_for_output(output).non_exclusive_zone();
                 zone.loc += geometry.loc;
-                let mut usable = layout::intersect(geometry, zone);
-                if let Some(ex) = self.shell.as_ref().and_then(|s| s.exclusive_zone(&output.name()))
-                {
-                    let px = |v: f32| v.max(0.0).round() as i32;
-                    usable =
-                        layout::inset(usable, px(ex.top), px(ex.right), px(ex.bottom), px(ex.left));
-                }
+                let usable = layout::intersect(geometry, zone);
                 Some(OutputArea { name: output.name(), geometry, usable })
             })
             .collect()
@@ -478,11 +443,6 @@ impl Nimbus {
         self.lock.is_locked()
     }
 
-    /// Whether the in-process shell draws the lock screen, because no ext-session-lock client holds the lock.
-    pub fn shell_draws_lock(&self) -> bool {
-        self.is_locked() && self.lock.client().is_none() && self.shell.is_some()
-    }
-
     pub fn sync_lock_marker(&mut self) {
         let locked = self.is_locked();
         self.lock_marker.sync(locked);
@@ -493,34 +453,15 @@ impl Nimbus {
         self.events.push(event);
     }
 
-    /// Tells the shell which outputs presented a frame in the last render, from the redraws queued before it.
-    fn frames_rendered(&mut self, queued: &HashSet<String>) {
-        let live: HashSet<String> = self.outputs().map(|o| o.name()).collect();
-        let rendered: Vec<&str> =
-            queued.difference(&self.pending_redraws).map(String::as_str).collect();
-        if let Some(shell) = self.shell.as_mut() {
-            shell.frames_presented(&rendered, &live);
-        }
-    }
-
-    /// Where keyboard input should go, by priority: lock screens, the shell, exclusive layer surfaces, windows.
-    pub fn keyboard_target(&self) -> KeyboardTarget {
-        if let Some(client) = self.lock.client() {
+    /// Where keyboard input should go, by priority: lock screens, exclusive layer surfaces, windows.
+    pub fn keyboard_target(&self) -> Option<WlSurface> {
+        if self.is_locked() {
+            let client = self.lock.client()?;
             let output = self.active_output().map(|o| o.name());
             let surface = output
                 .and_then(|name| client.surface(&name))
-                .or_else(|| client.surfaces().next())
-                .map(|s| s.wl_surface().clone());
-            return surface.map_or(KeyboardTarget::None, KeyboardTarget::Surface);
-        }
-        if self.shell_draws_lock() {
-            return KeyboardTarget::Shell;
-        }
-        if self.is_locked() {
-            return KeyboardTarget::None;
-        }
-        if self.shell.as_ref().is_some_and(ShellHost::wants_keyboard) {
-            return KeyboardTarget::Shell;
+                .or_else(|| client.surfaces().next())?;
+            return Some(surface.wl_surface().clone());
         }
         for output in self.outputs() {
             let map = layer_map_for_output(output);
@@ -529,17 +470,14 @@ impl Nimbus {
                     l.cached_state().keyboard_interactivity == KeyboardInteractivity::Exclusive
                         && is_mapped(l.wl_surface())
                 }) {
-                    return KeyboardTarget::Surface(surface.wl_surface().clone());
+                    return Some(surface.wl_surface().clone());
                 }
             }
         }
         if let Some(surface) = self.layer_focus.as_ref().filter(|s| self.layer_takes_focus(s)) {
-            return KeyboardTarget::Surface(surface.clone());
+            return Some(surface.clone());
         }
-        self.wm
-            .focused_window()
-            .and_then(|w| w.wl_surface())
-            .map_or(KeyboardTarget::None, KeyboardTarget::Surface)
+        self.wm.focused_window().and_then(|w| w.wl_surface())
     }
 
     /// Whether `surface` is a mapped layer surface that accepts keyboard focus.
@@ -589,9 +527,8 @@ impl Nimbus {
 }
 
 impl State {
-    /// Runs after every event-loop dispatch: shell work, focus, events, rendering, and flushing clients.
+    /// Runs after every event-loop dispatch: focus, events, rendering, and flushing clients.
     pub fn post_dispatch(&mut self) {
-        self.process_shell();
         self.nimbus.wm.space.refresh();
         self.nimbus.popups.cleanup();
         for output in self.nimbus.outputs().cloned().collect::<Vec<_>>() {
@@ -602,23 +539,9 @@ impl State {
         let events = self.nimbus.take_events();
         if !events.is_empty() {
             self.nimbus.ipc.broadcast(&events);
-            if let Some(shell) = self.nimbus.shell.as_ref() {
-                shell.handle_compositor_events(&events);
-            }
-            // Draws what the events changed, and runs any actions they caused, in this frame.
-            self.process_shell();
         }
         self.nimbus.sync_lock_marker();
-        let queued = self
-            .nimbus
-            .shell
-            .as_ref()
-            .is_some_and(ShellHost::awaits_lock_presented)
-            .then(|| self.nimbus.pending_redraws.clone());
         self.backend.render(&mut self.nimbus);
-        if let Some(queued) = queued {
-            self.nimbus.frames_rendered(&queued);
-        }
         self.nimbus.confirm_session_lock();
         self.nimbus.ipc.flush_all();
         if let Err(err) = self.nimbus.display_handle.flush_clients() {
@@ -637,19 +560,10 @@ impl State {
             }
             keyboard.unset_grab(self);
         }
-        let target = match self.nimbus.keyboard_target() {
-            KeyboardTarget::Surface(surface) => Some(surface),
-            KeyboardTarget::Shell | KeyboardTarget::None => None,
-        };
+        let target = self.nimbus.keyboard_target();
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, smithay::utils::SERIAL_COUNTER.next_serial());
         }
-    }
-
-    /// The idle time after which the session locks, or `None` when automatic locking is off.
-    pub fn lock_timeout(&self) -> Option<Duration> {
-        let minutes = self.nimbus.config.current().power.lock_after_minutes;
-        (minutes > 0).then(|| Duration::from_secs(u64::from(minutes) * 60))
     }
 }
 

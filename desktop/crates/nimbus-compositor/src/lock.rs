@@ -4,7 +4,7 @@
 //!
 //! A locked session stays locked when its ext-session-lock client dies,
 //! and then accepts a new client, such as a restarted shell.
-//! Only that client's `unlock_and_destroy`, or the in-process shell's unlock, ends it.
+//! Only the holding client's `unlock_and_destroy` ends it.
 
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
 use smithay::reexports::wayland_server::Resource;

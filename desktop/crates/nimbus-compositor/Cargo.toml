@@ -1,6 +1,6 @@
 [package]
 name = "nimbus-compositor"
-description = "The Nimbus Wayland compositor, built on Smithay, hosting the Slint shell in-process"
+description = "The Nimbus Wayland compositor, built on Smithay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,9 +14,6 @@ path = "src/main.rs"
 nimbus-ipc = { workspace = true }
 nimbus-config = { workspace = true }
 nimbus-xdg = { workspace = true }
-nimbus-services = { workspace = true }
-nimbus-shell = { workspace = true }
-slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
 smithay = { version = "0.7", default-features = false, features = [
   "wayland_frontend",
   "desktop",
@@ -38,18 +35,13 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
-bytemuck = "1.16"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 xcursor = "0.3"
 dirs = { workspace = true }
 libc = "0.2"
-nix = { version = "0.30", features = ["user"] }
-zeroize = "1.8"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
-zbus = { workspace = true }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

@@ -37,35 +37,24 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    /// Starts `--backend headless --no-shell` with `config` as its configuration file.
+    /// Starts `--backend headless` with `config` as its configuration file.
     pub fn start(config: &str, extra_env: &[(&str, &str)]) -> Self {
-        Self::launch(config, extra_env, false, &[], |_| {})
+        Self::launch(config, extra_env, &[], |_| {})
     }
 
-    /// Starts `--backend headless --no-shell` with `extra_args`.
+    /// Starts `--backend headless` with `extra_args`.
     pub fn start_with_args(config: &str, extra_args: &[&str]) -> Self {
-        Self::launch(config, &[], false, extra_args, |_| {})
+        Self::launch(config, &[], extra_args, |_| {})
     }
 
-    /// Starts `--backend headless` with the shell.
-    /// Applications come from an empty data directory and D-Bus is unreachable unless `extra_env` says otherwise.
-    pub fn start_with_shell(config: &str, extra_env: &[(&str, &str)]) -> Self {
-        Self::launch(config, extra_env, true, &[], |_| {})
-    }
-
-    /// Like [`Compositor::start_with_shell`], with `extra_args`, after `prepare` ran on the runtime directory.
-    pub fn start_with_shell_in(
-        config: &str,
-        extra_args: &[&str],
-        prepare: impl FnOnce(&Path),
-    ) -> Self {
-        Self::launch(config, &[], true, extra_args, prepare)
+    /// Like [`Compositor::start_with_args`], after `prepare` ran on the runtime directory.
+    pub fn start_in(config: &str, extra_args: &[&str], prepare: impl FnOnce(&Path)) -> Self {
+        Self::launch(config, &[], extra_args, prepare)
     }
 
     fn launch(
         config: &str,
         extra_env: &[(&str, &str)],
-        shell: bool,
         extra_args: &[&str],
         prepare: impl FnOnce(&Path),
     ) -> Self {
@@ -78,18 +67,6 @@ impl Compositor {
         let log = dir.path().join("compositor.log");
         let mut command = Command::new(env!("CARGO_BIN_EXE_nimbus-compositor"));
         command.args(["--backend", "headless"]);
-        if shell {
-            let data = dir.path().join("data");
-            std::fs::create_dir_all(&data).unwrap();
-            let no_bus = format!("unix:path={}", dir.path().join("no-bus").display());
-            command
-                .env("XDG_DATA_HOME", &data)
-                .env("XDG_DATA_DIRS", &data)
-                .env("DBUS_SESSION_BUS_ADDRESS", &no_bus)
-                .env("DBUS_SYSTEM_BUS_ADDRESS", &no_bus);
-        } else {
-            command.arg("--no-shell");
-        }
         command
             .args(extra_args)
             .arg("--config")

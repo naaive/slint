@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Runs the compositor headless with `--no-shell` and the `nimbus-shell` binary as its client.
+//! Runs the compositor headless and the `nimbus-shell` binary as its client.
 
 #![allow(dead_code)]
 
@@ -57,7 +57,7 @@ fn compositor_binary() -> &'static Path {
     })
 }
 
-/// A headless compositor without its in-process shell, and the shell process connected to it.
+/// A headless compositor and the shell process connected to it.
 pub struct Session {
     compositor: Child,
     shell: Option<Child>,
@@ -83,7 +83,7 @@ impl Session {
         std::fs::write(dir.path().join("config.toml"), config).unwrap();
         let log = std::fs::File::create(dir.path().join("compositor.log")).unwrap();
         let mut compositor = Command::new(compositor_binary())
-            .args(["--backend", "headless", "--no-shell", "--config"])
+            .args(["--backend", "headless", "--config"])
             .arg(dir.path().join("config.toml"))
             .env("XDG_RUNTIME_DIR", &runtime)
             .env("HOME", dir.path())

@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-//! Control requests and keybinding actions, shared by the control socket, the shell, and the keyboard.
+//! Control requests and keybinding actions, shared by the control socket and the keyboard.
 
 use crate::state::State;
 use crate::wm::WindowMode;
 use nimbus_config::Action;
 use nimbus_ipc::{Direction, Event, LayoutMode, Request, Response, ShellCommand, WindowId};
-use nimbus_services::{ServiceCommand, SystemState};
-use nimbus_shell::Osd;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Change per volume or brightness key press.
-const LEVEL_STEP: f32 = 0.05;
 
 fn unknown_window(id: WindowId) -> Response {
     Response::Error { message: format!("no window with id {id}") }
@@ -103,6 +98,7 @@ impl State {
                 Response::Ok
             }
             Request::Lock => {
+                self.lock_session();
                 self.shell_command(ShellCommand::Lock);
                 Response::Ok
             }
@@ -209,39 +205,14 @@ impl State {
         Response::Ok
     }
 
-    /// Emits `command` to control socket subscribers and carries it out in the in-process shell.
+    /// Asks the shell, through control socket subscribers, to carry out `command` on the active output.
     pub fn shell_command(&mut self, command: ShellCommand) {
         let output = self.nimbus.active_output().map(|o| o.name());
-        self.nimbus.emit(Event::ShellCommand { command, output: output.clone() });
-        let output = output.unwrap_or_default();
-        match command {
-            ShellCommand::ToggleLauncher => {
-                if let Some(shell) = self.nimbus.shell.as_mut() {
-                    shell.toggle_launcher(&output);
-                }
-            }
-            ShellCommand::ToggleOverview => {
-                if let Some(shell) = self.nimbus.shell.as_mut() {
-                    shell.toggle_overview(&output);
-                }
-            }
-            ShellCommand::VolumeUp => self.change_volume(LEVEL_STEP),
-            ShellCommand::VolumeDown => self.change_volume(-LEVEL_STEP),
-            ShellCommand::ToggleMute => self.toggle_mute(),
-            ShellCommand::BrightnessUp => self.change_brightness(LEVEL_STEP),
-            ShellCommand::BrightnessDown => self.change_brightness(-LEVEL_STEP),
-            ShellCommand::Lock => self.lock_session(),
-        }
+        self.nimbus.emit(Event::ShellCommand { command, output });
     }
 
-    /// Locks the session without a lock client.
-    /// Until one takes over, the in-process shell's lock screen, or black, covers every output.
+    /// Locks the session without a lock client; black covers every output until one takes over.
     pub fn lock_session(&mut self) {
-        let output = self.nimbus.active_output().map(|o| o.name());
-        if let Some(shell) = self.nimbus.shell.as_mut() {
-            // Typing goes to the lock screen in front of the user.
-            shell.focus_output(output.as_deref());
-        }
         if self.nimbus.lock.lock() {
             self.lock_changed();
         }
@@ -250,16 +221,11 @@ impl State {
     pub fn unlock_session(&mut self) {
         tracing::info!("unlocked");
         self.nimbus.lock.unlock();
-        self.nimbus.last_activity = std::time::Instant::now();
         self.lock_changed();
     }
 
-    /// Brings the shell's lock screen, the lock marker, grabs, and the screen in line with the lock state.
+    /// Brings the lock marker, grabs, and the screen in line with the lock state.
     pub fn lock_changed(&mut self) {
-        let locked = self.nimbus.is_locked();
-        if let Some(shell) = self.nimbus.shell.as_mut() {
-            shell.set_locked(locked);
-        }
         self.nimbus.sync_lock_marker();
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
@@ -339,42 +305,6 @@ impl State {
         }
     }
 
-    fn change_volume(&mut self, delta: f32) {
-        let Some(shell) = self.nimbus.shell.as_mut() else {
-            tracing::debug!("volume keys need the shell's services");
-            return;
-        };
-        let Some((command, osd)) = shell.system_state_mut().and_then(|s| volume_step(s, delta))
-        else {
-            return;
-        };
-        shell.send_service(command);
-        shell.show_osd(osd);
-    }
-
-    fn toggle_mute(&mut self) {
-        let Some(shell) = self.nimbus.shell.as_mut() else {
-            return;
-        };
-        shell.send_service(ServiceCommand::ToggleMute);
-        if let Some(osd) = shell.system_state_mut().and_then(toggle_mute_state) {
-            shell.show_osd(osd);
-        }
-    }
-
-    fn change_brightness(&mut self, delta: f32) {
-        let Some(shell) = self.nimbus.shell.as_mut() else {
-            tracing::debug!("brightness keys need the shell's services");
-            return;
-        };
-        let Some((command, osd)) = shell.system_state_mut().and_then(|s| brightness_step(s, delta))
-        else {
-            return;
-        };
-        shell.send_service(command);
-        shell.show_osd(osd);
-    }
-
     /// Captures the active output and saves it as a PNG in the screenshots directory.
     pub fn screenshot(&mut self) {
         if let Some(output) = self.nimbus.active_output() {
@@ -406,29 +336,6 @@ impl State {
             tracing::warn!("screenshot failed: {err}");
         }
     }
-}
-
-/// Changes the cached volume by `delta`, so the next key press builds on it before the audio service reports back.
-fn volume_step(state: &mut SystemState, delta: f32) -> Option<(ServiceCommand, Osd)> {
-    let audio = state.audio.as_mut()?;
-    audio.volume = (audio.volume + delta).clamp(0.0, 1.0);
-    let muted = audio.muted && delta <= 0.0;
-    Some((ServiceCommand::SetVolume(audio.volume), Osd::Volume { level: audio.volume, muted }))
-}
-
-/// Flips the cached mute state; see [`volume_step`].
-fn toggle_mute_state(state: &mut SystemState) -> Option<Osd> {
-    let audio = state.audio.as_mut()?;
-    audio.muted = !audio.muted;
-    Some(Osd::Volume { level: audio.volume, muted: audio.muted })
-}
-
-/// Changes the cached brightness by `delta`; see [`volume_step`].
-fn brightness_step(state: &mut SystemState, delta: f32) -> Option<(ServiceCommand, Osd)> {
-    let level = state.brightness.as_mut()?;
-    // Never fully dark: a black screen looks like a hang.
-    *level = (*level + delta).clamp(0.01, 1.0);
-    Some((ServiceCommand::SetBrightness(*level), Osd::Brightness { level: *level }))
 }
 
 /// `$XDG_PICTURES_DIR/Screenshots`, or `~/Pictures/Screenshots`.
@@ -470,31 +377,6 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    #[test]
-    fn rapid_level_keys_build_on_each_other() {
-        let mut state = SystemState {
-            audio: Some(nimbus_services::Audio { volume: 0.5, muted: false }),
-            brightness: Some(0.5),
-            ..Default::default()
-        };
-        let commands: Vec<ServiceCommand> = (0..2)
-            .filter_map(|_| volume_step(&mut state, LEVEL_STEP).map(|(command, _)| command))
-            .collect();
-        assert!(matches!(
-            commands[..],
-            [ServiceCommand::SetVolume(a), ServiceCommand::SetVolume(b)]
-                if (a - 0.55).abs() < 1e-6 && (b - 0.60).abs() < 1e-6
-        ));
-        let mutes: Vec<Option<Osd>> = (0..2).map(|_| toggle_mute_state(&mut state)).collect();
-        assert!(matches!(
-            mutes[..],
-            [Some(Osd::Volume { muted: true, .. }), Some(Osd::Volume { muted: false, .. })]
-        ));
-        brightness_step(&mut state, -LEVEL_STEP);
-        brightness_step(&mut state, -LEVEL_STEP);
-        assert!(state.brightness.is_some_and(|b| (b - 0.40).abs() < 1e-6));
-    }
 
     #[test]
     fn civil_dates_are_correct() {

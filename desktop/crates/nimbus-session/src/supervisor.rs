@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-//! Starts the compositor, waits for it to become ready, runs autostart once, and restarts the compositor after crashes.
+//! Starts the compositor, waits for it to become ready, then starts the shell and runs autostart once.
+//! Restarts the shell whenever it exits, and both after the compositor crashes.
 
 use crate::autostart::Launch;
 use crate::env::{ACTIVATION_VARIABLES, SessionEnv, find_in_path};
@@ -51,7 +52,7 @@ pub enum CrashDecision {
     GiveUp,
 }
 
-/// Allows at most `max_restarts` restarts within any `window`.
+/// Allows at most `max_restarts` compositor restarts within any `window`.
 #[derive(Clone, Debug)]
 pub struct RestartPolicy {
     max_restarts: usize,
@@ -87,6 +88,38 @@ impl Default for RestartPolicy {
     }
 }
 
+/// Delays between shell restarts: doubling from `initial` up to `max`,
+/// and back to `initial` after the shell ran for `stable`.
+#[derive(Clone, Debug)]
+pub struct Backoff {
+    initial: Duration,
+    max: Duration,
+    stable: Duration,
+    next: Duration,
+}
+
+impl Backoff {
+    pub fn new(initial: Duration, max: Duration, stable: Duration) -> Self {
+        Self { initial, max, stable, next: initial }
+    }
+
+    /// The delay before restarting a shell that exited after running for `uptime`.
+    pub fn delay(&mut self, uptime: Duration) -> Duration {
+        if uptime >= self.stable {
+            self.next = self.initial;
+        }
+        let delay = self.next;
+        self.next = (delay * 2).min(self.max);
+        delay
+    }
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self::new(Duration::from_millis(500), Duration::from_secs(30), Duration::from_secs(30))
+    }
+}
+
 /// What the session does once the compositor exits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -99,17 +132,19 @@ pub fn classify_exit(status: ExitStatus, shutdown_requested: bool) -> Outcome {
     if shutdown_requested || status.success() { Outcome::Shutdown } else { Outcome::Crashed }
 }
 
-pub struct CompositorCommand {
-    pub program: PathBuf,
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub path: PathBuf,
     pub args: Vec<OsString>,
-    /// The Wayland socket name; without one, restarts reuse the name the first compositor picked.
-    pub socket: Option<String>,
-    /// Whether the compositor runs the shell, which it needs for `--locked`.
-    pub can_lock: bool,
 }
 
 pub struct SessionPlan {
-    pub compositor: CompositorCommand,
+    /// The compositor; the supervisor adds `--socket` and `--locked`.
+    pub compositor: Program,
+    /// The Wayland socket name; without one, restarts reuse the name the first compositor picked.
+    pub socket: Option<String>,
+    /// The shell, started with the client environment once the compositor is ready.
+    pub shell: Program,
     /// The environment of the compositor; clients additionally get the compositor's sockets.
     pub env: SessionEnv,
     /// What to start once the first compositor is ready; restarts don't run it again.
@@ -126,39 +161,14 @@ struct Start {
     locked: bool,
 }
 
-/// What to do after the compositor crashed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum AfterCrash {
-    Restart { locked: bool },
-    EndLocked,
-    GiveUp,
-}
-
-/// Decides how to go on after a crash at `now`, given whether the lock marker exists.
-/// A crash while locked restarts the compositor locked, or ends the session when it can't lock.
-fn after_crash(
-    policy: &mut RestartPolicy,
-    now: Instant,
-    marker_exists: bool,
-    can_lock: bool,
-) -> AfterCrash {
-    if marker_exists && !can_lock {
-        return AfterCrash::EndLocked;
-    }
-    match policy.on_crash(now) {
-        CrashDecision::Restart => AfterCrash::Restart { locked: marker_exists },
-        CrashDecision::GiveUp => AfterCrash::GiveUp,
-    }
-}
-
 #[derive(Default)]
 struct Shared {
     compositor_pid: AtomicI32,
     shutdown: AtomicBool,
 }
 
-fn compositor_command(compositor: &CompositorCommand, env: &SessionEnv, start: &Start) -> Command {
-    let mut command = Command::new(&compositor.program);
+fn compositor_command(compositor: &Program, env: &SessionEnv, start: &Start) -> Command {
+    let mut command = Command::new(&compositor.path);
     command.args(&compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
     if let Some(socket) = &start.socket {
         command.arg("--socket").arg(socket);
@@ -170,15 +180,88 @@ fn compositor_command(compositor: &CompositorCommand, env: &SessionEnv, start: &
     command
 }
 
+/// The shell process, restarted with [`Backoff`] whenever it exits.
+struct Shell {
+    program: Program,
+    backoff: Backoff,
+    /// The running shell and when it started.
+    running: Option<(Child, Instant)>,
+    restart_at: Option<Instant>,
+}
+
+impl Shell {
+    fn new(program: Program, backoff: Backoff) -> Self {
+        Self { program, backoff, running: None, restart_at: None }
+    }
+
+    fn start(&mut self, env: &SessionEnv) {
+        self.restart_at = None;
+        let mut command = Command::new(&self.program.path);
+        command.args(&self.program.args).stdin(Stdio::null());
+        env.apply(&mut command);
+        match command.spawn() {
+            Ok(child) => {
+                tracing::info!("started the shell");
+                self.running = Some((child, Instant::now()));
+            }
+            Err(error) => {
+                tracing::error!("cannot start {}: {error}", self.program.path.display());
+                self.schedule_restart(Duration::ZERO);
+            }
+        }
+    }
+
+    fn schedule_restart(&mut self, uptime: Duration) {
+        let delay = self.backoff.delay(uptime);
+        tracing::info!("restarting the shell in {delay:?}");
+        self.restart_at = Some(Instant::now() + delay);
+    }
+
+    /// Notices an exited shell, and starts it again once its restart delay passed.
+    fn poll(&mut self, env: &SessionEnv) {
+        if let Some((child, started)) = &mut self.running
+            && let Ok(Some(status)) = child.try_wait()
+        {
+            let uptime = started.elapsed();
+            self.running = None;
+            tracing::warn!("the shell exited ({status}) after {uptime:.1?}");
+            self.schedule_restart(uptime);
+        }
+        if self.restart_at.is_some_and(|at| Instant::now() >= at) {
+            self.start(env);
+        }
+    }
+
+    /// Cancels a pending restart and stops the shell, killing it after `grace`.
+    fn stop(&mut self, grace: Duration) {
+        self.restart_at = None;
+        let Some((mut child, _)) = self.running.take() else { return };
+        if let Ok(pid) = i32::try_from(child.id()) {
+            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+        }
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            if !matches!(child.try_wait(), Ok(None)) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        tracing::warn!("killing the shell, which ignored SIGTERM");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// Runs the session until logout, a termination signal, or too many compositor crashes.
 pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
     let shared = Arc::new(Shared::default());
     forward_signals(shared.clone())?;
     let mut policy = RestartPolicy::default();
+    let mut shell = Shell::new(plan.shell.clone(), Backoff::default());
     let mut children = Children::default();
     let mut target_started = false;
     let mut client_env = plan.env.clone();
-    let mut start = Start { socket: plan.compositor.socket.clone(), locked: false };
+    let mut start = Start { socket: plan.socket.clone(), locked: false };
     let mut autostart = Some(plan.autostart);
     // The display manager authenticated the user, so a marker left by an earlier session is stale.
     if let Some(marker) = &plan.lock_marker {
@@ -192,7 +275,7 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
             }
             let mut compositor = compositor_command(&plan.compositor, &plan.env, &start)
                 .spawn()
-                .with_context(|| format!("cannot start {}", plan.compositor.program.display()))?;
+                .with_context(|| format!("cannot start {}", plan.compositor.path.display()))?;
             let pid =
                 i32::try_from(compositor.id()).context("compositor process id out of range")?;
             shared.compositor_pid.store(pid, Ordering::SeqCst);
@@ -216,6 +299,7 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
                     client_env = plan.env.clone();
                     client_env.set("WAYLAND_DISPLAY", ready.wayland_display);
                     client_env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
+                    shell.start(&client_env);
                     update_activation_environment(&client_env);
                     target_started |= start_systemd_target(&client_env);
                     if let Some(autostart) = autostart.take() {
@@ -240,38 +324,36 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
                 {
                     break status;
                 }
+                // A shell that lost the compositor during shutdown exits too, and stays stopped.
+                if !shared.shutdown.load(Ordering::SeqCst) {
+                    shell.poll(&client_env);
+                }
                 children.reap();
                 std::thread::sleep(POLL);
             };
             shared.compositor_pid.store(0, Ordering::SeqCst);
+            shell.stop(CHILD_GRACE);
 
             if classify_exit(status, shared.shutdown.load(Ordering::SeqCst)) == Outcome::Shutdown {
                 tracing::info!("compositor exited ({status}); ending the session");
                 break ExitCode::SUCCESS;
             }
-            let marker_exists = plan.lock_marker.as_deref().is_some_and(Path::exists);
-            match after_crash(&mut policy, Instant::now(), marker_exists, plan.compositor.can_lock)
-            {
-                AfterCrash::Restart { locked } => {
+            match policy.on_crash(Instant::now()) {
+                CrashDecision::Restart => {
+                    start.locked = plan.lock_marker.as_deref().is_some_and(Path::exists);
                     tracing::warn!(
-                        locked,
-                        "compositor exited unexpectedly ({status}); restarting it"
+                        locked = start.locked,
+                        "compositor exited unexpectedly ({status}); restarting it and the shell"
                     );
-                    start.locked = locked;
                 }
-                AfterCrash::EndLocked => {
-                    tracing::error!(
-                        "compositor exited ({status}) while the screen was locked; ending the session"
-                    );
-                    break ExitCode::FAILURE;
-                }
-                AfterCrash::GiveUp => {
+                CrashDecision::GiveUp => {
                     tracing::error!("compositor crashed too often ({status}); giving up");
                     break ExitCode::FAILURE;
                 }
             }
         })
     })();
+    shell.stop(CHILD_GRACE);
     children.terminate(CHILD_GRACE);
 
     if target_started {
@@ -607,12 +689,7 @@ mod tests {
     fn compositor_doesnt_get_the_client_environment() {
         let mut env = SessionEnv::default();
         env.set("XDG_CURRENT_DESKTOP", "Nimbus");
-        let compositor = CompositorCommand {
-            program: "nimbus-compositor".into(),
-            args: vec![],
-            socket: None,
-            can_lock: true,
-        };
+        let compositor = Program { path: "nimbus-compositor".into(), args: vec![] };
         let command = compositor_command(&compositor, &env, &Start::default());
         let names: Vec<_> = command.get_envs().map(|(name, _)| name.to_owned()).collect();
         assert_eq!(names, [OsString::from("XDG_CURRENT_DESKTOP")]);
@@ -627,16 +704,12 @@ mod tests {
     }
 
     #[test]
-    fn crashes_while_locked_restart_locked() {
-        let now = Instant::now();
-        let mut policy = RestartPolicy::default();
-        assert_eq!(
-            after_crash(&mut policy, now, false, true),
-            AfterCrash::Restart { locked: false }
-        );
-        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::Restart { locked: true });
-        assert_eq!(after_crash(&mut policy, now, true, false), AfterCrash::EndLocked);
-        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::Restart { locked: true });
-        assert_eq!(after_crash(&mut policy, now, true, true), AfterCrash::GiveUp);
+    fn shell_restarts_back_off_until_it_runs_stably() {
+        let ms = Duration::from_millis;
+        let mut backoff = Backoff::new(ms(500), ms(3000), Duration::from_secs(30));
+        let delays: Vec<_> = (0..5).map(|_| backoff.delay(ms(10))).collect();
+        assert_eq!(delays, [ms(500), ms(1000), ms(2000), ms(3000), ms(3000)]);
+        assert_eq!(backoff.delay(Duration::from_secs(30)), ms(500), "a stable run resets it");
+        assert_eq!(backoff.delay(ms(10)), ms(1000));
     }
 }

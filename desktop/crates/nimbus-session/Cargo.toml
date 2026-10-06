@@ -1,6 +1,6 @@
 [package]
 name = "nimbus-session"
-description = "Session entry point: environment setup, D-Bus activation, compositor supervision, autostart, and nimbusctl"
+description = "Session entry point: environment setup, D-Bus activation, compositor and shell supervision, autostart, and nimbusctl"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
