@@ -3,6 +3,7 @@
 //! A Slint window on a Wayland surface: its size, scale, input region, and frames.
 
 use crate::render::Renderer;
+use crate::text_input::TextField;
 use nimbus_shell::Rect;
 use slint::platform::{WindowAdapter, WindowEvent};
 use smithay_client_toolkit::compositor::{CompositorState, Region};
@@ -47,6 +48,7 @@ pub struct SlintSurface {
     surface: WlSurface,
     renderer: Box<dyn Renderer>,
     adapter: Rc<dyn WindowAdapter>,
+    text_field: Option<TextField>,
     viewport: Option<WpViewport>,
     fractional: Option<WpFractionalScaleV1>,
     /// The size the compositor configured, in logical pixels.
@@ -78,6 +80,7 @@ impl SlintSurface {
         Self {
             surface,
             renderer,
+            text_field: TextField::of(&*adapter),
             adapter,
             viewport,
             fractional,
@@ -95,6 +98,10 @@ impl SlintSurface {
 
     pub fn window(&self) -> &slint::Window {
         self.adapter.window()
+    }
+
+    pub fn text_field(&self) -> Option<&TextField> {
+        self.text_field.as_ref()
     }
 
     pub fn dispatch(&self, event: WindowEvent) {

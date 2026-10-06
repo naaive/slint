@@ -178,6 +178,15 @@ Keyboard shortcuts run before either grab sees a key.
 While the session is locked, no grab holds the keyboard, so the input method sees no key of the lock screen;
 it gets its grab back after unlocking.
 
+The shell is a `text-input-v3` client too.
+Slint reports the focused text field to the window adapter (`render/window.rs`) through its internal input method requests,
+and after each dispatch the shell tells the compositor about the field on the surface the text input entered.
+It enables the text input for each newly focused field and sends only what changed after that:
+the surrounding text, up to 4000 bytes around the cursor, the content type, and the cursor rectangle.
+Password fields, on the lock screen and in the polkit dialog, send the `password` purpose with the `sensitive_data` and `hidden_text` hints,
+and never their text.
+At each `done`, the preedit string, commit string, and deleted surrounding text reach Slint as one composition event.
+
 ## Displays
 
 A head is a connected display, which the backend describes as a smithay `Output` with its modes, preferred mode, and EDID identity.
@@ -365,6 +374,7 @@ Modules in `crates/nimbus-shell-host/src`:
   Key presses go through the compose table for the locale in `LC_ALL`, `LC_CTYPE`, or `LANG`, for dead keys and Compose sequences.
   Keys in a sequence produce no text and don't repeat, and neither does the composed text.
   Without a compose table, keys go straight to Slint.
+- `text_input/`: input methods typing into the shell's text fields through `zwp_text_input_v3`; see [Input Methods](#input-methods).
 - `ipc.rs`: one control socket connection, subscribed to events, which also carries requests; responses reach callbacks in request order.
   Requests wait in a buffer until the socket takes them, so writing never blocks.
   The events of one read reach the model together, which updates the views once.
@@ -601,6 +611,8 @@ The release profile aborts on panic, because every process is supervised or rest
   the panel and dock reserve their space and an autohidden dock none, the launcher takes typing and closes on Escape,
   quick settings open in a popup that a click outside dismisses, a toast shows on its own surface until it expires,
   `Request::Lock` shows the lock screen on a lock surface,
+  an input method client from `nimbus-test-support` composes and commits Chinese text in the launcher search and sees the field's new text,
+  the lock screen's password field asks for the `password` purpose without its text,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.

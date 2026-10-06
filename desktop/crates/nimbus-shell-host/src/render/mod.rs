@@ -4,6 +4,7 @@
 
 mod gl;
 mod software;
+mod window;
 
 use crate::state::State;
 use slint::platform::WindowAdapter;

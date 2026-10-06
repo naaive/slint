@@ -3119,6 +3119,7 @@ dependencies = [
  "clap",
  "glow",
  "glutin",
+ "i-slint-core",
  "image",
  "libc",
  "nimbus-config",
@@ -3182,6 +3183,7 @@ dependencies = [
  "tempfile",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-misc",
  "zbus",
 ]
 

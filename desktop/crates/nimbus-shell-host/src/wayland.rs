@@ -183,7 +183,7 @@ impl SeatHandler for State {
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
         if self.input.seat.is_none() {
             self.input.seat = Some(seat);
-            self.watch_idle();
+            self.watch_seat();
         }
     }
 
@@ -246,7 +246,7 @@ impl SeatHandler for State {
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
         if self.input.seat.as_ref() == Some(&seat) {
             self.input.seat = None;
-            self.watch_idle();
+            self.watch_seat();
         }
     }
 }

@@ -3,12 +3,13 @@
 //! Slint's software renderer drawing into two alternating `wl_shm` buffers.
 
 use super::Renderer;
+use super::window::ShellWindow;
 use crate::state::State;
 use anyhow::Context;
 use slint::PhysicalSize;
 use slint::platform::WindowAdapter;
 use slint::platform::software_renderer::{
-    MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType, TargetPixel,
+    PremultipliedRgbaColor, RepaintBufferType, SoftwareRenderer as SlintRenderer, TargetPixel,
 };
 use smithay_client_toolkit::shm::Shm;
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
@@ -53,7 +54,7 @@ impl TargetPixel for Argb8888 {
 /// Slint's [`RepaintBufferType::SwappedBuffers`] redraws what changed in the last two frames,
 /// so each buffer only needs the regions that changed since it was last shown.
 pub struct SoftwareRenderer {
-    window: Rc<MinimalSoftwareWindow>,
+    window: Rc<ShellWindow<SlintRenderer>>,
     surface: WlSurface,
     shm: WlShm,
     pool: Option<SlotPool>,
@@ -68,7 +69,9 @@ pub struct SoftwareRenderer {
 impl SoftwareRenderer {
     pub fn new(shm: WlShm, surface: WlSurface) -> Self {
         Self {
-            window: MinimalSoftwareWindow::new(RepaintBufferType::SwappedBuffers),
+            window: ShellWindow::new(SlintRenderer::new_with_repaint_buffer_type(
+                RepaintBufferType::SwappedBuffers,
+            )),
             surface,
             shm,
             pool: None,
@@ -131,23 +134,20 @@ impl Renderer for SoftwareRenderer {
             return false;
         };
         let full = *fresh;
-        let mut damage = Vec::new();
-        let drawn =
-            window.draw_if_needed(|renderer| {
-                if full {
-                    // Changing the buffer type drops what the renderer remembers of earlier frames.
-                    renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
-                    renderer.set_repaint_buffer_type(RepaintBufferType::SwappedBuffers);
-                }
-                let pixels: &mut [Argb8888] = bytemuck::cast_slice_mut(canvas);
-                let region = renderer.render(pixels, size.width as usize);
-                damage.extend(region.iter().map(|(origin, size)| {
-                    (origin.x, origin.y, size.width as i32, size.height as i32)
-                }));
-            });
-        if !drawn {
+        if !window.take_redraw() {
             return false;
         }
+        let renderer = &window.renderer;
+        if full {
+            // Changing the buffer type drops what the renderer remembers of earlier frames.
+            renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+            renderer.set_repaint_buffer_type(RepaintBufferType::SwappedBuffers);
+        }
+        let pixels: &mut [Argb8888] = bytemuck::cast_slice_mut(canvas);
+        let region = renderer.render(pixels, size.width as usize);
+        let damage = region
+            .iter()
+            .map(|(origin, size)| (origin.x, origin.y, size.width as i32, size.height as i32));
         *fresh = false;
         // Slint counts every render as a frame shown in the other buffer, so every render is committed.
         if let Err(err) = buffer.attach_to(surface) {

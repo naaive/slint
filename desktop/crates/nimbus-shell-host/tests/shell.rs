@@ -9,7 +9,11 @@ use common::{
     mean, panel_visible, shell_visible,
 };
 use nimbus_ipc::Request;
+use nimbus_test_support::InputMethod;
 use nix::sys::signal::Signal;
+use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
+    ContentHint, ContentPurpose,
+};
 
 #[test]
 fn panel_renders_and_launcher_and_overview_toggle() {
@@ -95,6 +99,61 @@ fn launcher_opens_on_an_overlay_surface_with_the_keyboard() {
     session.press_key(KEY_ESC);
     session.wait_closed("Overlay", 1);
     session.wait_screenshot("the launcher to close", |shot| changed_fraction(&idle, shot) < 0.02);
+}
+
+#[test]
+fn an_input_method_types_chinese_into_the_launcher_search() {
+    let session = Session::start(CONFIG, None);
+    let mut ime = InputMethod::connect(&session.compositor);
+    let idle = session.wait_screenshot("the panel and the dock", shell_visible);
+    session.request(Request::ToggleLauncher);
+    session.wait_opened("Overlay", 1);
+    let open = session.wait_screenshot("the launcher", |shot| changed_fraction(&idle, shot) > 0.3);
+    let search = |shot: &image::RgbaImage| changed_pixels(&open, shot, 380, 40, 520, 100);
+
+    // The focused search field enables the text input with its empty text.
+    ime.wait("the search field's text input", |text| {
+        text.active
+            && text.surrounding == Some((String::new(), 0, 0))
+            && text.content_type.is_some_and(|(_, purpose)| purpose == ContentPurpose::Normal)
+    });
+
+    // A preedit string shows in the field, but isn't part of its text yet.
+    ime.preedit("nihao");
+    let composing = session.wait_screenshot("the preedit string", |shot| search(shot) > 50);
+    assert_eq!(ime.state.current.surrounding, Some((String::new(), 0, 0)));
+
+    // Committed text replaces the preedit string, and the field reports its new text and cursor.
+    ime.commit_string("你好");
+    ime.wait("the committed text", |text| text.surrounding == Some(("你好".into(), 6, 6)));
+    session.wait_screenshot("the committed text", |shot| {
+        changed_pixels(&composing, shot, 380, 40, 520, 100) > 50
+    });
+    ime.delete_surrounding(3, 0);
+    ime.wait("the deleted character", |text| text.surrounding == Some(("你".into(), 3, 3)));
+
+    // Closing the launcher takes the field and its text input away.
+    session.request(Request::ToggleLauncher);
+    session.wait_closed("Overlay", 1);
+    ime.wait("the text input to go", |text| !text.active);
+}
+
+#[test]
+fn the_lock_screen_asks_for_a_password_without_sharing_it() {
+    let session = Session::start(CONFIG, None);
+    let mut ime = InputMethod::connect(&session.compositor);
+    session.wait_screenshot("the panel and the dock", shell_visible);
+    session.request(Request::Lock);
+    session.wait_log("the shell to hold the lock", "locked");
+    ime.wait("the password field's text input", |text| {
+        text.active
+            && text.content_type
+                == Some((
+                    ContentHint::SensitiveData | ContentHint::HiddenText,
+                    ContentPurpose::Password,
+                ))
+    });
+    assert_eq!(ime.state.current.surrounding, None, "the password field shared its text");
 }
 
 #[test]

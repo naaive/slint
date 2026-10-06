@@ -17,6 +17,8 @@ nimbus-xdg = { workspace = true }
 nimbus-services = { workspace = true }
 nimbus-shell = { workspace = true }
 slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts", "renderer-femtovg"] }
+# Input method requests and composition events are only in Slint's internal API.
+i-slint-core = { path = "../../../internal/core", default-features = false, features = ["image-decoders", "svg"] }
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-client = "0.31"
 # The system backend exposes the `wl_display` and `wl_surface` pointers EGL needs.

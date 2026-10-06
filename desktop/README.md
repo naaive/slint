@@ -44,6 +44,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - A notification server with toasts, actions, and a notification center next to the calendar.
 - On-screen displays for volume and brightness keys, and a lock screen.
 - A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
+- Input methods such as fcitx5 and IBus type into the launcher search, the lock screen, and the polkit dialog through text-input-v3;
+  password fields tell the input method they're passwords and never share their text.
 - Inserted USB sticks and memory cards mount on their own, unless `[media] automount` is off,
   and a toast offers to open them in the file manager.
 - The `nimbus-shell` binary runs the shell as a Wayland client, on layer-shell and session-lock surfaces.
@@ -260,7 +262,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - The shell's popups and its overlay with the launcher and overview don't animate when they close, since their surfaces go right away.
 - Toasts and the OSD show above fullscreen windows.
 - A click on an empty spot of the panel doesn't close an open popup; a click on a window or the dock does.
-- The shell has no input method support; it handles dead keys and Compose sequences with the locale's XKB compose table.
+- The shell handles dead keys and Compose sequences with the locale's XKB compose table.
   A key that completes or cancels a sequence still sends its own key release.
 - X11 apps need xwayland-satellite 0.6 or later; without it, `DISPLAY` stays unset.
   XWayland has only run against a script standing in for xwayland-satellite.
@@ -276,6 +278,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
   Apps that speak only text-input-v1 or v2, such as Chromium and Electron by default, get no input method.
   Any client may become the input method or create a virtual keyboard, as in other wlroots-style compositors.
   While the session is locked, the input method gets no keys and its popups don't show.
+  The shell applies an input method's changes and reports its text fields without checking the serial of `done`.
+  Typing into the polkit dialog through an input method has no end-to-end test.
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.
 - When an `ext-session-lock` client dies, the session stays locked and black until another client locks it.

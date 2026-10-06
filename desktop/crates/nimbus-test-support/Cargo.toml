@@ -13,3 +13,4 @@ zbus = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }

@@ -3,6 +3,7 @@
 //! Slint's FemtoVG renderer drawing with OpenGL ES through EGL.
 
 use super::Renderer;
+use super::window::ShellWindow;
 use crate::state::State;
 use anyhow::{Context as _, anyhow, bail};
 use glow::HasContext;
@@ -18,14 +19,13 @@ use glutin::surface::{SurfaceAttributesBuilder, SwapInterval, WindowSurface};
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
 };
+use slint::platform::WindowAdapter;
 use slint::platform::femtovg_renderer::{FemtoVGRenderer, OpenGLInterface};
-use slint::platform::{WindowAdapter, WindowEvent};
-use slint::{PhysicalSize, WindowSize};
 use std::cell::{Cell, OnceCell};
 use std::ffi::{CStr, c_void};
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Proxy, QueueHandle};
 
@@ -185,46 +185,11 @@ unsafe impl OpenGLInterface for SharedEgl {
     }
 }
 
-/// The window adapter of a Slint window that FemtoVG draws.
-struct GlWindow {
-    window: slint::Window,
-    renderer: FemtoVGRenderer,
-    size: Cell<PhysicalSize>,
-    needs_redraw: Cell<bool>,
-}
-
-impl WindowAdapter for GlWindow {
-    fn window(&self) -> &slint::Window {
-        &self.window
-    }
-
-    fn size(&self) -> PhysicalSize {
-        self.size.get()
-    }
-
-    fn set_size(&self, size: WindowSize) {
-        let scale_factor = self.window.scale_factor();
-        self.size.set(size.to_physical(scale_factor));
-        let size = size.to_logical(scale_factor);
-        if let Err(err) = self.window.dispatch_event_with_result(WindowEvent::Resized { size }) {
-            tracing::warn!("cannot resize a shell window: {err}");
-        }
-    }
-
-    fn renderer(&self) -> &dyn slint::platform::Renderer {
-        &self.renderer
-    }
-
-    fn request_redraw(&self) {
-        self.needs_redraw.set(true);
-    }
-}
-
 /// Renders with FemtoVG into an EGL window surface on the Wayland surface.
 ///
 /// FemtoVG redraws the whole window for every frame.
 pub struct GlRenderer {
-    window: Rc<GlWindow>,
+    window: Rc<ShellWindow<FemtoVGRenderer>>,
     egl: Rc<Egl>,
     surface: WlSurface,
 }
@@ -248,13 +213,7 @@ impl GlRenderer {
             _conn: gl.conn.clone(),
         });
         let renderer = FemtoVGRenderer::new(SharedEgl(egl.clone()))?;
-        let window = Rc::new_cyclic(|adapter: &Weak<GlWindow>| GlWindow {
-            window: slint::Window::new(adapter.clone()),
-            renderer,
-            size: Cell::default(),
-            needs_redraw: Cell::new(true),
-        });
-        Ok(Self { window, egl, surface: surface.clone() })
+        Ok(Self { window: ShellWindow::new(renderer), egl, surface: surface.clone() })
     }
 }
 
@@ -264,13 +223,13 @@ impl Renderer for GlRenderer {
     }
 
     fn render(&mut self, qh: &QueueHandle<State>) -> bool {
-        let size = self.window.size.get();
+        let size = self.window.size();
         let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         else {
             return false;
         };
-        if !self.window.needs_redraw.replace(false) {
+        if !self.window.take_redraw() {
             return false;
         }
         let resized = match self.egl.prepare((width, height)) {
@@ -287,7 +246,7 @@ impl Renderer for GlRenderer {
         }
         // Mesa's software rasterizer draws the first frame after a resize at the old size.
         if resized && !self.egl.drew_at((width, height)) {
-            self.window.needs_redraw.set(true);
+            self.window.request_redraw();
         }
         true
     }

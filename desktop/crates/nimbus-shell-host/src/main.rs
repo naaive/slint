@@ -18,6 +18,7 @@ mod render;
 mod services;
 mod state;
 mod surface;
+mod text_input;
 mod wayland;
 
 use anyhow::{Context, anyhow};

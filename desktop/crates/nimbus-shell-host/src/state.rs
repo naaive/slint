@@ -14,6 +14,7 @@ use crate::platform::Windows;
 use crate::render::{Preference, Renderers};
 use crate::services::SystemServices;
 use crate::surface::{Scaling, SlintSurface};
+use crate::text_input::TextInput;
 use anyhow::anyhow;
 use nimbus_ipc::{Request, Response};
 use nimbus_shell::{ShellAction, ShellModel, ShellView};
@@ -69,6 +70,7 @@ pub struct State {
     pub outputs: Vec<OutputShell>,
     pub lock: Lock,
     pub input: Input,
+    pub text_input: TextInput,
     pub idle: Idle,
     pub ipc: Ipc,
     pub services: SystemServices,
@@ -124,6 +126,7 @@ impl State {
             },
             cursor_shape: globals.bind(&qh, 1..=1, ()).ok(),
             idle: Idle::new(globals.bind(&qh, 1..=1, ()).ok()),
+            text_input: TextInput::new(globals.bind(&qh, 1..=1, ()).ok()),
             ipc: Ipc::connect(&loop_handle)?,
             services: SystemServices::spawn(&loop_handle)?,
             apps: Apps::new(&loop_handle)?,
@@ -147,7 +150,7 @@ impl State {
         // `SeatState` binds the seats that already exist without calling `new_seat` for them.
         if let Some(seat) = state.seat_state.seats().next() {
             state.input.seat = Some(seat);
-            state.watch_idle();
+            state.watch_seat();
         }
         state.request(&Request::Subscribe, |_, _| {});
         state.request(&Request::GetState, |state, response| match response {
@@ -163,6 +166,12 @@ impl State {
         state.reload_apps();
         state.settings.watch(&state.loop_handle);
         Ok(state)
+    }
+
+    /// Follows idleness and text input on the seat in `input.seat`.
+    pub fn watch_seat(&mut self) {
+        self.watch_idle();
+        self.text_input.set_seat(self.input.seat.as_ref(), &self.qh);
     }
 
     pub fn running(&self) -> bool {
@@ -246,6 +255,8 @@ impl State {
             lock.surface.render(&self.qh);
             lock.surface.commit();
         }
+        // Text fields report their changes while they render.
+        self.sync_text_input();
         if let Err(err) = self.conn.flush() {
             self.stop(Err(anyhow!(err).context("lost the Wayland connection")));
         }
