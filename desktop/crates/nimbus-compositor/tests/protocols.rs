@@ -4,18 +4,16 @@
 
 mod common;
 
-use common::{Compositor, TIMEOUT, TestClient};
+use common::{Compositor, TestClient};
 use nimbus_ipc::Request;
-use std::os::fd::AsFd;
-use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
     wl_keyboard::{self, WlKeyboard},
     wl_registry::{self, WlRegistry},
     wl_seat::WlSeat,
-    wl_shm::{self, WlShm},
+    wl_shm::WlShm,
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
 };
@@ -86,9 +84,7 @@ struct Layer {
 
 impl Probe {
     fn connect(compositor: &Compositor) -> Self {
-        let stream = UnixStream::connect(compositor.runtime_dir().join(&compositor.display))
-            .expect("connect to the Wayland socket");
-        let conn = Connection::from_socket(stream).expect("Wayland connection");
+        let conn = common::connect(&compositor.wayland_socket());
         let mut queue = conn.new_event_queue();
         let qh = queue.handle();
         conn.display().get_registry(&qh, ());
@@ -116,15 +112,7 @@ impl Probe {
     }
 
     fn dispatch_until(&mut self, what: &str, cond: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            self.roundtrip();
-            if cond(&self.app) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        common::dispatch_until(&self.conn, &mut self.queue, &mut self.app, what, cond);
     }
 
     /// Maps a layer surface on the top layer, anchored to the top edge, `height` tall.
@@ -146,30 +134,18 @@ impl Probe {
         self.dispatch_until("the layer surface configure", |app| app.layer_configure.is_some());
         let (serial, width, height) = self.app.layer_configure.unwrap();
         layer_surface.ack_configure(serial);
-        self.attach_buffer(&surface, width, height);
+        let size = (i32::try_from(width).unwrap(), i32::try_from(height).unwrap());
+        common::attach_buffer(self.app.globals.shm.as_ref().unwrap(), &self.qh, &surface, size);
         self.roundtrip();
         Layer { surface, layer_surface }
-    }
-
-    fn attach_buffer(&self, surface: &WlSurface, width: u32, height: u32) {
-        let (w, h) = (i32::try_from(width).unwrap(), i32::try_from(height).unwrap());
-        let file = tempfile::tempfile().expect("shm file");
-        file.set_len(u64::from(width * height * 4)).unwrap();
-        let shm = self.app.globals.shm.as_ref().unwrap();
-        let pool = shm.create_pool(file.as_fd(), w * h * 4, &self.qh, ());
-        let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &self.qh, ());
-        pool.destroy();
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, w, h);
-        surface.commit();
     }
 }
 
 #[test]
 fn foreign_toplevels_follow_windows() {
-    let compositor = Compositor::start("", &[]);
+    let compositor = common::start("");
     let mut probe = Probe::connect(&compositor);
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut client = TestClient::connect(&compositor);
     let index = client.create_window("org.nimbus.Listed", "First title");
     probe.dispatch_until("a listed toplevel", |app| {
         app.toplevels
@@ -194,7 +170,7 @@ fn foreign_toplevels_follow_windows() {
 
 #[test]
 fn idle_notifications_fire_unless_inhibited() {
-    let compositor = Compositor::start("", &[]);
+    let compositor = common::start("");
     let mut probe = Probe::connect(&compositor);
     let bar = probe.map_top_bar(20, 0);
     let inhibitor = probe.app.globals.idle_inhibit.as_ref().unwrap().create_inhibitor(
@@ -221,13 +197,13 @@ fn idle_notifications_fire_unless_inhibited() {
 
 #[test]
 fn layer_surfaces_reserve_space_and_take_the_keyboard() {
-    let compositor = Compositor::start("", &[]);
+    let compositor = common::start("");
     let mut probe = Probe::connect(&compositor);
     let seat = probe.app.globals.seat.clone().unwrap();
     seat.get_keyboard(&probe.qh, ());
     let bar = probe.map_top_bar(40, 40);
 
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut client = TestClient::connect(&compositor);
     let index = client.create_window("org.nimbus.Big", "Big");
     let id = compositor.wait_state("the window", |s| s.windows.len() == 1).windows[0].id;
     compositor.request(Request::SetMaximized { id, maximized: true });

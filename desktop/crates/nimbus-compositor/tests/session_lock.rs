@@ -6,8 +6,6 @@ mod common;
 
 use common::{Compositor, TIMEOUT};
 use nimbus_ipc::{Event, Request};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::time::{Duration, Instant};
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_output::WlOutput;
@@ -47,9 +45,8 @@ struct Locker {
 }
 
 impl Locker {
-    fn connect(runtime_dir: &Path, display: &str) -> Self {
-        let stream = UnixStream::connect(runtime_dir.join(display)).expect("connect");
-        let conn = Connection::from_socket(stream).expect("Wayland connection");
+    fn connect(compositor: &Compositor) -> Self {
+        let conn = common::connect(&compositor.wayland_socket());
         let mut queue = conn.new_event_queue();
         let qh = queue.handle();
         conn.display().get_registry(&qh, ());
@@ -89,12 +86,7 @@ impl Locker {
     }
 
     fn dispatch_until(&mut self, what: &str, cond: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + TIMEOUT;
-        while !cond(&self.app) {
-            self.queue.roundtrip(&mut self.app).expect("roundtrip");
-            assert!(Instant::now() < deadline, "no {what}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        common::dispatch_until(&self.conn, &mut self.queue, &mut self.app, what, cond);
     }
 
     fn unlock(&mut self) {
@@ -179,8 +171,8 @@ delegate_noop!(App: ignore WlOutput);
 
 #[test]
 fn only_the_lock_holder_unlocks() {
-    let compositor = Compositor::start("", &[]);
-    let connect = || Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    let compositor = common::start("");
+    let connect = || Locker::connect(&compositor);
 
     let mut owner = connect();
     assert_eq!(owner.lock(), LockState::Locked);
@@ -205,8 +197,8 @@ fn only_the_lock_holder_unlocks() {
 
 #[test]
 fn a_new_client_locks_after_the_holder_dies() {
-    let compositor = Compositor::start("", &[]);
-    let connect = || Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    let compositor = common::start("");
+    let connect = || Locker::connect(&compositor);
 
     let events = compositor.subscribe();
 
@@ -230,7 +222,7 @@ fn a_new_client_locks_after_the_holder_dies() {
 
 #[test]
 fn the_lock_request_locks_and_asks_for_a_lock_screen() {
-    let compositor = Compositor::start("", &[]);
+    let compositor = common::start("");
     let events = compositor.subscribe();
     compositor.request(Request::Lock);
     let lock_state = |event: Event| match event {
@@ -242,7 +234,7 @@ fn the_lock_request_locks_and_asks_for_a_lock_screen() {
     assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
 
     // The lock screen client takes over the lock and ends it.
-    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut locker = Locker::connect(&compositor);
     assert_eq!(locker.lock(), LockState::Locked);
     assert_eq!(events.wait("the lock state", lock_state), (true, true));
     locker.unlock();
@@ -253,8 +245,8 @@ fn the_lock_request_locks_and_asks_for_a_lock_screen() {
 
 #[test]
 fn lock_surfaces_follow_their_output() {
-    let compositor = Compositor::start("[appearance]\nscale = 1.0\n", &[]);
-    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    let compositor = common::start("[appearance]\nscale = 1.0\n");
+    let mut locker = Locker::connect(&compositor);
     assert_eq!(locker.lock_with_surfaces(true), LockState::Locked);
     locker.dispatch_until("configure with the output's size", |app| {
         app.configured == Some((1280, 720)) && app.entered
@@ -270,10 +262,10 @@ fn lock_surfaces_follow_their_output() {
 
 #[test]
 fn a_compositor_started_locked_waits_for_a_lock_client() {
-    let compositor = Compositor::start_with_args("", &["--locked"]);
+    let compositor = common::compositor("").arg("--locked").start();
     assert!(compositor.locked(), "{}", compositor.log());
     assert!(nimbus_ipc::lock_marker_path(&compositor.runtime_dir()).exists());
-    let mut locker = Locker::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut locker = Locker::connect(&compositor);
     assert_eq!(locker.lock(), LockState::Locked);
     locker.unlock();
     assert!(!compositor.locked());

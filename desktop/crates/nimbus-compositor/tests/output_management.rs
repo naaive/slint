@@ -4,9 +4,7 @@
 
 mod common;
 
-use common::{Compositor, TIMEOUT};
-use std::os::unix::net::UnixStream;
-use std::time::Instant;
+use common::Compositor;
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, event_created_child};
@@ -19,7 +17,10 @@ use wayland_protocols_wlr::output_management::v1::client::{
 };
 
 const CONFIG: &str = "[appearance]\nscale = 1.0\n";
-const TWO_OUTPUTS: [(&str, &str); 1] = [("NIMBUS_HEADLESS_OUTPUTS", "1280x720,1920x1080")];
+
+fn start_two_outputs(config: &str) -> Compositor {
+    common::compositor(config).outputs("1280x720,1920x1080").start()
+}
 
 #[derive(Clone, Debug, Default)]
 struct Head {
@@ -61,6 +62,7 @@ impl App {
 }
 
 struct Client {
+    conn: Connection,
     queue: EventQueue<App>,
     qh: QueueHandle<App>,
     app: App,
@@ -68,26 +70,20 @@ struct Client {
 
 impl Client {
     fn connect(compositor: &Compositor) -> Self {
-        let stream = UnixStream::connect(compositor.runtime_dir().join(&compositor.display))
-            .expect("connect to the Wayland socket");
-        let conn = Connection::from_socket(stream).expect("Wayland connection");
+        let conn = common::connect(&compositor.wayland_socket());
         let mut queue = conn.new_event_queue();
         let qh = queue.handle();
         conn.display().get_registry(&qh, ());
         let mut app = App::default();
         queue.roundtrip(&mut app).expect("roundtrip");
         assert!(app.manager.is_some(), "no zwlr_output_manager_v1 global");
-        let mut client = Self { queue, qh, app };
+        let mut client = Self { conn, queue, qh, app };
         client.dispatch_until("the first done", |app| app.serial.is_some());
         client
     }
 
     fn dispatch_until(&mut self, what: &str, cond: impl Fn(&App) -> bool) {
-        let deadline = Instant::now() + TIMEOUT;
-        while !cond(&self.app) {
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            self.queue.roundtrip(&mut self.app).expect("roundtrip");
-        }
+        common::dispatch_until(&self.conn, &mut self.queue, &mut self.app, what, cond);
     }
 
     /// Applies or tests a configuration that keeps every head as it is, except for `edit`'s changes.
@@ -238,7 +234,7 @@ wayland_client::delegate_noop!(App: ignore ZwlrOutputConfigurationHeadV1);
 
 #[test]
 fn lists_heads() {
-    let compositor = Compositor::start(CONFIG, &TWO_OUTPUTS);
+    let compositor = start_two_outputs(CONFIG);
     let client = Client::connect(&compositor);
     let app = &client.app;
     let first = app.head("HEADLESS-1");
@@ -253,7 +249,7 @@ fn lists_heads() {
 
 #[test]
 fn applies_and_saves_a_layout() {
-    let compositor = Compositor::start(CONFIG, &TWO_OUTPUTS);
+    let compositor = start_two_outputs(CONFIG);
     let mut client = Client::connect(&compositor);
     let serial = client.serial();
 
@@ -294,7 +290,7 @@ fn applies_and_saves_a_layout() {
     // The saved layout comes back after a restart.
     drop(client);
     drop(compositor);
-    let compositor = Compositor::start(&saved, &TWO_OUTPUTS);
+    let compositor = start_two_outputs(&saved);
     let client = Client::connect(&compositor);
     let second = client.app.head("HEADLESS-2");
     assert_eq!((second.position, second.scale), ((0, 720), 2.0));
@@ -302,7 +298,7 @@ fn applies_and_saves_a_layout() {
 
 #[test]
 fn refuses_what_it_cannot_do() {
-    let compositor = Compositor::start(CONFIG, &TWO_OUTPUTS);
+    let compositor = start_two_outputs(CONFIG);
     let mut client = Client::connect(&compositor);
     let serial = client.serial();
     let unsupported = |_: &str, head: &ZwlrOutputConfigurationHeadV1| {
@@ -343,7 +339,7 @@ fn refuses_what_it_cannot_do() {
 
 #[test]
 fn disables_and_enables_a_head() {
-    let compositor = Compositor::start(CONFIG, &TWO_OUTPUTS);
+    let compositor = start_two_outputs(CONFIG);
     let mut client = Client::connect(&compositor);
     let serial = client.serial();
     let manager = client.app.manager.clone().unwrap();

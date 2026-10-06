@@ -3,14 +3,13 @@
 //! End-to-end tests of the portal against a private `dbus-daemon`.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use nimbus_config::{Appearance, ColorScheme, Config};
 use nimbus_portal::{BUS_NAME, NAMESPACE, OBJECT_PATH};
+use nimbus_test_support::PrivateBus;
 use tokio::time::timeout;
 use zbus::zvariant::OwnedValue;
 use zbus::{Connection, Proxy};
@@ -18,46 +17,6 @@ use zbus::{Connection, Proxy};
 const WAIT: Duration = Duration::from_secs(10);
 /// Longer than the configuration watcher takes to report a change.
 const QUIET: Duration = Duration::from_secs(2);
-
-/// A private bus daemon, killed on drop.
-struct Bus {
-    child: Child,
-    address: String,
-}
-
-impl Bus {
-    fn start() -> Option<Self> {
-        let mut child = match Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(err) => {
-                eprintln!("skipping: can't run dbus-daemon: {err}");
-                return None;
-            }
-        };
-        let mut address = String::new();
-        let stdout = child.stdout.take()?;
-        BufReader::new(stdout).read_line(&mut address).ok()?;
-        let address = address.trim().to_owned();
-        Some(Self { child, address })
-    }
-
-    async fn connect(&self) -> Connection {
-        zbus::connection::Builder::address(self.address.as_str()).unwrap().build().await.unwrap()
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 fn save(path: &Path, color_scheme: ColorScheme, accent: &str) {
     let appearance = Appearance { color_scheme, accent: accent.into(), ..Appearance::default() };
@@ -90,7 +49,7 @@ fn error_name(error: zbus::Error) -> String {
 
 #[tokio::test]
 async fn read_and_read_all() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     save(&path, ColorScheme::Dark, "#ff0033");
@@ -125,7 +84,7 @@ async fn read_and_read_all() {
 
 #[tokio::test]
 async fn setting_changed_reports_only_changed_keys() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     save(&path, ColorScheme::Dark, "#ff0033");

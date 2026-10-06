@@ -206,6 +206,45 @@ pub enum Error {
 /// Environment variable through which the compositor advertises its control socket.
 pub const SOCKET_ENV: &str = "NIMBUS_SOCKET";
 
+/// The line the compositor prints on standard output once its sockets accept connections.
+///
+/// It reads `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`; the path may contain spaces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ready {
+    pub wayland_display: String,
+    pub socket: PathBuf,
+}
+
+impl Ready {
+    const PREFIX: &str = "NIMBUS_READY ";
+    const DISPLAY_KEY: &str = "WAYLAND_DISPLAY=";
+    const SOCKET_KEY: &str = " NIMBUS_SOCKET=";
+
+    /// Parses a ready line, with or without its line break.
+    pub fn parse(line: &str) -> Option<Self> {
+        let rest = line.trim_end_matches(['\r', '\n']).strip_prefix(Self::PREFIX)?;
+        let rest = rest.trim_start().strip_prefix(Self::DISPLAY_KEY)?;
+        let (display, socket) = rest.split_once(Self::SOCKET_KEY)?;
+        let display = display.trim();
+        if display.is_empty() || display.contains(char::is_whitespace) || socket.is_empty() {
+            return None;
+        }
+        Some(Self { wayland_display: display.to_string(), socket: PathBuf::from(socket) })
+    }
+}
+
+impl std::fmt::Display for Ready {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (prefix, display_key, socket_key) = (Self::PREFIX, Self::DISPLAY_KEY, Self::SOCKET_KEY);
+        write!(
+            f,
+            "{prefix}{display_key}{}{socket_key}{}",
+            self.wayland_display,
+            self.socket.display()
+        )
+    }
+}
+
 /// Returns the control socket path: `$NIMBUS_SOCKET`, or `$XDG_RUNTIME_DIR/nimbus-<wayland display>.sock`.
 pub fn socket_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(SOCKET_ENV) {
@@ -291,6 +330,36 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_line_parsing() {
+        assert_eq!(
+            Ready::parse(
+                "NIMBUS_READY WAYLAND_DISPLAY=wayland-1 NIMBUS_SOCKET=/run/user/1000/nimbus-wayland-1.sock\n"
+            ),
+            Some(Ready {
+                wayland_display: "wayland-1".into(),
+                socket: "/run/user/1000/nimbus-wayland-1.sock".into()
+            })
+        );
+        assert_eq!(
+            Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w NIMBUS_SOCKET=/tmp/a b.sock")
+                .map(|r| r.socket),
+            Some(PathBuf::from("/tmp/a b.sock"))
+        );
+        assert_eq!(Ready::parse("NIMBUS_READY WAYLAND_DISPLAY= NIMBUS_SOCKET=/x"), None);
+        assert_eq!(Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w NIMBUS_SOCKET="), None);
+        assert_eq!(Ready::parse("NIMBUS_READY NIMBUS_SOCKET=/x"), None);
+        assert_eq!(Ready::parse("starting compositor"), None);
+    }
+
+    #[test]
+    fn ready_line_round_trips() {
+        let ready = Ready { wayland_display: "wayland-2".into(), socket: "/tmp/a b.sock".into() };
+        let line = ready.to_string();
+        assert_eq!(line, "NIMBUS_READY WAYLAND_DISPLAY=wayland-2 NIMBUS_SOCKET=/tmp/a b.sock");
+        assert_eq!(Ready::parse(&line), Some(ready));
+    }
 
     #[test]
     fn request_wire_format_is_tagged_kebab_case() {

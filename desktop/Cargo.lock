@@ -2903,6 +2903,7 @@ dependencies = [
  "libc",
  "nimbus-config",
  "nimbus-ipc",
+ "nimbus-test-support",
  "nimbus-xdg",
  "serde",
  "serde_json",
@@ -3007,6 +3008,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "nimbus-config",
+ "nimbus-test-support",
  "nimbus-theme",
  "tempfile",
  "tokio",
@@ -3020,6 +3022,7 @@ name = "nimbus-services"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "nimbus-test-support",
  "serde",
  "tempfile",
  "tokio",
@@ -3057,6 +3060,7 @@ dependencies = [
  "md-5",
  "nimbus-config",
  "nimbus-ipc",
+ "nimbus-test-support",
  "nimbus-theme",
  "png",
  "resvg",
@@ -3109,6 +3113,7 @@ dependencies = [
  "nimbus-ipc",
  "nimbus-services",
  "nimbus-shell",
+ "nimbus-test-support",
  "nimbus-xdg",
  "nix 0.30.1",
  "raw-window-handle",
@@ -3117,7 +3122,6 @@ dependencies = [
  "signal-hook 0.3.18",
  "slint",
  "smithay-client-toolkit",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -3155,6 +3159,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+]
+
+[[package]]
+name = "nimbus-test-support"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "nimbus-ipc",
+ "tempfile",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
 ]
 
 [[package]]

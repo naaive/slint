@@ -6,6 +6,7 @@
 use crate::autostart::Launch;
 use crate::env::{ACTIVATION_VARIABLES, SessionEnv, find_in_path};
 use anyhow::Context as _;
+use nimbus_ipc::Ready;
 use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::Pid;
@@ -23,28 +24,9 @@ use std::time::{Duration, Instant};
 const SESSION_TARGET: &str = "nimbus-session.target";
 const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 const CHILD_GRACE: Duration = Duration::from_secs(3);
+/// How long a shell gets to exit after its compositor crashed; it loses its connection and exits on its own.
+const CRASH_GRACE: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(50);
-
-/// The compositor's announcement that its sockets accept connections.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ready {
-    pub wayland_display: String,
-    pub socket: PathBuf,
-}
-
-/// Parses `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`; the path may contain spaces.
-pub fn parse_ready_line(line: &str) -> Option<Ready> {
-    const DISPLAY_KEY: &str = "WAYLAND_DISPLAY=";
-    const SOCKET_KEY: &str = " NIMBUS_SOCKET=";
-    let rest = line.trim_end_matches(['\r', '\n']).strip_prefix("NIMBUS_READY ")?;
-    let rest = rest.trim_start().strip_prefix(DISPLAY_KEY)?;
-    let (display, socket) = rest.split_once(SOCKET_KEY)?;
-    let display = display.trim();
-    if display.is_empty() || display.contains(char::is_whitespace) || socket.is_empty() {
-        return None;
-    }
-    Some(Ready { wayland_display: display.to_string(), socket: PathBuf::from(socket) })
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CrashDecision {
@@ -132,7 +114,7 @@ pub fn classify_exit(status: ExitStatus, shutdown_requested: bool) -> Outcome {
     if shutdown_requested || status.success() { Outcome::Shutdown } else { Outcome::Crashed }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Program {
     pub path: PathBuf,
     pub args: Vec<OsString>,
@@ -231,24 +213,66 @@ impl Shell {
             self.start(env);
         }
     }
+}
 
-    /// Cancels a pending restart and stops the shell, killing it after `grace`.
-    fn stop(&mut self, grace: Duration) {
+/// Processes that [`terminate`] stops.
+trait Processes {
+    fn signal(&mut self, signal: Signal);
+    /// Reaps exited processes; returns whether any still run.
+    fn reap(&mut self) -> bool;
+    /// Kills and reaps the processes that still run.
+    fn kill(&mut self);
+}
+
+/// Sends SIGTERM to every process of `targets`, and SIGKILL to those still running after `grace`.
+fn terminate(targets: &mut [&mut dyn Processes], grace: Duration) {
+    for target in targets.iter_mut() {
+        target.signal(Signal::SIGTERM);
+    }
+    let deadline = Instant::now() + grace;
+    loop {
+        let mut running = false;
+        for target in targets.iter_mut() {
+            running |= target.reap();
+        }
+        if !running {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    for target in targets {
+        target.kill();
+    }
+}
+
+impl Processes for Shell {
+    fn signal(&mut self, signal: Signal) {
         self.restart_at = None;
-        let Some((mut child, _)) = self.running.take() else { return };
-        if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+        if let Some((child, _)) = &self.running
+            && let Ok(pid) = i32::try_from(child.id())
+        {
+            let _ = kill(Pid::from_raw(pid), signal);
         }
-        let deadline = Instant::now() + grace;
-        while Instant::now() < deadline {
-            if !matches!(child.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(POLL);
+    }
+
+    fn reap(&mut self) -> bool {
+        if let Some((child, _)) = &mut self.running
+            && !matches!(child.try_wait(), Ok(None))
+        {
+            self.running = None;
         }
-        tracing::warn!("killing the shell, which ignored SIGTERM");
-        let _ = child.kill();
-        let _ = child.wait();
+        self.running.is_some()
+    }
+
+    fn kill(&mut self) {
+        if let Some((mut child, _)) = self.running.take() {
+            tracing::warn!("killing the shell, which ignored SIGTERM");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -257,7 +281,7 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
     let shared = Arc::new(Shared::default());
     forward_signals(shared.clone())?;
     let mut policy = RestartPolicy::default();
-    let mut shell = Shell::new(plan.shell.clone(), Backoff::default());
+    let mut shell = Shell::new(plan.shell, Backoff::default());
     let mut children = Children::default();
     let mut target_started = false;
     let mut client_env = plan.env.clone();
@@ -332,12 +356,12 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
                 std::thread::sleep(POLL);
             };
             shared.compositor_pid.store(0, Ordering::SeqCst);
-            shell.stop(CHILD_GRACE);
 
             if classify_exit(status, shared.shutdown.load(Ordering::SeqCst)) == Outcome::Shutdown {
                 tracing::info!("compositor exited ({status}); ending the session");
                 break ExitCode::SUCCESS;
             }
+            terminate(&mut [&mut shell], CRASH_GRACE);
             match policy.on_crash(Instant::now()) {
                 CrashDecision::Restart => {
                     start.locked = plan.lock_marker.as_deref().is_some_and(Path::exists);
@@ -353,8 +377,7 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
             }
         })
     })();
-    shell.stop(CHILD_GRACE);
-    children.terminate(CHILD_GRACE);
+    terminate(&mut [&mut shell, &mut children], CHILD_GRACE);
 
     if target_started {
         let mut stop = Command::new("systemctl");
@@ -400,7 +423,7 @@ fn wait_for_ready(
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 let Ok(line) = line else { break };
-                match parse_ready_line(&line) {
+                match Ready::parse(&line) {
                     Some(ready) if tx.is_some() => {
                         if let Some(tx) = tx.take() {
                             let _ = tx.send(ready);
@@ -520,9 +543,17 @@ impl Children {
             Err(error) => tracing::warn!("cannot autostart {}: {error}", launch.label),
         }
     }
+}
+
+impl Processes for Children {
+    fn signal(&mut self, signal: Signal) {
+        for group in &self.running {
+            let _ = killpg(group.pgid, signal);
+        }
+    }
 
     /// Reaps exited group leaders and forgets empty groups.
-    fn reap(&mut self) {
+    fn reap(&mut self) -> bool {
         self.running.retain_mut(|group| {
             if let Some(leader) = &mut group.leader
                 && let Ok(Some(status)) = leader.try_wait()
@@ -532,30 +563,16 @@ impl Children {
             }
             group.leader.is_some() || killpg(group.pgid, None) != Err(Errno::ESRCH)
         });
+        !self.running.is_empty()
     }
 
-    fn terminate(&mut self, grace: Duration) {
-        self.signal_all(Signal::SIGTERM);
-        let deadline = Instant::now() + grace;
-        while Instant::now() < deadline {
-            self.reap();
-            if self.running.is_empty() {
-                return;
-            }
-            std::thread::sleep(POLL);
-        }
-        self.signal_all(Signal::SIGKILL);
+    fn kill(&mut self) {
+        self.signal(Signal::SIGKILL);
         for group in self.running.drain(..) {
             tracing::warn!("killed {}, which ignored SIGTERM", group.label);
             if let Some(mut leader) = group.leader {
                 let _ = leader.wait();
             }
-        }
-    }
-
-    fn signal_all(&self, signal: Signal) {
-        for group in &self.running {
-            let _ = killpg(group.pgid, signal);
         }
     }
 }
@@ -564,28 +581,6 @@ impl Children {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
-
-    #[test]
-    fn ready_line_parsing() {
-        assert_eq!(
-            parse_ready_line(
-                "NIMBUS_READY WAYLAND_DISPLAY=wayland-1 NIMBUS_SOCKET=/run/user/1000/nimbus-wayland-1.sock\n"
-            ),
-            Some(Ready {
-                wayland_display: "wayland-1".into(),
-                socket: "/run/user/1000/nimbus-wayland-1.sock".into()
-            })
-        );
-        assert_eq!(
-            parse_ready_line("NIMBUS_READY WAYLAND_DISPLAY=w NIMBUS_SOCKET=/tmp/a b.sock")
-                .map(|r| r.socket),
-            Some(PathBuf::from("/tmp/a b.sock"))
-        );
-        assert_eq!(parse_ready_line("NIMBUS_READY WAYLAND_DISPLAY= NIMBUS_SOCKET=/x"), None);
-        assert_eq!(parse_ready_line("NIMBUS_READY WAYLAND_DISPLAY=w NIMBUS_SOCKET="), None);
-        assert_eq!(parse_ready_line("NIMBUS_READY NIMBUS_SOCKET=/x"), None);
-        assert_eq!(parse_ready_line("starting compositor"), None);
-    }
 
     #[test]
     fn restart_policy_allows_three_restarts_per_minute() {
@@ -648,7 +643,7 @@ mod tests {
         children.spawn(&launch, &env);
         assert_eq!(children.running.len(), 1);
         let started = Instant::now();
-        children.terminate(Duration::from_secs(5));
+        terminate(&mut [&mut children], Duration::from_secs(5));
         assert!(children.running.is_empty());
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -681,7 +676,7 @@ mod tests {
         }));
         let group = &children.running[0];
         assert_eq!(group.label, "daemonizes");
-        children.terminate(Duration::from_secs(5));
+        terminate(&mut [&mut children], Duration::from_secs(5));
         assert!(children.running.is_empty());
     }
 

@@ -23,7 +23,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 
 | Crate | Kind | Responsibility |
 | --- | --- | --- |
-| `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker. |
+| `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker; the compositor's ready line (`Ready`). |
 | `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`) and its edge-to-edge geometry (`geometry`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
@@ -37,6 +37,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-files` | app | File manager. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
 | `nimbus-monitor` | app | System monitor on `sysinfo`. |
+| `nimbus-test-support` | dev lib | Harness for integration tests: the headless compositor, Wayland test clients, and a private `dbus-daemon`. |
 
 Dependency direction (arrows point at dependencies):
 
@@ -106,6 +107,7 @@ nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name
 When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
 for its children and prints exactly one line to standard output:
 `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`.
+`nimbus_ipc::Ready` formats and parses this line.
 All logging goes to standard error.
 The headless backend creates one 1920x1080 virtual output, `HEADLESS-1`, or one per size listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
 `Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
@@ -319,12 +321,15 @@ and passes it `--config` when the session has one.
 A shell that exits, for any reason, is restarted after a delay that doubles from half a second up to 30 seconds,
 and drops back to half a second once a shell ran for 30 seconds.
 A shell never ends the session.
-When the compositor exits, the session stops the shell, and starts a new one with the restarted compositor.
+When the compositor crashes, the session gives the shell half a second to exit before killing it,
+and starts a new one with the restarted compositor.
 
 `nimbus-session` owns autostart, and runs it once per session, after the first compositor reports readiness.
 It runs each `config.autostart` command through `/bin/sh -c`, then the XDG autostart entries.
 Each autostarted process leads its own process group.
-The session terminates these groups when it ends, for any reason, but not when the compositor restarts.
+When the session ends, for any reason, it sends SIGTERM to the shell and these groups together,
+and SIGKILL to whatever still runs three seconds later.
+It leaves the groups running when the compositor restarts.
 Logging out asks logind to end the session.
 Without a logind session, as when nested, `nimbus-services` emits `ServiceEvent::LogoutRequested`,
 and the shell sends `Request::Quit`, so the compositor exits with status 0.
@@ -346,6 +351,8 @@ The release profile aborts on panic, because every process is supervised or rest
 - Domain crates have unit tests with fixture directories.
 - The shell has tests on Slint's testing backend.
   The shell and apps render reference screenshots off screen through `nimbus_theme::headless`.
+- `nimbus-test-support` holds the shared harness: it starts the headless compositor in a temporary directory,
+  provides Wayland test clients, and starts a private `dbus-daemon`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
@@ -359,7 +366,8 @@ The release profile aborts on panic, because every process is supervised or rest
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
-- `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
+- `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` notification test run against a private `dbus-daemon`,
+  and skip with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running

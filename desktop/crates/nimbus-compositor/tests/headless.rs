@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{Compositor, TIMEOUT, TestClient};
+use common::{TIMEOUT, TestClient};
 use nimbus_ipc::{Event, LayoutMode, Request, Response, ShellCommand};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -15,7 +15,7 @@ const CONFIG: &str = "[workspaces]\ncount = 4\ngaps = 10\nlayout = \"floating\"\
 
 #[test]
 fn windows_are_reported_with_metadata_and_focus() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let state = compositor.state();
     assert_eq!(state.workspace_count, 4);
     assert_eq!(state.active_workspace, 0);
@@ -24,7 +24,7 @@ fn windows_are_reported_with_metadata_and_focus() {
     assert_eq!(state.outputs[0].name, "HEADLESS-1");
     assert_eq!((state.outputs[0].width, state.outputs[0].height), (1280, 720));
 
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut client = TestClient::connect(&compositor);
     client.create_window("org.nimbus.First", "First window");
     client.create_window("org.nimbus.Second", "Second window");
 
@@ -58,7 +58,7 @@ fn windows_are_reported_with_metadata_and_focus() {
 
 #[test]
 fn subscribers_receive_window_events() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let (tx, rx) = mpsc::channel();
     let subscriber = compositor.ipc().subscribe().expect("subscribe");
     std::thread::spawn(move || {
@@ -73,7 +73,7 @@ fn subscribers_receive_window_events() {
             }
         }
     });
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let mut client = TestClient::connect(&compositor);
     let index = client.create_window("org.nimbus.Events", "Events");
 
     let next = |pred: &dyn Fn(&Event) -> bool| -> Event {
@@ -106,7 +106,7 @@ fn subscribers_receive_window_events() {
 
 #[test]
 fn shell_requests_become_shell_command_events() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let events = compositor.subscribe();
     for (request, expected) in [
         (Request::ToggleLauncher, ShellCommand::ToggleLauncher),
@@ -124,8 +124,8 @@ fn shell_requests_become_shell_command_events() {
 
 #[test]
 fn workspaces_close_and_tiling_work() {
-    let compositor = Compositor::start(CONFIG, &[]);
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
     let a = client.create_window("org.nimbus.A", "A");
     let b = client.create_window("org.nimbus.B", "B");
     let state = compositor.wait_state("two windows", |s| s.windows.len() == 2);
@@ -180,8 +180,8 @@ fn workspaces_close_and_tiling_work() {
 
 #[test]
 fn minimize_and_fullscreen_round_trip() {
-    let compositor = Compositor::start(CONFIG, &[]);
-    let mut client = TestClient::connect(&compositor.runtime_dir(), &compositor.display);
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
     let a = client.create_window("org.nimbus.Full", "Full");
     let id = compositor.wait_state("window", |s| s.windows.len() == 1).windows[0].id;
 
@@ -202,7 +202,7 @@ fn minimize_and_fullscreen_round_trip() {
 
 #[test]
 fn spawn_runs_commands_in_the_session_environment() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let out = compositor.dir.path().join("env.txt");
     let command = format!("env > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.display());
     compositor.request(Request::Spawn { command });
@@ -222,7 +222,7 @@ fn spawn_runs_commands_in_the_session_environment() {
 
 #[test]
 fn control_socket_survives_bad_clients() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
 
     // Malformed JSON gets an error reply, and the connection stays usable.
     let stream = UnixStream::connect(&compositor.control).unwrap();
@@ -251,7 +251,7 @@ fn control_socket_survives_bad_clients() {
 
 #[test]
 fn config_changes_apply_live() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let config_path = compositor.dir.path().join("config.toml");
     std::fs::write(&config_path, "[workspaces]\ncount = 6\ngaps = 0\nlayout = \"tiling\"\n")
         .unwrap();
@@ -268,10 +268,10 @@ fn config_changes_apply_live() {
 fn headless_screenshots_and_quit() {
     let shots = tempfile::tempdir().unwrap();
     let dir = shots.path().to_str().unwrap().to_owned();
-    let mut compositor = Compositor::start(
-        "[appearance]\nscale = 1.0\n",
-        &[("NIMBUS_HEADLESS_SCREENSHOT_DIR", &dir), ("NIMBUS_HEADLESS_SCREENSHOT_FRAMES", "3")],
-    );
+    let mut compositor = common::compositor("[appearance]\nscale = 1.0\n")
+        .env("NIMBUS_HEADLESS_SCREENSHOT_DIR", &dir)
+        .env("NIMBUS_HEADLESS_SCREENSHOT_FRAMES", "3")
+        .start();
     let png = shots.path().join("HEADLESS-1.png");
     let deadline = Instant::now() + TIMEOUT;
     while !png.exists() {
@@ -299,7 +299,7 @@ fn autostart_is_left_to_the_session() {
     let autostarted = markers.path().join("autostarted");
     let spawned = markers.path().join("spawned");
     let config = format!("autostart = [\"touch '{}'\"]\n", autostarted.display());
-    let compositor = Compositor::start(&config, &[]);
+    let compositor = common::start(&config);
     // A spawned command marks the point by which an autostart would have run too.
     compositor.request(Request::Spawn { command: format!("touch '{}'", spawned.display()) });
     let deadline = Instant::now() + TIMEOUT;
@@ -312,7 +312,7 @@ fn autostart_is_left_to_the_session() {
 
 #[test]
 fn responses_survive_a_half_closed_connection() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let mut stream = UnixStream::connect(&compositor.control).expect("connect");
     // Far more output than a socket buffer holds, written before the client reads anything.
     let count = 4000;
@@ -334,7 +334,7 @@ fn responses_survive_a_half_closed_connection() {
 
 #[test]
 fn screenshots_into_a_fifo_fail_without_blocking() {
-    let compositor = Compositor::start(CONFIG, &[]);
+    let compositor = common::start(CONFIG);
     let fifo = compositor.dir.path().join("fifo");
     let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
     // SAFETY: `c_path` is a valid, NUL-terminated path.

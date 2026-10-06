@@ -208,13 +208,8 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     tracing::info!(backend = ?kind, socket = %socket_name, control = %ipc_path.display(), "Nimbus is ready");
     let mut stdout = std::io::stdout().lock();
-    writeln!(
-        stdout,
-        "NIMBUS_READY WAYLAND_DISPLAY={socket_name} NIMBUS_SOCKET={}",
-        ipc_path.display()
-    )
-    .and_then(|()| stdout.flush())
-    .context("cannot report readiness")?;
+    let ready = nimbus_ipc::Ready { wayland_display: socket_name, socket: ipc_path };
+    writeln!(stdout, "{ready}").and_then(|()| stdout.flush()).context("cannot report readiness")?;
     drop(stdout);
 
     while state.nimbus.running {

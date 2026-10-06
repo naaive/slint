@@ -4,10 +4,11 @@
 
 mod common;
 
-use common::{CONFIG, Session, Window, black, changed_fraction, distance, mean, panel_visible};
+use common::{
+    CONFIG, PrivateBus, Session, TestClient, black, changed_fraction, distance, mean, panel_visible,
+};
 use nimbus_ipc::Request;
 use nix::sys::signal::Signal;
-use std::process::{Child, Command, Stdio};
 
 #[test]
 fn panel_renders_and_launcher_and_overview_toggle() {
@@ -36,11 +37,12 @@ fn panel_renders_and_launcher_and_overview_toggle() {
 fn maximized_windows_stay_below_the_panel() {
     let session = Session::start(CONFIG, None);
     session.wait_screenshot("the panel", panel_visible);
-    let mut window = Window::open(&session);
+    let mut client = TestClient::connect(&session.compositor);
+    let index = client.create_window("org.example.White", "White");
     let id = common::wait_for("the window", || session.state().windows.first().map(|w| w.id));
     session.request(Request::SetMaximized { id, maximized: true });
-    window.dispatch_until("the maximized size", |(_, height)| height > 300);
-    let (width, height) = window.size();
+    client.dispatch_until("the maximized size", |app| app.windows[index].size.1 > 300);
+    let (width, height) = client.app.windows[index].size;
     assert_eq!(width, 1280);
     assert!(height < 720 - 30, "the panel and dock reserve space: {height}");
     // The panel is drawn above the window, which starts right below it.
@@ -87,56 +89,16 @@ fn exits_cleanly_on_sigterm_and_with_failure_without_the_compositor() {
     assert!(!status.success(), "losing the compositor: {status}");
 }
 
-/// A private session bus, or `None` when `dbus-daemon` can't run here.
-struct Bus {
-    child: Child,
-    address: String,
-}
-
-impl Bus {
-    fn start() -> Option<Self> {
-        let mut child = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let mut line = String::new();
-        let stdout = child.stdout.take()?;
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).ok()?;
-        let address = line.trim().to_owned();
-        if address.is_empty() {
-            let _ = child.kill();
-            return None;
-        }
-        Some(Self { child, address })
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 #[test]
 fn notifications_show_toasts() {
-    let Some(bus) = Bus::start() else {
-        eprintln!("skipping: dbus-daemon is unavailable");
-        return;
-    };
+    let Some(bus) = PrivateBus::start() else { return };
     let session = Session::start(CONFIG, Some(&bus.address));
     let idle = session.wait_screenshot("the panel", panel_visible);
     session.wait_log("the notification server", "Serving org.freedesktop.Notifications");
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let id: u32 = runtime.block_on(async {
-        let connection = zbus::connection::Builder::address(bus.address.as_str())
-            .unwrap()
-            .build()
-            .await
-            .expect("connect to the private bus");
+        let connection = bus.connect().await;
         let hints = std::collections::HashMap::<&str, zbus::zvariant::Value>::new();
         let reply = connection
             .call_method(

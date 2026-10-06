@@ -1,0 +1,15 @@
+[package]
+name = "nimbus-test-support"
+description = "Test harness shared by the Nimbus integration tests: a headless compositor, Wayland test clients, and a private D-Bus daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+nimbus-ipc = { workspace = true }
+tempfile = { workspace = true }
+zbus = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }

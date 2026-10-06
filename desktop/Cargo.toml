@@ -14,6 +14,7 @@ members = [
   "crates/nimbus-compositor",
   "crates/nimbus-session",
   "crates/nimbus-portal",
+  "crates/nimbus-test-support",
   "apps/nimbus-settings",
   "apps/nimbus-files",
   "apps/nimbus-terminal",
@@ -35,6 +36,7 @@ nimbus-xdg = { path = "crates/nimbus-xdg" }
 nimbus-services = { path = "crates/nimbus-services" }
 nimbus-theme = { path = "crates/nimbus-theme" }
 nimbus-shell = { path = "crates/nimbus-shell" }
+nimbus-test-support = { path = "crates/nimbus-test-support" }
 
 slint = { path = "../api/rs/slint", default-features = false, features = ["std", "compat-1-18"] }
 slint-build = { path = "../api/rs/build" }

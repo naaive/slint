@@ -3,9 +3,8 @@
 //! End-to-end tests against a private `dbus-daemon`, with fake system daemons where needed.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::os::unix::net::UnixStream;
-use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +13,7 @@ use nimbus_services::{
     Bluetooth, BusAddress, CloseReason, ConnectionKind, Network, ServiceCommand, ServiceEvent,
     Services, ServicesBuilder, ServicesConfig, SystemState, Urgency,
 };
+use nimbus_test_support::PrivateBus;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 use zbus::object_server::SignalEmitter;
@@ -21,46 +21,6 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{Connection, MatchRule, MessageStream, interface};
 
 const WAIT: Duration = Duration::from_secs(10);
-
-/// A private bus daemon, killed on drop.
-struct Bus {
-    child: Child,
-    address: String,
-}
-
-impl Bus {
-    fn start() -> Option<Self> {
-        let mut child = match Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(err) => {
-                eprintln!("skipping: can't run dbus-daemon: {err}");
-                return None;
-            }
-        };
-        let mut address = String::new();
-        let stdout = child.stdout.take()?;
-        BufReader::new(stdout).read_line(&mut address).ok()?;
-        let address = address.trim().to_owned();
-        Some(Self { child, address })
-    }
-
-    async fn connect(&self) -> Connection {
-        zbus::connection::Builder::address(self.address.as_str()).unwrap().build().await.unwrap()
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 fn disabled() -> ServicesConfig {
     ServicesConfig {
@@ -221,7 +181,7 @@ async fn next_signal(stream: &mut MessageStream) -> (String, u32, Value<'static>
 
 #[tokio::test]
 async fn notification_server() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let (services, mut events) = spawn(
         ServicesBuilder::new(ServicesConfig { notifications: true, ..disabled() })
             .session_bus(BusAddress::Address(bus.address.clone()))
@@ -442,7 +402,7 @@ async fn call_close(client: &Connection, id: u32) {
 
 #[tokio::test]
 async fn notification_server_yields_to_existing_daemon() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let other = bus.connect().await;
     other.request_name("org.freedesktop.Notifications").await.unwrap();
     let (services, mut events) = spawn(
@@ -500,7 +460,7 @@ impl FakeDisplayDevice {
 
 #[tokio::test]
 async fn upower_appears_changes_and_leaves() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let (_services, mut events) = spawn(
         ServicesBuilder::new(ServicesConfig { upower: true, ..disabled() })
             .session_bus(BusAddress::Disabled)
@@ -633,7 +593,7 @@ impl FakeSession {
 
 #[tokio::test]
 async fn logind_lock_unlock_and_sleep() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let daemon = bus.connect().await;
     let server = daemon.object_server();
     let manager = FakeManager::default();
@@ -758,7 +718,7 @@ impl FakePlayer {
 
 #[tokio::test]
 async fn mpris_player_tracking() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let (services, mut events) = spawn(
         ServicesBuilder::new(ServicesConfig { mpris: true, ..disabled() })
             .session_bus(BusAddress::Address(bus.address.clone()))
@@ -852,7 +812,7 @@ impl FakeAccessPoint {
 
 #[tokio::test]
 async fn network_manager_wifi() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let daemon = bus.connect().await;
     let server = daemon.object_server();
     server
@@ -915,7 +875,7 @@ impl FakeDevice {
 
 #[tokio::test]
 async fn bluez_adapter() {
-    let Some(bus) = Bus::start() else { return };
+    let Some(bus) = PrivateBus::start() else { return };
     let daemon = bus.connect().await;
     let server = daemon.object_server();
     server.at("/", zbus::fdo::ObjectManager).await.unwrap();
