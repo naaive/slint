@@ -17,7 +17,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   D-Bus work runs on a Tokio runtime in `nimbus-services` and reaches the main thread through a `calloop` channel.
 - **Degrade, don't fail.** A missing D-Bus daemon, backlight, or battery hides that feature; it never stops the session.
 - **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind, the portal Settings interface,
-  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, `xdg-activation`, and `wlr-output-management` on the Wayland side.
+  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, `xdg-activation`, `wlr-output-management`, `wlr-screencopy`, and `ext-image-copy-capture` on the Wayland side.
 
 ## Crates
 
@@ -99,7 +99,8 @@ Modules in `crates/nimbus-compositor/src`:
   Shortcuts aimed at the shell become `Event::ShellCommand`s; see [Shell](#shell).
   On the headless backend, `Request::Click` and `Request::PressKey` feed input as if a user made it, for tests.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
-- `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshots.
+- `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshot files.
+- `capture/`: screen capture and screenshots; see [Screen Capture](#screen-capture).
 - `xwayland/`: the X11 display for X11 apps; see [XWayland](#xwayland).
 
 Command line, which `nimbus-session` relies on:
@@ -133,6 +134,29 @@ Clients wait in the sockets' backlog meanwhile, so none is lost while it starts 
 the next connection after an exit starts it again.
 Without a usable satellite, the compositor logs why once and leaves `DISPLAY` unset.
 `NIMBUS_X11_DIR` replaces `/tmp` in tests.
+
+### Screen Capture
+
+Capture tools such as `grim`, and screen sharing through `xdg-desktop-portal-wlr`, use one of two protocols:
+`wlr-screencopy` (version 3) for outputs and their regions,
+and `ext-image-copy-capture` on `ext-image-capture-source` for outputs and for toplevels of `ext-foreign-toplevel-list`.
+The compositor serves both itself on the protocol types of `wayland-protocols` and `wayland-protocols-wlr`, since smithay has neither.
+`capture/screencopy.rs` and `capture/image_copy.rs` hold the protocols, and `capture/render.rs` renders for both and for screenshots.
+
+A frame waits in `CaptureState` until the next dispatch, which renders it from the same scene as the output, into the client's buffer:
+an shm buffer in `XRGB8888`, `ARGB8888`, `XBGR8888`, or `ABGR8888`,
+or, on the GPU backends, a dmabuf in one of these formats that the renderer can draw to.
+`wlr-screencopy` advertises `XRGB8888` and the renderer's first format for dmabufs.
+Output captures are laid out like the output's buffers, in the output's transform, which `ext-image-copy-capture` reports;
+toplevel captures are the window's geometry at its output's scale.
+`copy_with_damage` and every `ext-image-copy-capture` frame after a session's first wait until something on the source changed,
+and report what did; the compositor tracks that damage per session, or per `wlr-screencopy` manager and output.
+An `ext-image-copy-capture` session sends new constraints when its source changes size, and stops when the source goes.
+Cursor sessions stop right away; the `paint_cursors` and `overlay_cursor` options draw the cursor into output captures instead.
+
+While the session is locked, captures through either protocol show only black, whatever the source.
+`Request::Screenshot`, the screenshot shortcut, and the headless backend's screenshots render through the same path,
+upright and with the lock screen, since only the user reaches the control socket.
 
 ### Input Methods
 
@@ -462,7 +486,8 @@ A toast says when an ejected or powered off volume can be removed.
 
 `nimbus-portal` implements `org.freedesktop.impl.portal.Settings` for `xdg-desktop-portal`.
 It owns `org.freedesktop.impl.portal.desktop.nimbus` on the session bus and is started by D-Bus activation;
-`data/nimbus-portals.conf` selects it for Settings when `XDG_CURRENT_DESKTOP` is `Nimbus`.
+`data/nimbus-portals.conf` selects it for Settings when `XDG_CURRENT_DESKTOP` is `Nimbus`,
+and `xdg-desktop-portal-wlr` for ScreenCast and Screenshot, on the compositor's [screen capture](#screen-capture).
 
 It serves the `org.freedesktop.appearance` namespace from the configuration:
 
@@ -557,6 +582,9 @@ The release profile aborts on panic, because every process is supervised or rest
   They also check that popup grabs and the input method's grab take turns with the keyboard,
   and find a candidate popup below the text cursor in a screenshot.
   A headless test checks that synthetic clicks focus the window under them and synthetic keys run shortcuts.
+  The capture tests check that an output captured through `wlr-screencopy` and `ext-image-copy-capture` matches `Request::Screenshot` pixel for pixel,
+  that a toplevel capture shows the window, that a session's second frame waits for damage,
+  and that every capture while locked is black.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.
   The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change,

@@ -3,10 +3,11 @@
 //! A nested session in a window of the host's Wayland or X11 session, for development.
 
 use super::DEFAULT_REFRESH_MHZ;
+use crate::capture;
 use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
-use crate::render::{self, CLEAR_COLOR, Capture, SceneOptions};
+use crate::render::{self, CLEAR_COLOR, SceneOptions};
 use crate::state::{Nimbus, State};
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
@@ -163,16 +164,24 @@ impl WinitBackend {
         self.graphics.renderer().import_dmabuf(dmabuf, None).is_ok()
     }
 
-    pub fn capture(&mut self, nimbus: &Nimbus, output: &Output) -> anyhow::Result<Capture> {
-        let mode = output.current_mode().context("the output has no mode")?;
-        let renderer = self.graphics.renderer();
-        let elements =
-            render::output_elements(renderer, nimbus, output, SceneOptions { cursor: false });
-        render::render_to_memory::<_, GlesTexture>(
-            renderer,
-            output.current_transform().transform_size(mode.size),
-            output.current_scale().fractional_scale(),
-            &elements,
+    pub fn capture(
+        &mut self,
+        nimbus: &Nimbus,
+        job: capture::Job<'_>,
+    ) -> anyhow::Result<Option<capture::Rendered>> {
+        capture::render::<_, GlesTexture>(self.graphics.renderer(), nimbus, job)
+    }
+
+    pub fn capture_dmabuf(&mut self) -> Option<capture::DmabufConstraints> {
+        let context = self.graphics.renderer().egl_context();
+        let node = EGLDevice::device_for_display(context.display())
+            .ok()?
+            .try_get_render_node()
+            .ok()
+            .flatten()?;
+        capture::DmabufConstraints::new(
+            node.dev_id(),
+            context.dmabuf_render_formats().iter().copied(),
         )
     }
 }

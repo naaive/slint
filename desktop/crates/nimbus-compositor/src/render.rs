@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! Scene assembly shared by all backends, frame callbacks, presentation feedback, and screenshots.
+//! Scene assembly shared by all backends and captures, frame callbacks, presentation feedback, and screenshot files.
 
 use crate::state::Nimbus;
 use anyhow::{Context, anyhow};
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
@@ -16,9 +15,7 @@ use smithay::backend::renderer::element::surface::{
 use smithay::backend::renderer::element::{
     AsRenderElements, Id, Kind, RenderElementStates, default_primary_scanout_output_compare,
 };
-use smithay::backend::renderer::{
-    Color32F, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
-};
+use smithay::backend::renderer::{Color32F, ImportAll, ImportMem, Renderer, Texture};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::utils::{
     OutputPresentationFeedback, send_frames_surface_tree,
@@ -356,38 +353,6 @@ impl Capture {
             .and_then(|()| writer.flush().map_err(image::ImageError::IoError))
             .with_context(|| format!("cannot write {}", path.display()))
     }
-}
-
-/// Renders `elements` into an offscreen buffer of `size` and reads it back.
-pub fn render_to_memory<R, T>(
-    renderer: &mut R,
-    size: Size<i32, Physical>,
-    scale: f64,
-    elements: &[OutputRenderElement<R>],
-) -> anyhow::Result<Capture>
-where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + ExportMem,
-    R::TextureId: Texture + Clone + Send + 'static,
-{
-    let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
-    let mut target =
-        renderer.create_buffer(Fourcc::Abgr8888, buffer_size).map_err(|e| anyhow!("{e}"))?;
-    let mut framebuffer = renderer.bind(&mut target).map_err(|e| anyhow!("{e}"))?;
-    let mut tracker = OutputDamageTracker::new(size, scale, Transform::Normal);
-    tracker
-        .render_output(renderer, &mut framebuffer, 0, elements, CLEAR_COLOR)
-        .map_err(|e| anyhow!("{e:?}"))?;
-    let mapping = renderer
-        .copy_framebuffer(&framebuffer, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
-        .map_err(|e| anyhow!("{e}"))?;
-    let mut pixels = renderer.map_texture(&mapping).map_err(|e| anyhow!("{e}"))?.to_vec();
-    // The desktop is opaque; dropping alpha keeps viewers from showing a checkerboard through premultiplied edges.
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel[3] = 255;
-    }
-    let width = u32::try_from(size.w).context("negative width")?;
-    let height = u32::try_from(size.h).context("negative height")?;
-    Ok(Capture { width, height, pixels })
 }
 
 /// The configured wallpaper, scaled to fill each output and cached per output size.

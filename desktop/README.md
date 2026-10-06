@@ -17,7 +17,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   interactive move and resize, and focus by direction.
 - Protocols: xdg-shell, xdg-decoration, wlr-layer-shell, xdg-activation, linux-dmabuf, presentation-time, viewporter,
   fractional-scale, single-pixel-buffer, cursor-shape, idle-notify, idle-inhibit, ext-session-lock, keyboard-shortcuts-inhibit,
-  ext-foreign-toplevel-list, wlr-output-management, primary selection, and ext/wlr data control for clipboard tools.
+  ext-foreign-toplevel-list, wlr-output-management, wlr-screencopy, ext-image-copy-capture, primary selection,
+  and ext/wlr data control for clipboard tools.
 - Display configuration through wlr-output-management, from Settings or tools such as `wlr-randr` and `kanshi`,
   remembered per display and applied again at startup and on hotplug.
 - Input methods such as fcitx5 and IBus, through text-input-v3, input-method-v2, and virtual-keyboard-v1,
@@ -27,6 +28,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - No UI of its own: the shell is a separate client, so a crashed shell doesn't take windows down.
   A locked session stays locked, and black, until a lock client takes over again.
 - Screenshots of any output, from a key binding or `nimbusctl screenshot`.
+- Screen capture of outputs, regions, and windows for tools such as `grim` and for screen sharing through `xdg-desktop-portal-wlr`,
+  into shm buffers or GPU dmabufs, with damage tracking; captures show only black while the session is locked.
 - X11 apps through [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite),
   which starts when the first X11 app connects and again after it exits.
 - A built-in gradient backdrop when no wallpaper is set.
@@ -283,7 +286,9 @@ The headless backend and the shell run end to end in tests, but the udev and win
   An app that moves itself to a new process group or session isn't stopped at logout either.
 - Saving the configuration replaces `config.toml` with a new file.
   A symlinked `config.toml` becomes a regular file, and an editor that saves in place doesn't take the configuration lock.
-- `xdg-desktop-portal-wlr` screen casting needs wlr-screencopy, which Nimbus doesn't offer yet.
+- Screen capture has only run headless against test clients, into shm buffers; dmabuf capture and `xdg-desktop-portal-wlr` are untested.
+  Any client may capture the screen, as in other wlroots-style compositors.
+  Cursor capture sessions stop right away, and window captures never draw the cursor.
 - The portal backend answers only `org.freedesktop.appearance`.
   It reports no contrast preference, since the configuration has no high contrast option.
   Older `xdg-desktop-portal` releases look for backends only in their own data directory, usually `/usr/share`;

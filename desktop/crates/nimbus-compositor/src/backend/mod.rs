@@ -6,8 +6,8 @@ pub mod headless;
 pub mod udev;
 pub mod winit;
 
+use crate::capture;
 use crate::outputs::{OutputBackend, OutputError, OutputState};
-use crate::render::Capture;
 use crate::state::Nimbus;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::output::Output;
@@ -64,11 +64,25 @@ impl Backend {
         }
     }
 
-    pub fn capture(&mut self, nimbus: &Nimbus, output: &Output) -> anyhow::Result<Capture> {
+    /// Renders a capture; see [`capture::render`].
+    pub fn capture(
+        &mut self,
+        nimbus: &Nimbus,
+        job: capture::Job<'_>,
+    ) -> anyhow::Result<Option<capture::Rendered>> {
         match self {
-            Self::Winit(b) => b.capture(nimbus, output),
-            Self::Udev(b) => b.capture(nimbus, output),
-            Self::Headless(b) => b.capture(nimbus, output),
+            Self::Winit(b) => b.capture(nimbus, job),
+            Self::Udev(b) => b.capture(nimbus, job),
+            Self::Headless(b) => b.capture(nimbus, job),
+        }
+    }
+
+    /// The dmabufs captures can render into, if any.
+    pub fn capture_dmabuf(&mut self) -> Option<capture::DmabufConstraints> {
+        match self {
+            Self::Winit(b) => b.capture_dmabuf(),
+            Self::Udev(b) => b.capture_dmabuf(),
+            Self::Headless(_) => None,
         }
     }
 

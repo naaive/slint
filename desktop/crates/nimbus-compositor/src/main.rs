@@ -4,6 +4,7 @@
 
 mod actions;
 mod backend;
+mod capture;
 mod config;
 mod cursor;
 mod input;

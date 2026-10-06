@@ -3,6 +3,7 @@
 //! Renders virtual outputs into memory with Pixman at a fixed frame clock, for tests and screenshots.
 
 use super::DEFAULT_REFRESH_MHZ;
+use crate::capture;
 use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
 use crate::render::{self, CLEAR_COLOR, Capture, SceneOptions};
 use crate::state::Nimbus;
@@ -164,7 +165,7 @@ impl HeadlessBackend {
             self.screenshot = None;
             for output in nimbus.outputs().cloned().collect::<Vec<_>>() {
                 let path = request.dir.join(format!("{}.png", output.name()));
-                match self.capture(nimbus, &output).and_then(|capture| capture.save_png(&path)) {
+                match self.screenshot(nimbus, &output).and_then(|capture| capture.save_png(&path)) {
                     Ok(()) => tracing::info!(path = %path.display(), "wrote headless screenshot"),
                     Err(err) => tracing::warn!("headless screenshot failed: {err:#}"),
                 }
@@ -206,20 +207,16 @@ impl HeadlessBackend {
         Ok(())
     }
 
-    pub fn capture(&mut self, nimbus: &Nimbus, output: &Output) -> anyhow::Result<Capture> {
-        let mode = output.current_mode().context("the output has no mode")?;
-        let elements = render::output_elements(
-            &mut self.renderer,
-            nimbus,
-            output,
-            SceneOptions { cursor: false },
-        );
-        render::render_to_memory::<_, Image<'static, 'static>>(
-            &mut self.renderer,
-            output.current_transform().transform_size(mode.size),
-            output.current_scale().fractional_scale(),
-            &elements,
-        )
+    pub fn capture(
+        &mut self,
+        nimbus: &Nimbus,
+        job: capture::Job<'_>,
+    ) -> anyhow::Result<Option<capture::Rendered>> {
+        capture::render::<_, Image<'static, 'static>>(&mut self.renderer, nimbus, job)
+    }
+
+    fn screenshot(&mut self, nimbus: &Nimbus, output: &Output) -> anyhow::Result<Capture> {
+        capture::screenshot(nimbus, output, |job| self.capture(nimbus, job))
     }
 }
 

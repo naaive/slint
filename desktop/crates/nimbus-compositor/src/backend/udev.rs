@@ -4,9 +4,10 @@
 //!
 //! Follows the structure of Smithay's `anvil` reference compositor, restricted to a single GPU.
 
+use crate::capture;
 use crate::outputs::edid::Edid;
 use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
-use crate::render::{self, CLEAR_COLOR, Capture, OutputRenderElement, SceneOptions};
+use crate::render::{self, CLEAR_COLOR, OutputRenderElement, SceneOptions};
 use crate::state::{Nimbus, State};
 use anyhow::{Context, anyhow};
 use smithay::backend::allocator::Fourcc;
@@ -659,21 +660,19 @@ impl UdevBackend {
         }
     }
 
-    pub fn capture(&mut self, nimbus: &Nimbus, output: &Output) -> anyhow::Result<Capture> {
+    pub fn capture(
+        &mut self,
+        nimbus: &Nimbus,
+        job: capture::Job<'_>,
+    ) -> anyhow::Result<Option<capture::Rendered>> {
         let gpu = self.gpu.as_mut().context("no GPU")?;
-        let mode = output.current_mode().context("the output has no mode")?;
-        let elements = render::output_elements(
-            &mut gpu.renderer,
-            nimbus,
-            output,
-            SceneOptions { cursor: false },
-        );
-        render::render_to_memory::<_, GlesTexture>(
-            &mut gpu.renderer,
-            output.current_transform().transform_size(mode.size),
-            output.current_scale().fractional_scale(),
-            &elements,
-        )
+        capture::render::<_, GlesTexture>(&mut gpu.renderer, nimbus, job)
+    }
+
+    pub fn capture_dmabuf(&mut self) -> Option<capture::DmabufConstraints> {
+        let gpu = self.gpu.as_ref()?;
+        let formats = gpu.renderer.egl_context().dmabuf_render_formats().iter().copied();
+        capture::DmabufConstraints::new(gpu.node.dev_id(), formats)
     }
 
     pub fn apply_input_config(&mut self, input: &nimbus_config::Input) {

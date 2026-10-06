@@ -10,6 +10,7 @@ mod seat;
 mod xdg;
 
 use crate::backend::Backend;
+use crate::capture::CaptureState;
 use crate::config::ConfigManager;
 use crate::cursor::CursorThemeManager;
 use crate::ipc::IpcServer;
@@ -147,6 +148,7 @@ pub struct Nimbus {
     pub children: Children,
     pub lock_marker: LockMarker,
     pub lock: SessionLock,
+    pub capture: CaptureState,
     pub idle_inhibitors: HashSet<WlSurface>,
     pub pending_redraws: HashSet<String>,
     /// Outputs with a queued frame that isn't on screen yet.
@@ -252,6 +254,7 @@ impl Nimbus {
             children: Children::default(),
             lock_marker,
             lock: if locked { SessionLock::Locked(None) } else { SessionLock::Unlocked },
+            capture: CaptureState::new(&dh),
             idle_inhibitors: HashSet::new(),
             pending_redraws: HashSet::new(),
             presenting: HashSet::new(),
@@ -608,6 +611,7 @@ impl State {
             self.nimbus.ipc.broadcast(&events);
         }
         self.backend.render(&mut self.nimbus);
+        self.process_captures();
         self.nimbus.confirm_session_lock();
         self.nimbus.ipc.flush_all();
         if let Err(err) = self.nimbus.display_handle.flush_clients() {

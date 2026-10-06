@@ -200,7 +200,7 @@ impl State {
         path: PathBuf,
         reply: impl FnOnce(Response) + Send + 'static,
     ) {
-        let capture = match self.backend.capture(&self.nimbus, output) {
+        let capture = match self.screenshot_image(output) {
             Ok(capture) => capture,
             Err(err) => {
                 reply(Response::Error { message: format!("screenshot failed: {err:#}") });
@@ -333,7 +333,7 @@ impl State {
     }
 
     fn screenshot_output(&mut self, output: &smithay::output::Output) {
-        let capture = match self.backend.capture(&self.nimbus, output) {
+        let capture = match self.screenshot_image(output) {
             Ok(capture) => capture,
             Err(err) => {
                 tracing::warn!("screenshot failed: {err:#}");
