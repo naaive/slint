@@ -176,7 +176,7 @@ The parts of an output, in the order a host creates their surfaces:
 | `Panel` | `PanelWindow` | Along the top or bottom edge, as tall as the panel, reserving its height. It slides away while a fullscreen window is focused. |
 | `Dock` | `DockWindow` | Centered on the bottom edge, sized to the dock with room for its tooltips, reserving the dock and its margins unless it hides automatically. Only the dock, or the strip along the edge that reveals it, takes input. |
 | `Overlay` | `OverlayWindow` | Over the whole output and above fullscreen windows, with the keyboard, while the launcher, overview, or power dialog is open. It draws the panel and dock above them. |
-| `Popup` | `PopupWindow` | The calendar, quick settings, or dock menu, next to the button of the part that opened it, which a host passes as `ShellView::popup_placement()`. |
+| `Popup` | `PopupWindow` | The calendar, quick settings, or dock menu, next to the button of the part that opened it, which a host passes as `ShellView::popup_placement()`; it closes when that part goes. |
 | `Toasts` | `ToastWindow` | In the top right corner, below the panel, sized to the toasts, while there are toasts and no popup or power dialog. |
 | `Osd` | `OsdWindow` | Above the bottom edge, while the OSD shows and fades out. It takes no input. |
 
@@ -233,7 +233,8 @@ Modules in `crates/nimbus-shell-host/src`:
   The compositor stacks exclusive zones in the order surfaces are created, so the panel comes before the dock.
   A popup is an `xdg_popup` of the part that opened it, through `zwlr_layer_surface_v1.get_popup`,
   placed by an `xdg_positioner` next to the button, with the window geometry leaving out its shadow.
-  It grabs the pointer and keyboard with the last press, so the compositor dismisses it with `popup_done` on a click elsewhere.
+  It grabs the pointer and keyboard with the last press, so the compositor dismisses it with `popup_done` on a click on another client.
+  A click on the dock closes it in the shell, and so does hiding the part it opened from.
   When its content changes size, `xdg_popup.reposition` moves it, or a new popup replaces it before version 3 of `xdg_wm_base`.
   Each surface takes pointer input only inside `PartWindow::input_region()`.
   Popups go before the parts below them, so a popup never outlives its parent.
@@ -288,11 +289,14 @@ A lock client that dies, or destroys its lock before `locked`, leaves the sessio
 Only the holder's `unlock_and_destroy` unlocks.
 `Request::GetLockState` reports the same state over the control socket.
 Each lock surface is sized to its output, and told its output, scale, and transform, whenever the outputs change.
+The holder gets `locked` once every output has presented a frame drawn after the lock; on udev, that's at the frame's page flip.
 
 Each lock owns its lock surfaces, at most one per output, so a new lock never inherits a dead one's outputs.
-A refused lock's `get_lock_surface` makes an inert object, which gives its `wl_surface` no role and is never configured.
-The holder's surfaces follow the protocol's role, `duplicate_output`, and `already_constructed` rules,
-and their commits its acknowledged-configure, null buffer, and size rules.
+A refused lock's `get_lock_surface` makes an inert object, which is never configured and never shown.
+Every lock surface follows the protocol's role and `already_constructed` rules,
+so a `wl_surface` that showed a buffer, or still has a live lock surface, can't become one.
+The holder's surfaces also follow the `duplicate_output` rule,
+and their commits the acknowledged-configure, null buffer, and size rules.
 The size is checked on commits that attach a buffer.
 When the holder destroys a lock surface, its output shows black.
 
@@ -400,7 +404,8 @@ The release profile aborts on panic, because every process is supervised or rest
   and check refused, outdated, and disabling configurations.
   The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change,
   that a client locks again after destroying its unconfirmed lock, that a second lock surface on an output is `duplicate_output`,
-  and that a refused lock's surfaces are inert.
+  that a surface that showed a buffer is `already_constructed`,
+  and that a refused lock's surfaces are inert but still follow the role rule.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   check the composited output through `Request::Screenshot`, click and type through `Request::Click` and `Request::PressKey`,
   and follow the shell's log of the surfaces it opens and closes:

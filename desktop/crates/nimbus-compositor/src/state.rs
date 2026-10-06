@@ -138,6 +138,8 @@ pub struct Nimbus {
     pub lock: SessionLock,
     pub idle_inhibitors: HashSet<WlSurface>,
     pub pending_redraws: HashSet<String>,
+    /// Outputs with a queued frame that isn't on screen yet.
+    pub presenting: HashSet<String>,
 
     /// The `locked` and `held` of the last [`Event::LockState`].
     reported_lock: (bool, bool),
@@ -231,6 +233,7 @@ impl Nimbus {
             lock: if locked { SessionLock::Locked(None) } else { SessionLock::Unlocked },
             idle_inhibitors: HashSet::new(),
             pending_redraws: HashSet::new(),
+            presenting: HashSet::new(),
             reported_lock: (locked, false),
             window_snapshot: Vec::new(),
             events: Vec::new(),
@@ -526,11 +529,12 @@ impl Nimbus {
             })
     }
 
-    /// Confirms a pending ext-session-lock once every output rendered without client content.
+    /// Confirms a pending ext-session-lock once every output presented a frame without client content.
     pub fn confirm_session_lock(&mut self) {
         let live: HashSet<String> = self.outputs().map(|o| o.name()).collect();
         self.pending_redraws.retain(|name| live.contains(name));
-        if self.pending_redraws.is_empty() {
+        self.presenting.retain(|name| live.contains(name));
+        if self.pending_redraws.is_empty() && self.presenting.is_empty() {
             self.lock.confirm();
         }
     }

@@ -725,6 +725,26 @@ fn views_keep_their_own_parts() {
 }
 
 #[test]
+fn a_popup_closes_on_a_dock_click_or_with_its_part() {
+    let f = Fixture::new();
+    f.output().invoke_popup_requested(Popup::Calendar, anchor());
+    assert!(f.shows(Part::Popup(Popup::Calendar)));
+    // The compositor doesn't dismiss a popup for a click on another of the shell's surfaces.
+    f.click("Mail");
+    assert_eq!(f.take_actions(), [ShellAction::Launch("org.nimbus.Mail".into())]);
+    assert_eq!(f.view().popup(), Popup::None);
+
+    let mut config = support::config();
+    config.appearance.animations = false;
+    f.part(Part::Dock).output().invoke_dock_menu_requested(2, anchor());
+    assert!(f.shows(Part::Popup(Popup::DockMenu)));
+    config.panel.show_dock = false;
+    f.model.set_config(&config);
+    assert_eq!(f.desk.parts(), [Part::Panel]);
+    assert_eq!(f.view().popup(), Popup::None);
+}
+
+#[test]
 fn closing_the_overlay_closes_its_popup() {
     let f = Fixture::new();
     f.view().toggle_overview();

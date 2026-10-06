@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::State;
-use crate::lock::LockSurfaceData;
+use crate::lock::{LockSurfaceData, give_role};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
@@ -186,7 +186,10 @@ impl Dispatch<ExtSessionLockV1, ()> for State {
             ext_session_lock_v1::Request::GetLockSurface { id, surface, output } => {
                 let output = Output::from_resource(&output);
                 let (Some(holder), Some(output)) = (state.nimbus.lock.holder(lock), output) else {
-                    data_init.init(id, LockSurfaceData::default());
+                    let resource = data_init.init(id, LockSurfaceData::default());
+                    if let Err((error, message)) = give_role(&surface, &resource) {
+                        lock.post_error(error, message);
+                    }
                     return;
                 };
                 let resource = data_init.init(id, LockSurfaceData::active());

@@ -120,7 +120,7 @@ impl OutputShell {
         };
         let part = self.parts[index].window.part();
         tracing::debug!(output = %self.name, part = ?part, "part closed");
-        self.parts.truncate(index);
+        self.parts.remove(index);
         self.view.close_popup();
         true
     }
@@ -190,15 +190,17 @@ impl OutputShell {
         let role = match window.placement() {
             Some(layer) => Role::layer(context, &self.output, &wl_surface, part, &layer),
             None => {
-                let placement = placement.ok_or_else(|| anyhow::anyhow!("no popup is open"))?;
-                let parent = self
-                    .parts
-                    .iter()
-                    .find(|p| p.window.part() == placement.parent)
-                    .and_then(PartSurface::layer)
-                    .ok_or_else(|| anyhow::anyhow!("the popup's part isn't shown"))?;
-                Role::popup(context, &wl_surface, parent, &window, placement)
-                    .inspect_err(|_| wl_surface.destroy())?
+                let popup = || {
+                    let placement = placement.ok_or_else(|| anyhow::anyhow!("no popup is open"))?;
+                    let parent = self
+                        .parts
+                        .iter()
+                        .find(|p| p.window.part() == placement.parent)
+                        .and_then(PartSurface::layer)
+                        .ok_or_else(|| anyhow::anyhow!("the popup's part isn't shown"))?;
+                    Role::popup(context, &wl_surface, parent, &window, placement)
+                };
+                popup().inspect_err(|_| wl_surface.destroy())?
             }
         };
         let surface =

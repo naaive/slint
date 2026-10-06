@@ -240,6 +240,7 @@ impl Nimbus {
         }
         self.lock.remove_output(&output.name());
         self.pending_redraws.remove(&output.name());
+        self.presenting.remove(&output.name());
         tracing::info!(name = %output.name(), "display disabled");
     }
 }

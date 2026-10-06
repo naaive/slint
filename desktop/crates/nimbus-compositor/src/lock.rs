@@ -8,6 +8,7 @@
 
 use crate::state::State;
 use smithay::backend::renderer::buffer_dimensions;
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::{
     self, ExtSessionLockSurfaceV1,
 };
@@ -62,29 +63,45 @@ impl LockClient {
         surface: WlSurface,
         resource: ExtSessionLockSurfaceV1,
     ) -> Result<(), (ext_session_lock_v1::Error, &'static str)> {
-        use ext_session_lock_v1::Error;
-        if compositor::give_role(&surface, ROLE).is_err() {
-            return Err((Error::Role, "the surface already has another role"));
-        }
         if self.surfaces.contains_key(&output) {
-            return Err((Error::DuplicateOutput, "the output already has a lock surface"));
+            return Err((
+                ext_session_lock_v1::Error::DuplicateOutput,
+                "the output already has a lock surface",
+            ));
         }
-        if has_buffer(&surface) {
-            return Err((Error::AlreadyConstructed, "the surface already has a buffer"));
-        }
-        let first_use = with_states(&surface, |states| {
-            let first_use =
-                states.data_map.insert_if_missing_threadsafe(|| Mutex::new(resource.clone()));
-            let current = states.data_map.get::<Mutex<ExtSessionLockSurfaceV1>>().unwrap();
-            *current.lock().unwrap() = resource.clone();
-            first_use
-        });
-        if first_use {
-            add_pre_commit_hook::<State, _>(&surface, |_, _, surface| check_commit(surface));
-        }
+        give_role(&surface, &resource)?;
         self.surfaces.insert(output, LockSurface { surface, resource });
         Ok(())
     }
+}
+
+/// Makes `surface` the `wl_surface` of `resource`, active or inert, unless the protocol forbids it.
+pub fn give_role(
+    surface: &WlSurface,
+    resource: &ExtSessionLockSurfaceV1,
+) -> Result<(), (ext_session_lock_v1::Error, &'static str)> {
+    use ext_session_lock_v1::Error;
+    let in_use = with_states(surface, |states| {
+        let current = states.data_map.get::<Mutex<ExtSessionLockSurfaceV1>>();
+        current.is_some_and(|current| current.lock().unwrap().is_alive())
+    });
+    if in_use || compositor::give_role(surface, ROLE).is_err() {
+        return Err((Error::Role, "the surface already has a role"));
+    }
+    if has_buffer(surface) {
+        return Err((Error::AlreadyConstructed, "the surface already has a buffer"));
+    }
+    let first_use = with_states(surface, |states| {
+        let first_use =
+            states.data_map.insert_if_missing_threadsafe(|| Mutex::new(resource.clone()));
+        let current = states.data_map.get::<Mutex<ExtSessionLockSurfaceV1>>().unwrap();
+        *current.lock().unwrap() = resource.clone();
+        first_use
+    });
+    if first_use {
+        add_pre_commit_hook::<State, _>(surface, |_, _, surface| check_commit(surface));
+    }
+    Ok(())
 }
 
 impl SessionLock {
@@ -242,12 +259,11 @@ fn configures(resource: &ExtSessionLockSurfaceV1) -> Option<std::sync::MutexGuar
 }
 
 fn has_buffer(surface: &WlSurface) -> bool {
-    with_states(surface, |states| {
+    let attached = with_states(surface, |states| {
         let mut attributes = states.cached_state.get::<SurfaceAttributes>();
-        let new_buffer =
-            |buffer: &Option<_>| matches!(buffer, Some(BufferAssignment::NewBuffer(_)));
-        new_buffer(&attributes.pending().buffer) || new_buffer(&attributes.current().buffer)
-    })
+        matches!(attributes.pending().buffer, Some(BufferAssignment::NewBuffer(_)))
+    });
+    attached || with_renderer_surface_state(surface, |state| state.buffer().is_some()) == Some(true)
 }
 
 /// Rejects a commit of a lock surface before its first `ack_configure`,

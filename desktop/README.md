@@ -224,6 +224,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
   The headless compositor feeds synthetic clicks and keys, but PAM needs a real account.
 - The shell's popups and its overlay with the launcher and overview don't animate when they close, since their surfaces go right away.
 - Toasts and the OSD show above fullscreen windows.
+- A click on an empty spot of the panel doesn't close an open popup; a click on a window or the dock does.
 - The shell has no input method support; it handles dead keys and Compose sequences with the locale's XKB compose table.
   A key that completes or cancels a sequence still sends its own key release.
 - There's no XWayland, so X11-only apps don't run.

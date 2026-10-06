@@ -438,18 +438,16 @@ impl View {
     }
 
     fn parts(&self) -> Vec<Part> {
+        self.close_orphaned_popup();
         let state = self.state.borrow();
         let data = &state.data;
         let model = &self.model;
         let locked = model.is_locked();
-        let mut parts = vec![Part::Panel];
-        if model.shows_dock() {
-            parts.push(Part::Dock);
-        }
-        if data.overlay_open() {
-            parts.push(Part::Overlay);
-        }
-        if data.popup != Popup::None && state.placement.is_some_and(|p| parts.contains(&p.parent)) {
+        let mut parts: Vec<Part> = [Part::Panel, Part::Dock, Part::Overlay]
+            .into_iter()
+            .filter(|&p| self.shown(p))
+            .collect();
+        if data.popup != Popup::None {
             parts.push(Part::Popup(data.popup));
         }
         if !locked
@@ -604,6 +602,7 @@ impl View {
             let state = self.model.state.borrow();
             state.dock.get(row).and_then(|entry| dock_click(entry, &state.windows))
         };
+        self.set_popup(Popup::None, None);
         let Some(click) = click else {
             return;
         };
@@ -720,7 +719,7 @@ impl View {
             }
         } else {
             self.update(|data| data.launcher_open = false);
-            self.close_overlay_popup();
+            self.close_orphaned_popup();
         }
     }
 
@@ -784,16 +783,23 @@ impl View {
             }
         } else {
             self.update(|data| data.overview_open = false);
-            self.close_overlay_popup();
+            self.close_orphaned_popup();
         }
     }
 
-    /// Closes a popup of the overlay once the overlay closes.
-    fn close_overlay_popup(&self) {
-        let orphaned = {
-            let state = self.state.borrow();
-            !state.data.overlay_open() && state.placement.is_some_and(|p| p.parent == Part::Overlay)
-        };
+    /// Whether `part`, one a popup can open from, is shown.
+    fn shown(&self, part: Part) -> bool {
+        match part {
+            Part::Panel => true,
+            Part::Dock => self.model.shows_dock(),
+            Part::Overlay => self.state.borrow().data.overlay_open(),
+            _ => false,
+        }
+    }
+
+    /// Closes the popup once the part it opened from is no longer shown.
+    fn close_orphaned_popup(&self) {
+        let orphaned = self.state.borrow().placement.is_some_and(|p| !self.shown(p.parent));
         if orphaned {
             self.set_popup(Popup::None, None);
         }
@@ -846,7 +852,7 @@ impl View {
 
     fn power_confirmed(&self, action: PowerAction) {
         self.update(|data| data.power_action = PowerAction::None);
-        self.close_overlay_popup();
+        self.close_orphaned_popup();
         let command = match action {
             PowerAction::Restart => ServiceCommand::Reboot,
             PowerAction::PowerOff => ServiceCommand::PowerOff,

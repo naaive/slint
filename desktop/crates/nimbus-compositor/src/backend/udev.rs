@@ -579,6 +579,7 @@ impl UdevBackend {
             return;
         };
         surface.waiting_for_vblank = false;
+        nimbus.presenting.remove(&surface.output.name());
         match surface.drm_output.frame_submitted() {
             Ok(Some(Some(mut feedback))) => {
                 let refresh = surface
@@ -632,6 +633,7 @@ impl UdevBackend {
                 surface.estimated_vblank = false;
             }
         }
+        nimbus.presenting.clear();
         self.active = true;
         self.scan_connectors(nimbus);
         // The configuration may have changed while the session was in the background.
@@ -803,6 +805,7 @@ fn render_surface(
     surface.drm_output.queue_frame(Some(feedback)).map_err(|e| anyhow!("{e}"))?;
     surface.waiting_for_vblank = true;
     surface.estimated_vblank = false;
+    nimbus.presenting.insert(output.name());
     Ok(true)
 }
 

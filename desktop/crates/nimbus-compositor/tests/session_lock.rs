@@ -110,6 +110,13 @@ impl Locker {
         common::dispatch_until(&self.conn, &mut self.queue, &mut self.app, what, cond);
     }
 
+    /// Waits for the protocol error that ends the connection; returns its interface and code.
+    fn protocol_error(&mut self) -> (String, u32) {
+        assert!(self.queue.roundtrip(&mut self.app).is_err(), "no protocol error");
+        let error = self.conn.protocol_error().expect("a protocol error");
+        (error.object_interface, error.code)
+    }
+
     fn unlock(&mut self) {
         self.lock.take().unwrap().unlock_and_destroy();
         let _ = self.conn.flush();
@@ -360,5 +367,42 @@ fn a_refused_lock_has_inert_surfaces() {
     let screenshot = compositor.screenshot("HEADLESS-1");
     let center = screenshot.get_pixel(screenshot.width() / 2, screenshot.height() / 2);
     assert_eq!(center.0[..3], [0, 0, 0], "the refused lock's surface is shown");
+    owner.unlock();
+}
+
+#[test]
+fn a_surface_that_showed_a_buffer_is_no_lock_surface() {
+    let compositor = common::start("");
+    let mut locker = Locker::connect(&compositor);
+    assert_eq!(locker.lock(), LockState::Locked);
+
+    let qh = locker.queue.handle();
+    let surface = locker.app.compositor.as_ref().unwrap().create_surface(&qh, ());
+    common::attach_buffer(locker.app.shm.as_ref().unwrap(), &qh, &surface, (1280, 720));
+    locker.queue.roundtrip(&mut locker.app).expect("roundtrip");
+    let lock = locker.lock.clone().unwrap();
+    lock.get_lock_surface(&surface, &locker.app.outputs[0], &qh, ());
+    let error =
+        ("ext_session_lock_v1".to_owned(), ext_session_lock_v1::Error::AlreadyConstructed as u32);
+    assert_eq!(locker.protocol_error(), error);
+    assert!(compositor.locked(), "the disconnected holder unlocked the session");
+}
+
+#[test]
+fn a_refused_lock_checks_its_surfaces() {
+    let compositor = common::start("");
+    let mut owner = Locker::connect(&compositor);
+    assert_eq!(owner.lock(), LockState::Locked);
+
+    let mut intruder = Locker::connect(&compositor);
+    let lock = intruder.request_lock();
+    let surfaces = intruder.create_surfaces(&lock);
+    intruder.lock = Some(lock.clone());
+    assert_eq!(intruder.wait_for_answer(), LockState::Finished);
+
+    // The surface is still another lock surface's.
+    lock.get_lock_surface(&surfaces[0], &intruder.app.outputs[0], &intruder.queue.handle(), ());
+    let error = ("ext_session_lock_v1".to_owned(), ext_session_lock_v1::Error::Role as u32);
+    assert_eq!(intruder.protocol_error(), error);
     owner.unlock();
 }
