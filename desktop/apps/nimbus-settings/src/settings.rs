@@ -43,10 +43,11 @@ pub enum Key {
     TapToClick,
     PointerSpeed,
     LockAfter,
+    BlankAfter,
 }
 
 impl Key {
-    pub const ALL: [Key; 25] = [
+    pub const ALL: [Key; 26] = [
         Key::ColorScheme,
         Key::Accent,
         Key::Wallpaper,
@@ -72,6 +73,7 @@ impl Key {
         Key::TapToClick,
         Key::PointerSpeed,
         Key::LockAfter,
+        Key::BlankAfter,
     ];
 
     pub fn name(self) -> &'static str {
@@ -101,6 +103,7 @@ impl Key {
             Key::TapToClick => "input.tap-to-click",
             Key::PointerSpeed => "input.pointer-speed",
             Key::LockAfter => "power.lock-after",
+            Key::BlankAfter => "power.blank-after",
         }
     }
 }
@@ -224,6 +227,9 @@ pub fn apply(config: &mut Config, key: Key, value: Value) -> Result<(), SettingE
         }
         (Key::LockAfter, Value::Int(i)) => {
             config.power.lock_after_minutes = clamp_u32(i, (0, 24 * 60))
+        }
+        (Key::BlankAfter, Value::Int(i)) => {
+            config.power.blank_after_minutes = clamp_u32(i, (0, 24 * 60))
         }
         _ => return Err(wrong()),
     }
@@ -359,13 +365,11 @@ mod tests {
             apply(&mut c, Key::ShowDock, Value::Int(1)),
             Err(SettingError::WrongType { key: "panel.show-dock" })
         );
-        for unimplemented in ["power.blank-after", "power.suspend-on-lid-close"] {
-            assert_eq!(
-                unimplemented.parse::<Key>(),
-                Err(SettingError::UnknownKey(unimplemented.into())),
-                "the compositor ignores {unimplemented}"
-            );
-        }
+        assert_eq!(
+            "power.suspend-on-lid-close".parse::<Key>(),
+            Err(SettingError::UnknownKey("power.suspend-on-lid-close".into())),
+            "the compositor ignores the lid switch"
+        );
     }
 
     #[test]

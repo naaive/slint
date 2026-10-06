@@ -107,6 +107,11 @@ impl State {
                 locked: self.nimbus.is_locked(),
                 held: self.nimbus.lock.client().is_some(),
             },
+            Request::Blank => {
+                self.nimbus.blank();
+                Response::Ok
+            }
+            Request::GetPowerState => Response::PowerState(self.nimbus.power_state()),
             Request::ReloadConfig => match self.nimbus.config.reload() {
                 Ok(config) => {
                     self.apply_config(config);

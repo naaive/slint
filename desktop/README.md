@@ -20,12 +20,15 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   They follow the color scheme, accent, and font of `[appearance]` as it changes.
 - Protocols: xdg-shell, xdg-decoration, wlr-layer-shell, xdg-activation, linux-dmabuf, presentation-time, viewporter,
   fractional-scale, single-pixel-buffer, cursor-shape, idle-notify, idle-inhibit, ext-session-lock, keyboard-shortcuts-inhibit,
-  ext-foreign-toplevel-list, wlr-output-management, wlr-screencopy, ext-image-copy-capture, primary selection,
-  and ext/wlr data control for clipboard tools.
+  ext-foreign-toplevel-list, wlr-output-management, wlr-output-power-management, wlr-screencopy, ext-image-copy-capture,
+  primary selection, and ext/wlr data control for clipboard tools.
 - Display configuration through wlr-output-management, from Settings or tools such as `wlr-randr` and `kanshi`,
   remembered per display and applied again at startup and on hotplug.
 - Input methods such as fcitx5 and IBus, through text-input-v3, input-method-v2, and virtual-keyboard-v1,
   with their candidate popups below the text cursor.
+- Screens turn off after `[power] blank_after_minutes` of inactivity, or with `nimbusctl blank`, and back on with the next input.
+  A visible window or layer surface with an idle inhibitor, such as a playing video, keeps them on.
+  Idle daemons such as `swayidle` and tools such as `wlopm` turn single screens off and on through wlr-output-power-management.
 - Keyboard shortcuts from the configuration, with live reload.
 - Alt+Tab and Super+Tab switch windows in the order they last had focus, with the shell's switcher or, without the shell, by focusing each window in turn.
 - Touchpad gestures for apps through pointer-gestures, and a three-finger horizontal swipe that switches workspaces,
@@ -200,6 +203,7 @@ nimbusctl launcher              # toggle the launcher
 nimbusctl overview              # toggle the overview
 nimbusctl screenshot ~/shot.png
 nimbusctl lock
+nimbusctl blank                 # turn the screens off until the next input
 nimbusctl quit
 ```
 
@@ -289,7 +293,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Display configuration has only run headless.
   On udev, a test checks modes and free CRTCs but not the kernel's bandwidth limits; an apply that hits them rolls back.
 - Display settings are stored per display, not as profiles for each set of connected displays.
-  Custom modes, adaptive sync, and output power management aren't supported.
+  Custom modes and adaptive sync aren't supported.
 - Any client may configure displays through wlr-output-management, as in other wlroots-style compositors.
 - Touch, tablets, gestures, and pointer constraints have only run headless; no real touchscreen, tablet, or touchpad has driven them.
   A touchscreen maps to the built-in panel, or else the first output, and a tablet to the whole desktop; neither can be assigned to an output.
@@ -302,7 +306,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   While the session is locked, the input method gets no keys and its popups don't show.
   The shell applies an input method's changes and reports its text fields without checking the serial of `done`.
   Typing into the polkit dialog through an input method has no end-to-end test.
-- Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
+- Suspend on lid close isn't implemented yet.
+- Screen blanking has only run headless; turning screens off through DPMS on udev is untested on real displays.
+  Blanking doesn't come sooner while the session is locked, and an output that's off shows black in screen captures.
+  Any input but a key release turns blanked screens on, and so does plugging in an input device.
 - Overview cards show app icons, not live window thumbnails.
 - The window switcher lists the windows of every workspace, one per window, not grouped by app.
   It takes no clicks or arrow keys, and keys other than Tab and Escape reach the focused window while it's open.

@@ -276,6 +276,16 @@ fn the_lock_request_locks_and_asks_for_a_lock_screen() {
 }
 
 #[test]
+fn a_lock_is_confirmed_while_the_outputs_are_blanked() {
+    let compositor = common::compositor("").outputs("1280x720,800x600").start();
+    compositor.request(Request::Blank);
+    let mut locker = Locker::connect(&compositor);
+    assert_eq!(locker.lock_with_surfaces(true), LockState::Locked);
+    assert!(compositor.power_state().blanked, "locking woke the outputs");
+    locker.unlock();
+}
+
+#[test]
 fn lock_surfaces_follow_their_output() {
     let compositor = common::start("[appearance]\nscale = 1.0\n");
     let mut locker = Locker::connect(&compositor);

@@ -16,7 +16,7 @@ pub use gestures::WorkspaceSwipe;
 
 use crate::state::{Nimbus, State};
 use nimbus_ipc::WindowId;
-use smithay::backend::input::{ButtonState, InputBackend, InputEvent, KeyState};
+use smithay::backend::input::{ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent};
 use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::input::keyboard::Keycode;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -67,7 +67,9 @@ impl Nimbus {
 
 impl State {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
-        self.input_arrived();
+        let key_release =
+            matches!(&event, InputEvent::Keyboard { event } if event.state() == KeyState::Released);
+        self.input_arrived(!key_release);
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -99,8 +101,13 @@ impl State {
         }
     }
 
-    fn input_arrived(&mut self) {
+    /// Reports user activity, and turns blanked outputs on when `wakes`.
+    /// A key release doesn't wake, since the key that blanked them, such as Enter after `nimbusctl blank`, comes up after.
+    fn input_arrived(&mut self, wakes: bool) {
         self.nimbus.notify_activity();
+        if wakes {
+            self.nimbus.wake();
+        }
         if self.nimbus.is_locked() && self.has_grabs() {
             self.break_grabs_for_lock();
         }
@@ -109,7 +116,7 @@ impl State {
     /// Moves the pointer to `location` and clicks the left button, as a user would.
     pub fn click(&mut self, location: Point<f64, Logical>) {
         let time = self.input_time();
-        self.input_arrived();
+        self.input_arrived(true);
         self.pointer_moved(location, time, None);
         for state in [ButtonState::Pressed, ButtonState::Released] {
             self.pointer_button(pointer::BTN_LEFT, state, time);
@@ -125,7 +132,7 @@ impl State {
     /// Presses or releases the key with the Linux input event `code`, as a user would.
     pub fn key(&mut self, code: u32, pressed: bool) {
         let time = self.input_time();
-        self.input_arrived();
+        self.input_arrived(pressed);
         let keycode = Keycode::new(code + XKB_KEYCODE_OFFSET);
         let state = if pressed { KeyState::Pressed } else { KeyState::Released };
         self.keyboard_key(keycode, state, time);

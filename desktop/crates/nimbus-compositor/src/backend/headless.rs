@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 pub const OUTPUTS_ENV: &str = "NIMBUS_HEADLESS_OUTPUTS";
 pub const SCREENSHOT_DIR_ENV: &str = "NIMBUS_HEADLESS_SCREENSHOT_DIR";
 pub const SCREENSHOT_FRAMES_ENV: &str = "NIMBUS_HEADLESS_SCREENSHOT_FRAMES";
+/// The length in milliseconds of a minute of `power.blank_after_minutes`, so tests needn't wait minutes.
+pub const IDLE_MINUTE_ENV: &str = "NIMBUS_HEADLESS_IDLE_MINUTE_MS";
 const DEFAULT_SIZE: (i32, i32) = (1920, 1080);
 const DEFAULT_SCREENSHOT_FRAMES: u64 = 30;
 
@@ -154,8 +156,10 @@ impl HeadlessBackend {
         self.ticks += 1;
         let time = nimbus.clock.now();
         for index in 0..self.outputs.len() {
-            let name = self.outputs[index].output.name();
+            let output = &self.outputs[index].output;
+            let name = output.name();
             if nimbus.pending_redraws.remove(&name)
+                && nimbus.output_powered(output)
                 && let Err(err) = self.render_output(nimbus, index, time.into())
             {
                 tracing::warn!(output = %name, "rendering failed: {err:#}");

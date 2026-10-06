@@ -148,6 +148,9 @@ impl WinitBackend {
         };
         self.graphics.submit(damage.as_deref()).map_err(|e| anyhow!("{e}"))?;
         self.frames += 1;
+        if !nimbus.output_powered(&output) {
+            return Ok(());
+        }
         let time = nimbus.clock.now();
         render::post_repaint(&output, &states, nimbus, time.into());
         let mut feedback = render::take_presentation_feedback(&output, nimbus, &states);

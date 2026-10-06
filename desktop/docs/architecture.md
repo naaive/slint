@@ -17,7 +17,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   D-Bus work runs on a Tokio runtime in `nimbus-services` and reaches the main thread through a `calloop` channel.
 - **Degrade, don't fail.** A missing D-Bus daemon, backlight, or battery hides that feature; it never stops the session.
 - **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind, the portal Settings interface,
-  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, `xdg-activation`, `wlr-output-management`, `wlr-screencopy`, and `ext-image-copy-capture` on the Wayland side.
+  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, `xdg-activation`, `wlr-output-management`, `wlr-output-power-management`,
+  `wlr-screencopy`, and `ext-image-copy-capture` on the Wayland side.
 
 ## Crates
 
@@ -29,7 +30,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, udisks, timedated, sound devices through `pactl`, and the polkit authentication agent. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output, in a window per part. |
-| `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
+| `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, blanking and wlr-output-power-management, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, makes sure there's a Secret Service, and runs autostart; `nimbusctl` is the command-line client. |
@@ -83,6 +84,8 @@ Modules in `crates/nimbus-compositor/src`:
 - `outputs/`: displays; see [Displays](#displays).
   `layout.rs` turns `[[outputs]]` into a layout and back, `management.rs` serves wlr-output-management,
   and `edid.rs` reads the make, model, and serial number of a DRM connector's display.
+- `power/`: turning outputs off and on; see [Output Power](#output-power).
+  `management.rs` serves wlr-output-power-management.
 - `backend/winit.rs`: nested session in a window, for development.
 - `backend/udev.rs`: DRM/KMS, GBM, libinput, and libseat for a real session, with hotplug and display configuration.
 - `backend/headless.rs`: no output device; renders with Pixman into memory, for tests and screenshots.
@@ -119,6 +122,7 @@ and `DISPLAY` when it serves X11 apps, for its children, and prints exactly one 
 `nimbus_ipc::Ready` formats and parses this line.
 All logging goes to standard error.
 The headless backend creates one 1920x1080 virtual output, `HEADLESS-1`, or one per size listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
+`NIMBUS_HEADLESS_IDLE_MINUTE_MS` shortens the minutes of `power.blank_after_minutes` for tests.
 `Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
 
 ### Decorations
@@ -281,6 +285,29 @@ It arranges displays by dragging, attaching each to the nearest edge of another,
 sends only what the user changed,
 and reverts an applied configuration unless the user keeps it within 15 seconds.
 Without the protocol, it lists the outputs that the control socket reports, read-only.
+
+### Output Power
+
+An enabled output is on or off.
+After `power.blank_after_minutes` of inactivity, 5 by default, the compositor blanks every output that's on;
+`Request::Blank` and `nimbusctl blank` blank them right away.
+Blanking restarts the timeout, so an output that a client turns on afterwards stays on for a whole timeout.
+Any input but a key release turns blanked outputs on and restarts the timeout.
+A key release doesn't, since the Enter that ran `nimbusctl blank` comes up after.
+While a visible surface has an idle inhibitor, as for `ext-idle-notify`, the timeout keeps restarting, so a playing video keeps the outputs on.
+The once-a-second housekeeping timer checks the timeout, so blanking comes up to a second late.
+
+wlr-output-power-management (version 1) turns single outputs off and on, for idle daemons such as `swayidle` and tools such as `wlopm`.
+As in wlroots, one power object at a time controls an output; another one for it gets `failed`, and so does every object of an output that's disabled or unplugged.
+Input doesn't turn on an output that a client turned off; only the client's `on`, or disabling and enabling the output, does.
+Power objects report both kinds of off as `off`.
+`Request::GetPowerState` and `Event::PowerState` report whether outputs are blanked, and which ones are off.
+
+An output that's off isn't rendered, so its clients get no frame callbacks, and captures of it show black.
+On udev, its CRTC goes off through `DrmCompositor::clear`, which turns DPMS off, and the next queued frame turns it on again.
+On headless, it's only left out of rendering, and on winit, the window shows black.
+A session lock confirms without waiting for frames of outputs that are off, and locking doesn't wake them.
+Settings sets the timeout on its Power page.
 
 ## Network and Bluetooth
 
@@ -675,6 +702,11 @@ The release profile aborts on panic, because every process is supervised or rest
   The capture tests check that an output captured through `wlr-screencopy` and `ext-image-copy-capture` matches `Request::Screenshot` pixel for pixel,
   that a toplevel capture shows the window, that a session's second frame waits for damage,
   and that every capture while locked is black.
+  The output power tests blank two headless outputs after a shortened timeout and check their power objects' `off`,
+  `Event::PowerState`, and a black screenshot, then wake them with a synthetic key and a click;
+  they check that a visible idle inhibitor keeps them on, that a power object turns one output off which input doesn't wake,
+  and that a second power object for an output fails.
+  A session lock test confirms a lock while the outputs are blanked.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.
   The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change,

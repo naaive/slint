@@ -24,6 +24,23 @@ fn set_text_if_changed(current: SharedString, wanted: &str, set: impl FnOnce(Sha
     }
 }
 
+/// Selects `current` among the timeout choices, replacing the labels only when the `shown` values change.
+fn sync_timeout(
+    current: u32,
+    shown: &mut Vec<u32>,
+    labels: ModelRc<SharedString>,
+    set_labels: impl FnOnce(ModelRc<SharedString>),
+    set_index: impl FnOnce(i32),
+) {
+    let choices = settings::timeout_choices(current);
+    set_index(choices.iter().position(|(v, _)| *v == current).unwrap_or(0) as i32);
+    let values: Vec<u32> = choices.iter().map(|(v, _)| *v).collect();
+    if *shown != values || labels.row_count() == 0 {
+        set_labels(strings(choices.into_iter().map(|(_, label)| label)));
+        *shown = values;
+    }
+}
+
 impl Inner {
     pub fn sync_all(&self) {
         self.sync_prefs();
@@ -80,17 +97,22 @@ impl Inner {
         self.sync_input(&prefs, &config);
 
         let p = &config.power;
-        let lock = settings::timeout_choices(p.lock_after_minutes);
-        prefs.set_lock_index(
-            lock.iter().position(|(v, _)| *v == p.lock_after_minutes).unwrap_or(0) as i32,
-        );
         {
             let mut state = self.state.borrow_mut();
-            let lock_values: Vec<u32> = lock.iter().map(|(v, _)| *v).collect();
-            if state.lock_values != lock_values || prefs.get_lock_choices().row_count() == 0 {
-                prefs.set_lock_choices(strings(lock.into_iter().map(|(_, label)| label)));
-                state.lock_values = lock_values;
-            }
+            sync_timeout(
+                p.lock_after_minutes,
+                &mut state.lock_values,
+                prefs.get_lock_choices(),
+                |labels| prefs.set_lock_choices(labels),
+                |index| prefs.set_lock_index(index),
+            );
+            sync_timeout(
+                p.blank_after_minutes,
+                &mut state.blank_values,
+                prefs.get_blank_choices(),
+                |labels| prefs.set_blank_choices(labels),
+                |index| prefs.set_blank_index(index),
+            );
         }
 
         self.request_theme(&config);
@@ -236,6 +258,7 @@ impl Inner {
     pub fn choose_timeout(&self, key: &str, index: i32) {
         let values = match key.parse::<Key>() {
             Ok(Key::LockAfter) => self.state.borrow().lock_values.clone(),
+            Ok(Key::BlankAfter) => self.state.borrow().blank_values.clone(),
             _ => {
                 tracing::error!("'{key}' isn't a timeout setting");
                 return;

@@ -89,6 +89,8 @@ enum Cmd {
     Overview,
     /// Lock the screen.
     Lock,
+    /// Turn the screens off until the next input.
+    Blank,
     /// Reload the configuration file.
     Reload,
     /// Save a PNG of an output; without a path, it goes to the Screenshots folder.
@@ -150,6 +152,7 @@ impl Cmd {
             Self::Launcher => Request::ToggleLauncher,
             Self::Overview => Request::ToggleOverview,
             Self::Lock => Request::Lock,
+            Self::Blank => Request::Blank,
             Self::Reload => Request::ReloadConfig,
             Self::Screenshot { path, output } => Request::Screenshot {
                 output: output.clone(),
@@ -368,6 +371,7 @@ mod tests {
             (&["launcher"], Request::ToggleLauncher),
             (&["overview"], Request::ToggleOverview),
             (&["lock"], Request::Lock),
+            (&["blank"], Request::Blank),
             (&["reload"], Request::ReloadConfig),
             (&["quit"], Request::Quit),
             (&["screenshot"], Request::Screenshot { output: None, path: None }),

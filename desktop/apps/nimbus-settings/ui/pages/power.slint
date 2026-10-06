@@ -6,6 +6,20 @@ import { PageScroll, Group, ChoiceRow } from "../widgets.slint";
 
 export component PowerPage inherits PageScroll {
     Group {
+        title: "Power Saving";
+
+        ChoiceRow {
+            title: "Blank screen";
+            subtitle: "Turn the screens off when the computer is idle";
+            model: Prefs.blank-choices;
+            current-index <=> Prefs.blank-index;
+            chosen(index) => {
+                Prefs.choose-timeout("power.blank-after", index);
+            }
+        }
+    }
+
+    Group {
         title: "Privacy";
 
         ChoiceRow {

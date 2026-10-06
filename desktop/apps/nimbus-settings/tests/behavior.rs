@@ -70,6 +70,7 @@ fn edits_are_saved() {
     prefs.invoke_set_int("panel.height".into(), 400);
     prefs.invoke_set_bool("panel.show-dock".into(), false);
     prefs.invoke_choose_timeout("power.lock-after".into(), 0);
+    prefs.invoke_choose_timeout("power.blank-after".into(), 4);
     let saved = f.saved();
     assert_eq!(saved.appearance.color_scheme, ColorScheme::Light);
     assert_eq!(saved.appearance.accent, "#e62d42");
@@ -77,6 +78,8 @@ fn edits_are_saved() {
     assert_eq!(saved.panel.height, 48);
     assert!(!saved.panel.show_dock);
     assert_eq!(saved.power.lock_after_minutes, 0);
+    assert_eq!(saved.power.blank_after_minutes, 10, "the fifth choice is 10 minutes");
+    assert_eq!(prefs.get_blank_index(), 4);
     assert_eq!(prefs.get_scale_index(), 2);
     assert_eq!(prefs.get_panel_height(), 48.0, "clamped values are pushed back");
     assert!(!prefs.get_accent_is_custom());

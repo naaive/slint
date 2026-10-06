@@ -513,7 +513,8 @@ impl Model {
                     }
                     Event::LayoutChanged { .. }
                     | Event::ShellCommand { .. }
-                    | Event::LockState { .. } => continue,
+                    | Event::LockState { .. }
+                    | Event::PowerState(_) => continue,
                 }
                 changed = true;
             }

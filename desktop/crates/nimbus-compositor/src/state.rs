@@ -21,6 +21,7 @@ use crate::keybindings::Bindings;
 use crate::lock::SessionLock;
 use crate::lock_marker::LockMarker;
 use crate::outputs::OutputManagementState;
+use crate::power::{OutputPower, OutputPowerState};
 use crate::process::Children;
 use crate::render::Wallpaper;
 use crate::wm::layout::{self, Rect};
@@ -156,6 +157,8 @@ pub struct Nimbus {
     heads: Vec<Output>,
     pub output_globals: HashMap<String, GlobalId>,
     pub output_management: OutputManagementState,
+    pub power: OutputPower,
+    pub output_power: OutputPowerState,
     pub wallpaper: Wallpaper,
     pub decorations: Decorations,
     pub decoration_input: DecorationInput,
@@ -273,6 +276,8 @@ impl Nimbus {
             heads: Vec::new(),
             output_globals: HashMap::new(),
             output_management: OutputManagementState::new(&dh),
+            power: OutputPower::new(config.current().power.blank_after_minutes),
+            output_power: OutputPowerState::new(&dh),
             wallpaper,
             decorations,
             decoration_input: DecorationInput::default(),
@@ -535,6 +540,11 @@ impl Nimbus {
         }
     }
 
+    /// Queues `event` for control socket subscribers.
+    pub fn push_event(&mut self, event: Event) {
+        self.events.push(event);
+    }
+
     /// Asks the shell, through control socket subscribers, to carry out `command` on the active output.
     pub fn shell_command(&mut self, command: ShellCommand) {
         let output = self.active_output().map(|o| o.name());
@@ -634,6 +644,7 @@ impl State {
         self.nimbus.foreign_toplevel_state.cleanup_closed_handles();
         self.apply_keyboard_focus();
         self.nimbus.sync_lock_state();
+        self.nimbus.sync_power_state();
         let events = self.nimbus.take_events();
         if !events.is_empty() {
             self.nimbus.ipc.broadcast(&events);

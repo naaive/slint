@@ -58,6 +58,15 @@ pub struct CompositorState {
     pub layout: LayoutMode,
 }
 
+/// Which outputs are off, sent in [`Response::PowerState`] and [`Event::PowerState`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerState {
+    /// Whether outputs are blanked after inactivity or by [`Request::Blank`], until the next input.
+    pub blanked: bool,
+    /// The names of the enabled outputs that are off, blanked or turned off through wlr-output-power-management.
+    pub off: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Direction {
@@ -117,6 +126,10 @@ pub enum Request {
     Lock,
     /// Ask whether the session is locked; the answer is [`Response::LockState`].
     GetLockState,
+    /// Turn every output off until the next input; see [`Event::PowerState`].
+    Blank,
+    /// Ask which outputs are off; the answer is [`Response::PowerState`].
+    GetPowerState,
     ReloadConfig,
     /// Save a PNG of an output: the named one, or the one with the pointer.
     /// With a `path`, the compositor answers once the file is written;
@@ -158,6 +171,7 @@ pub enum Response {
         /// Whether a live `ext-session-lock` client holds the lock.
         held: bool,
     },
+    PowerState(PowerState),
     Error {
         message: String,
     },
@@ -194,6 +208,8 @@ pub enum Event {
         /// Whether a live `ext-session-lock` client holds the lock.
         held: bool,
     },
+    /// Outputs turned off or on.
+    PowerState(PowerState),
 }
 
 /// A command for the shell, delivered as [`Event::ShellCommand`].
@@ -457,6 +473,18 @@ mod tests {
         assert_eq!(json, r#"{"response":"lock-state","locked":true,"held":false}"#);
         let json = serde_json::to_string(&Event::LockState { locked: true, held: true }).unwrap();
         assert_eq!(json, r#"{"event":"lock-state","locked":true,"held":true}"#);
+    }
+
+    #[test]
+    fn power_state_wire_format() {
+        let json = serde_json::to_string(&Request::GetPowerState).unwrap();
+        assert_eq!(json, r#"{"request":"get-power-state"}"#);
+        let state = PowerState { blanked: true, off: vec!["DP-1".into()] };
+        let json = serde_json::to_string(&Response::PowerState(state.clone())).unwrap();
+        assert_eq!(json, r#"{"response":"power-state","blanked":true,"off":["DP-1"]}"#);
+        let json = serde_json::to_string(&Event::PowerState(state.clone())).unwrap();
+        assert_eq!(json, r#"{"event":"power-state","blanked":true,"off":["DP-1"]}"#);
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), Event::PowerState(state));
     }
 
     #[test]

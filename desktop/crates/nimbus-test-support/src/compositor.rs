@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use nimbus_ipc::{CompositorState, Event, Ready, Request, Response};
+use nimbus_ipc::{CompositorState, Event, PowerState, Ready, Request, Response};
 
 use crate::TIMEOUT;
 
@@ -209,6 +209,13 @@ impl Compositor {
     pub fn locked(&self) -> bool {
         match self.ipc().request(&Request::GetLockState).expect("get-lock-state") {
             Response::LockState { locked, .. } => locked,
+            other => panic!("unexpected response {other:?}"),
+        }
+    }
+
+    pub fn power_state(&self) -> PowerState {
+        match self.ipc().request(&Request::GetPowerState).expect("get-power-state") {
+            Response::PowerState(state) => state,
             other => panic!("unexpected response {other:?}"),
         }
     }

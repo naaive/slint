@@ -63,6 +63,8 @@ struct Surface {
     waiting_for_vblank: bool,
     /// `waiting_for_vblank` was set by an estimated-vblank timer rather than a queued page flip.
     estimated_vblank: bool,
+    /// The CRTC is off (DPMS) because the output is; see [`power_off`].
+    off: bool,
 }
 
 /// The refresh interval of `output`, or 60 Hz when its mode doesn't say.
@@ -263,6 +265,7 @@ impl Gpu {
                 mode,
                 waiting_for_vblank: false,
                 estimated_vblank: false,
+                off: false,
             },
         );
         Ok(())
@@ -517,9 +520,17 @@ impl UdevBackend {
         let mut idle = Vec::new();
         for (&crtc, surface) in &mut gpu.surfaces {
             let name = surface.output.name();
+            if !nimbus.output_powered(&surface.output) {
+                nimbus.pending_redraws.remove(&name);
+                if !surface.off {
+                    power_off(surface, nimbus);
+                }
+                continue;
+            }
             if surface.waiting_for_vblank || !nimbus.pending_redraws.remove(&name) {
                 continue;
             }
+            surface.off = false;
             match render_surface(&mut gpu.renderer, surface, nimbus) {
                 Ok(true) => {}
                 Ok(false) => idle.push((crtc, frame_interval(&surface.output))),
@@ -632,6 +643,7 @@ impl UdevBackend {
             for surface in gpu.surfaces.values_mut() {
                 surface.waiting_for_vblank = false;
                 surface.estimated_vblank = false;
+                surface.off = false;
             }
         }
         nimbus.presenting.clear();
@@ -780,6 +792,18 @@ fn configure_device(device: &mut libinput::Device, input: &nimbus_config::Input)
     {
         tracing::debug!(device = device.name(), "cannot set pointer speed: {err:?}");
     }
+}
+
+/// Turns the output's CRTC off (DPMS) and drops its pending frame; the next queued frame turns it on.
+fn power_off(surface: &mut Surface, nimbus: &mut Nimbus) {
+    let name = surface.output.name();
+    if let Err(err) = surface.drm_output.with_compositor(|compositor| compositor.clear()) {
+        tracing::warn!(output = %name, "cannot turn the display off: {err}");
+    }
+    surface.off = true;
+    surface.waiting_for_vblank = false;
+    surface.estimated_vblank = false;
+    nimbus.presenting.remove(&name);
 }
 
 /// Renders and queues a frame; returns `false` when there was nothing new to present.

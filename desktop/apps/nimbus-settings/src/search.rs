@@ -100,6 +100,7 @@ pub const ENTRIES: &[Entry] = &[
     entry(Page::Input, "Pointer speed", "mouse touchpad acceleration sensitivity cursor"),
     entry(Page::Shortcuts, "Keyboard shortcuts", "keybindings hotkeys keys bindings chord"),
     entry(Page::Power, "Automatic screen lock", "lock screen idle timeout security"),
+    entry(Page::Power, "Blank screen", "screen off display monitor dpms idle timeout power saving"),
     entry(
         Page::Displays,
         "Displays",
@@ -170,7 +171,7 @@ mod tests {
         assert_eq!(search("time zone")[0].page, Page::DateTime);
         assert!(search("zzzz").is_empty());
         assert!(search("suspend").is_empty(), "lid suspend isn't implemented");
-        assert!(search("dpms").is_empty(), "screen blanking isn't implemented");
+        assert_eq!(search("dpms")[0].title, "Blank screen");
         for page in Page::ALL {
             assert!(ENTRIES.iter().any(|e| e.page == page), "{page} has no search entries");
         }

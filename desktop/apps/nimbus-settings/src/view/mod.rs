@@ -125,6 +125,7 @@ pub(crate) struct State {
     pub picker: Option<picker::Open>,
     pub capture: Option<shortcuts::Capture>,
     pub lock_values: Vec<u32>,
+    pub blank_values: Vec<u32>,
     /// The user chose "Custom" for the clock, so the custom field stays visible even for a preset format.
     pub custom_clock: bool,
     pub displays: displays::Displays,

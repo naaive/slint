@@ -14,6 +14,7 @@ mod keybindings;
 mod lock;
 mod lock_marker;
 mod outputs;
+mod power;
 mod process;
 mod render;
 mod state;
@@ -205,6 +206,12 @@ fn run(args: Args) -> anyhow::Result<()> {
             );
             let screenshot =
                 backend::headless::ScreenshotRequest::from_env(args.screenshot_dir.clone());
+            if let Some(ms) = std::env::var(backend::headless::IDLE_MINUTE_ENV)
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+            {
+                nimbus.power.set_minute(Duration::from_millis(ms));
+            }
             Backend::Headless(backend::headless::HeadlessBackend::new(
                 &mut nimbus,
                 &sizes,
@@ -235,7 +242,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reaps children and refreshes idle inhibition.
+/// Reaps children, refreshes idle inhibition, and blanks the outputs after inactivity.
 fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
     let handle = state.nimbus.loop_handle.clone();
     handle
@@ -243,6 +250,7 @@ fn start_housekeeping(state: &mut State) -> anyhow::Result<()> {
             state.nimbus.children.reap();
             // Visibility changes, such as minimizing or switching workspaces, can end an inhibition.
             state.nimbus.refresh_idle_inhibit();
+            state.nimbus.blank_when_idle();
             TimeoutAction::ToDuration(Duration::from_secs(1))
         })
         .map_err(|e| anyhow!("cannot start housekeeping: {e}"))?;

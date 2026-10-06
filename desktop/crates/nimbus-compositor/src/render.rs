@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const CLEAR_COLOR: Color32F = Color32F::new(0.11, 0.12, 0.14, 1.0);
-const LOCK_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
+const BLACK: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
 
 smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
@@ -53,7 +53,7 @@ pub struct SceneOptions {
     pub cursor: bool,
 }
 
-/// Builds the elements of one output, front to back:
+/// Builds the elements of one output, front to back, or only black while it's off:
 /// cursor, lock screens, overlay layers, top layers (or a fullscreen window above them),
 /// windows, bottom and background layers, and the wallpaper.
 pub fn output_elements<R>(
@@ -74,19 +74,24 @@ where
     let name = output.name();
     let mut elements: Vec<OutputRenderElement<R>> = Vec::new();
 
-    if options.cursor && output_geo.to_f64().contains(nimbus.pointer_location) {
-        push_cursor(renderer, nimbus, output_geo, output_scale, &mut elements);
-    }
-
     let full_output = || {
         SolidColorRenderElement::new(
             Id::new(),
             Rectangle::from_size(output_geo.size.to_physical_precise_round(output_scale)),
             smithay::backend::renderer::utils::CommitCounter::default(),
-            LOCK_COLOR,
+            BLACK,
             Kind::Unspecified,
         )
     };
+
+    if !nimbus.output_powered(output) {
+        elements.push(OutputRenderElement::Solid(full_output()));
+        return elements;
+    }
+
+    if options.cursor && output_geo.to_f64().contains(nimbus.pointer_location) {
+        push_cursor(renderer, nimbus, output_geo, output_scale, &mut elements);
+    }
 
     if nimbus.is_locked() {
         if let Some(lock) = nimbus.lock.client().and_then(|client| client.surface(&name)) {

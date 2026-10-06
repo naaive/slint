@@ -283,9 +283,7 @@ impl Default for Keybindings {
 pub struct Power {
     /// Minutes of inactivity before the screen locks; 0 disables locking.
     pub lock_after_minutes: u32,
-    /// Minutes of inactivity before outputs blank; 0 disables blanking.
-    ///
-    /// Reserved: the compositor doesn't blank outputs yet and ignores this value.
+    /// Minutes of inactivity before the compositor turns the outputs off; 0 disables blanking.
     pub blank_after_minutes: u32,
     /// Reserved: the compositor doesn't handle the lid switch yet and ignores this value.
     pub suspend_on_lid_close: bool,
