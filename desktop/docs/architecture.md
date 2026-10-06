@@ -660,6 +660,8 @@ The release profile aborts on panic, because every process is supervised or rest
   The timedated test reads, changes, and follows a fake timedated that appears after the client starts.
 - The sound client test runs against a shell script standing in for `pactl`, which keeps its devices in files and follows them with `tail -f` for `subscribe`.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
+- `docs/hardware-testing.md` is the checklist for real machines,
+  and `data/nimbus-bug-report.sh` collects versions, logs, compositor state, configuration, GPU, and portal information for a report, with secrets redacted.
 
 ## Running
 

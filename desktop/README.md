@@ -252,6 +252,9 @@ The shell tests run the `nimbus-shell` binary against the headless compositor an
 The session tests supervise shell scripts that stand in for the compositor and the shell.
 The services tests start a private `dbus-daemon` with fake system daemons, and skip themselves when it's missing.
 
+Before a first run on a real machine, follow the [hardware testing checklist](docs/hardware-testing.md).
+Attach the archive from `data/nimbus-bug-report.sh` to bug reports; it redacts secrets, but read it before you share it.
+
 ## Status and Known Limitations
 
 Nimbus is young.
