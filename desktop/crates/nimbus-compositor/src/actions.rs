@@ -131,6 +131,9 @@ impl State {
                 self.synthetic_input(|state| state.click(location))
             }
             Request::PressKey { code } => self.synthetic_input(|state| state.press_key(code)),
+            Request::Key { code, pressed } => {
+                self.synthetic_input(|state| state.key(code, pressed))
+            }
         }
     }
 
@@ -247,6 +250,9 @@ impl State {
 
     /// Brings grabs and the screen in line with the lock state; [`State::post_dispatch`] syncs the rest.
     pub fn lock_changed(&mut self) {
+        if self.nimbus.is_locked() {
+            self.cancel_switcher();
+        }
         self.break_grabs_for_lock();
         self.nimbus.queue_redraw_all();
     }
@@ -288,6 +294,14 @@ impl State {
             }
             Action::ToggleLauncher => Some(Request::ToggleLauncher),
             Action::ToggleOverview => Some(Request::ToggleOverview),
+            Action::SwitchWindows => {
+                self.switch_windows(false);
+                None
+            }
+            Action::SwitchWindowsBackward => {
+                self.switch_windows(true);
+                None
+            }
             Action::Lock => Some(Request::Lock),
             Action::Screenshot => {
                 self.screenshot();

@@ -91,7 +91,11 @@ automount = true
 "Super+Return" = { spawn = "nimbus-terminal" }
 "Super+E" = { spawn = "nimbus-files" }
 "Super+Space" = "toggle-launcher"
-"Super+Tab" = "toggle-overview"
+"Super+S" = "toggle-overview"
+"Alt+Tab" = "switch-windows"
+"Alt+Shift+Tab" = "switch-windows-backward"
+"Super+Tab" = "switch-windows"
+"Super+Shift+Tab" = "switch-windows-backward"
 "Super+Q" = "close-window"
 "Super+Up" = "toggle-maximize"
 "Super+F" = "toggle-fullscreen"

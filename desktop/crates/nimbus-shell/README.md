@@ -3,7 +3,7 @@
 # nimbus-shell
 
 The Nimbus desktop shell: top panel, dock, launcher, overview, quick settings, calendar and notification center,
-toasts, on-screen display, and lock screen.
+toasts, on-screen display, window switcher, and lock screen.
 It's one shared model shown by a view per output, whose parts each have a Slint window,
 built on the `@nimbus/theme.slint` design system.
 
@@ -16,6 +16,8 @@ built on the `@nimbus/theme.slint` design system.
 | ![Quick settings](../../docs/screenshots/shell-quick-settings.png) | ![Calendar](../../docs/screenshots/shell-calendar.png) |
 | **Toasts and OSD** | **Lock screen** |
 | ![Toasts and OSD](../../docs/screenshots/shell-toast-osd.png) | ![Lock screen](../../docs/screenshots/shell-lock.png) |
+| **Window switcher** | |
+| ![Window switcher](../../docs/screenshots/shell-switcher.png) | |
 
 ## Hosting the Shell
 

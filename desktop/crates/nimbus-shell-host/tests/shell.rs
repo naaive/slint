@@ -36,6 +36,31 @@ fn panel_renders_and_launcher_and_overview_toggle() {
     session.wait_screenshot("the overview to close", |shot| changed_fraction(&idle, shot) < 0.02);
 }
 
+#[test]
+fn alt_tab_shows_the_switcher_until_alt_is_released() {
+    const ALT: u32 = 56;
+    const TAB: u32 = 15;
+    let session = Session::start(CONFIG, None);
+    session.wait_screenshot("the panel and the dock", shell_visible);
+    let mut client = TestClient::connect(&session.compositor);
+    client.create_window("org.example.First", "First");
+    client.create_window("org.example.Second", "Second");
+    let first = common::wait_for("two windows", || {
+        let windows = session.state().windows;
+        (windows.len() == 2).then_some(())?;
+        windows.iter().find(|w| w.app_id == "org.example.First").map(|w| w.id)
+    });
+    let focused = || session.state().windows.into_iter().find(|w| w.focused).map(|w| w.id);
+    assert_ne!(focused(), Some(first));
+
+    session.request(Request::Key { code: ALT, pressed: true });
+    session.press_key(TAB);
+    session.wait_opened("Switcher", 1);
+    session.request(Request::Key { code: ALT, pressed: false });
+    session.wait_closed("Switcher", 1);
+    assert_eq!(focused(), Some(first));
+}
+
 /// Maximizes a white window and returns its client and its size once it's drawn.
 fn maximized_window(session: &Session) -> (TestClient, (i32, i32)) {
     let mut client = TestClient::connect(&session.compositor);

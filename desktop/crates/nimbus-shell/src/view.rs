@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use nimbus_ipc::Request;
+use nimbus_ipc::{Request, WindowId};
 use nimbus_services::ServiceCommand;
 use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 
@@ -15,7 +15,7 @@ use crate::windows::{DockClick, DockEntry, dock_click};
 use crate::{
     AppItem, AuthWindow, Desktop, DockMenuWindow, DockWindow, OsdWindow, OverlayWindow,
     PanelWindow, Popup, PopupWindow, PowerAction, Rect, RectData, ShellAction, ShellModel,
-    ShellOutput, ToastWindow, WindowItem, WorkspaceItem,
+    ShellOutput, SwitcherItem, SwitcherWindow, ToastWindow, WindowItem, WorkspaceItem,
 };
 
 /// The most workspace dots the panel shows.
@@ -44,6 +44,8 @@ pub enum Part {
     Toasts,
     /// The on-screen display above the bottom edge.
     Osd,
+    /// The window switcher in the middle of the output, while the compositor runs one.
+    Switcher,
     /// The polkit authentication dialog, over the whole output and above everything else,
     /// on one output while a request is open.
     Auth,
@@ -106,6 +108,7 @@ pub enum PartComponent {
     Overlay(OverlayWindow),
     Toasts(ToastWindow),
     Osd(OsdWindow),
+    Switcher(SwitcherWindow),
     Auth(AuthWindow),
 }
 
@@ -119,6 +122,7 @@ macro_rules! each_component {
             PartComponent::Overlay($ui) => $body,
             PartComponent::Toasts($ui) => $body,
             PartComponent::Osd($ui) => $body,
+            PartComponent::Switcher($ui) => $body,
             PartComponent::Auth($ui) => $body,
         }
     };
@@ -133,6 +137,7 @@ impl Clone for PartComponent {
             Self::Overlay(ui) => Self::Overlay(ui.clone_strong()),
             Self::Toasts(ui) => Self::Toasts(ui.clone_strong()),
             Self::Osd(ui) => Self::Osd(ui.clone_strong()),
+            Self::Switcher(ui) => Self::Switcher(ui.clone_strong()),
             Self::Auth(ui) => Self::Auth(ui.clone_strong()),
         }
     }
@@ -196,6 +201,7 @@ impl PartWindow {
             PartComponent::Overlay(_) | PartComponent::Auth(_) => (0.0, 0.0),
             PartComponent::Toasts(ui) => (ui.get_surface_width(), ui.get_surface_height()),
             PartComponent::Osd(ui) => (ui.get_surface_width(), ui.get_surface_height()),
+            PartComponent::Switcher(ui) => (ui.get_surface_width(), ui.get_surface_height()),
         }
     }
 
@@ -231,6 +237,7 @@ impl PartWindow {
                 true,
             ),
             PartComponent::Osd(ui) => placement(bottom, ui.get_edge_margin(), Some(0.0), true),
+            PartComponent::Switcher(_) => placement(Edges::default(), 0.0, Some(0.0), true),
         })
     }
 
@@ -250,7 +257,7 @@ impl PartWindow {
             PartComponent::Popup(ui) => ui.get_geometry().into(),
             PartComponent::Overlay(_) | PartComponent::Auth(_) => self.whole(),
             PartComponent::Toasts(ui) => ui.get_input_rect().into(),
-            PartComponent::Osd(_) => Rect::default(),
+            PartComponent::Osd(_) | PartComponent::Switcher(_) => Rect::default(),
         };
         if rect.is_empty() { Vec::new() } else { vec![rect] }
     }
@@ -343,6 +350,36 @@ impl ShellView {
             self.0.set_overview(!self.overview_open());
         }
     }
+
+    /// Shows the window switcher with `windows`, most recently focused first, highlighting `selected`.
+    /// Windows the shell doesn't know are left out.
+    pub fn open_switcher(&self, windows: Vec<WindowId>, selected: WindowId) {
+        if !self.0.model.is_locked() {
+            self.0.set_switcher(Some(SwitcherState { windows, selected }));
+        }
+    }
+
+    /// Highlights `selected` in the open window switcher.
+    pub fn select_in_switcher(&self, selected: WindowId) {
+        let open = match &mut self.0.state.borrow_mut().switcher {
+            Some(switcher) => {
+                switcher.selected = selected;
+                true
+            }
+            None => false,
+        };
+        if open {
+            self.0.fill_switcher(&self.0.model.state.borrow());
+        }
+    }
+
+    pub fn close_switcher(&self) {
+        self.0.set_switcher(None);
+    }
+
+    pub fn switcher_open(&self) -> bool {
+        self.0.state.borrow().switcher.is_some()
+    }
 }
 
 /// The values of the `ShellOutput` global, which every part of the output holds a copy of.
@@ -354,6 +391,7 @@ struct OutputData {
     launcher_open: bool,
     overview_open: bool,
     power_action: PowerAction,
+    switcher_title: SharedString,
     dock_menu_index: i32,
     dock_menu_title: SharedString,
     dock_menu_favorite: bool,
@@ -377,6 +415,8 @@ impl OutputData {
         output.set_launcher_apps(ModelRc::from(models.launcher.clone()));
         output.set_overview_open(self.overview_open);
         output.set_power_action(self.power_action);
+        output.set_switcher_windows(ModelRc::from(models.switcher.clone()));
+        output.set_switcher_title(self.switcher_title.clone());
         output.set_dock_menu_index(self.dock_menu_index);
         output.set_dock_menu_title(self.dock_menu_title.clone());
         output.set_dock_menu_windows(ModelRc::from(models.dock_menu.clone()));
@@ -385,9 +425,16 @@ impl OutputData {
     }
 }
 
+/// The window switcher the compositor runs.
+struct SwitcherState {
+    windows: Vec<WindowId>,
+    selected: WindowId,
+}
+
 #[derive(Default)]
 struct ViewState {
     data: OutputData,
+    switcher: Option<SwitcherState>,
     placement: Option<PopupPlacement>,
     /// The dock entry whose menu is open.
     dock_menu: Option<String>,
@@ -401,6 +448,7 @@ struct Models {
     windows: Rc<VecModel<WindowItem>>,
     dock_menu: Rc<VecModel<DockMenuWindow>>,
     launcher: Rc<VecModel<AppItem>>,
+    switcher: Rc<VecModel<SwitcherItem>>,
 }
 
 pub struct View {
@@ -483,6 +531,9 @@ impl View {
         if (model.osd_shown() && !locked) || osd_fading {
             parts.push(Part::Osd);
         }
+        if !locked && state.switcher.is_some() && self.models.switcher.row_count() > 0 {
+            parts.push(Part::Switcher);
+        }
         if auth {
             parts.push(Part::Auth);
         }
@@ -505,6 +556,7 @@ impl View {
             }
             Part::Toasts => PartComponent::Toasts(ToastWindow::new()?),
             Part::Osd => PartComponent::Osd(OsdWindow::new()?),
+            Part::Switcher => PartComponent::Switcher(SwitcherWindow::new()?),
             Part::Auth => PartComponent::Auth(AuthWindow::new()?),
         });
         self.model.show_shared_on(ui.shared(), &self.model.state.borrow(), true);
@@ -585,6 +637,34 @@ impl View {
             data.fullscreen_active = fullscreen_active;
         });
         self.fill_dock_menu(state);
+        self.fill_switcher(state);
+    }
+
+    fn set_switcher(&self, switcher: Option<SwitcherState>) {
+        self.state.borrow_mut().switcher = switcher;
+        self.fill_switcher(&self.model.state.borrow());
+    }
+
+    fn fill_switcher(&self, state: &State) {
+        let rows = match &self.state.borrow().switcher {
+            Some(switcher) => switcher
+                .windows
+                .iter()
+                .filter_map(|&id| {
+                    let row = state.window_rows.get(state.windows.row_of(id)?)?;
+                    Some(SwitcherItem {
+                        title: row.title.clone(),
+                        app_name: row.app_name.clone(),
+                        visual: row.visual.clone(),
+                        selected: id == switcher.selected,
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let title = rows.iter().find(|row| row.selected).map(|row| row.title.clone());
+        sync_rows(&self.models.switcher, rows);
+        self.update(|data| data.switcher_title = title.unwrap_or_default());
     }
 
     pub fn window_removed(&self, row: usize) {
@@ -860,6 +940,7 @@ impl View {
 
     pub fn close_everything(&self) {
         self.set_popup(Popup::None, None);
+        self.set_switcher(None);
         self.update(|data| {
             data.launcher_open = false;
             data.overview_open = false;

@@ -133,6 +133,13 @@ fn shell_states_render() {
     save("overview", &overview);
     desk.view.toggle_overview();
 
+    desk.view.open_switcher(vec![1, 2, 3, 4, 7], 2);
+    let switcher = render(&desk);
+    assert!(differs_from_backdrop(&switcher, 640, 400), "the switcher draws in the middle");
+    assert!(!differs_from_backdrop(&switcher, 100, 400), "and leaves the sides clear");
+    save("switcher", &switcher);
+    desk.view.close_switcher();
+
     for notification in support::notifications() {
         model.handle_service_event(&ServiceEvent::Notification(notification));
     }

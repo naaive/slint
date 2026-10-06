@@ -37,6 +37,14 @@ export struct WindowItem {
     on-output: bool,
 }
 
+// A window in the window switcher.
+export struct SwitcherItem {
+    title: string,
+    app-name: string,
+    visual: AppVisual,
+    selected: bool,
+}
+
 export struct DockItem {
     id: string,
     name: string,

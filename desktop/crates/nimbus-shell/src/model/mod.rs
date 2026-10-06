@@ -37,7 +37,7 @@ use crate::windows::{DockEntry, Windows, dock_entries, readable_app_id};
 use crate::{
     AppVisual, AuthState, AuthWindow, CalendarDay, Desktop, DockItem, DockWindow, LockWindow,
     NotificationAction, NotificationItem, Osd, OsdKind, OsdWindow, OverlayWindow, PanelSettings,
-    PanelWindow, PopupWindow, ShellAction, SystemStatus, Theme, ToastWindow,
+    PanelWindow, PopupWindow, ShellAction, SwitcherWindow, SystemStatus, Theme, ToastWindow,
 };
 
 /// How long the OSD stays after the last change.
@@ -161,6 +161,7 @@ shared_window!(
     OverlayWindow,
     ToastWindow,
     OsdWindow,
+    SwitcherWindow,
     LockWindow,
     AuthWindow
 );
@@ -756,7 +757,7 @@ fn level_step(
         }
         ShellCommand::BrightnessUp => brightness(system, LEVEL_STEP),
         ShellCommand::BrightnessDown => brightness(system, -LEVEL_STEP),
-        ShellCommand::ToggleLauncher | ShellCommand::ToggleOverview => None,
+        _ => None,
     }
 }
 

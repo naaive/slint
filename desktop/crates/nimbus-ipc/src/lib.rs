@@ -140,6 +140,12 @@ pub enum Request {
     PressKey {
         code: u32,
     },
+    /// Press or release the key with this Linux input event code, to hold modifiers such as Alt.
+    /// Only the headless backend accepts it, for tests.
+    Key {
+        code: u32,
+        pressed: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,7 +197,7 @@ pub enum Event {
 }
 
 /// A command for the shell, delivered as [`Event::ShellCommand`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellCommand {
     ToggleLauncher,
@@ -201,6 +207,19 @@ pub enum ShellCommand {
     ToggleMute,
     BrightnessUp,
     BrightnessDown,
+    /// Show the window switcher with `windows`, most recently focused first, highlighting `selected`.
+    SwitcherOpen {
+        windows: Vec<WindowId>,
+        selected: WindowId,
+    },
+    /// Highlight another window in the open switcher.
+    SwitcherStep {
+        selected: WindowId,
+    },
+    /// Hide the switcher; the compositor focuses the highlighted window.
+    SwitcherCommit,
+    /// Hide the switcher without changing focus.
+    SwitcherCancel,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -454,6 +473,25 @@ mod tests {
         let back: Event =
             serde_json::from_str(r#"{"event":"shell-command","command":"volume-up"}"#).unwrap();
         assert_eq!(back, Event::ShellCommand { command: ShellCommand::VolumeUp, output: None });
+    }
+
+    #[test]
+    fn switcher_command_wire_format() {
+        let event = Event::ShellCommand {
+            command: ShellCommand::SwitcherOpen { windows: vec![3, 1, 2], selected: 1 },
+            output: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"event":"shell-command","command":{"switcher-open":{"windows":[3,1,2],"selected":1}}}"#
+        );
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), event);
+        let step: ShellCommand =
+            serde_json::from_str(r#"{"switcher-step":{"selected":2}}"#).unwrap();
+        assert_eq!(step, ShellCommand::SwitcherStep { selected: 2 });
+        let commit: ShellCommand = serde_json::from_str(r#""switcher-commit""#).unwrap();
+        assert_eq!(commit, ShellCommand::SwitcherCommit);
     }
 
     #[test]

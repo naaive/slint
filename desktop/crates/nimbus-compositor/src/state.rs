@@ -146,6 +146,7 @@ pub struct Nimbus {
     pub suppressed_keys: HashSet<Keycode>,
     /// The layer surface that took keyboard focus on click.
     pub layer_focus: Option<WlSurface>,
+    pub switcher: Option<crate::switcher::Session>,
     /// Libinput ids of the connected touchscreens; the seat has touch while there's one.
     pub touch_devices: HashSet<String>,
     pub workspace_swipe: Option<WorkspaceSwipe>,
@@ -265,6 +266,7 @@ impl Nimbus {
             dnd_icon: None,
             suppressed_keys: HashSet::new(),
             layer_focus: None,
+            switcher: None,
             touch_devices: HashSet::new(),
             workspace_swipe: None,
             wm,

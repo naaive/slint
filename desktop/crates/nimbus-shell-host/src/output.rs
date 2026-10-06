@@ -255,6 +255,7 @@ impl Role {
             Part::Overlay => "nimbus-overlay",
             Part::Toasts => "nimbus-toasts",
             Part::Osd => "nimbus-osd",
+            Part::Switcher => "nimbus-switcher",
             Part::Auth => "nimbus-auth",
             Part::Popup(_) => "nimbus-popup",
         };

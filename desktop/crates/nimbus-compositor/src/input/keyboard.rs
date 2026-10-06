@@ -15,6 +15,7 @@ use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat
 enum KeyAction {
     None,
     Action(nimbus_config::Action),
+    CancelSwitcher,
     SwitchVt(i32),
     EmergencyQuit,
 }
@@ -39,8 +40,12 @@ impl State {
             time,
             |state, modifiers, handle| state.filter_key(keycode, key_state, modifiers, &handle),
         );
+        if key_state == KeyState::Released {
+            self.switcher_key_released(Mods::from(&keyboard.modifier_state()));
+        }
         match action {
             Some(KeyAction::Action(action)) => self.run_action(action),
+            Some(KeyAction::CancelSwitcher) => self.cancel_switcher(),
             Some(KeyAction::SwitchVt(vt)) => self.backend.change_vt(vt),
             Some(KeyAction::EmergencyQuit) => {
                 tracing::warn!("emergency exit requested with Ctrl+Alt+Backspace");
@@ -69,6 +74,11 @@ impl State {
         if let Some(vt) = vt_for_keysym(modified) {
             self.nimbus.suppressed_keys.insert(code);
             return FilterResult::Intercept(KeyAction::SwitchVt(vt));
+        }
+        if self.nimbus.switcher.is_some() && raw_syms.iter().any(|s| s.raw() == keysyms::KEY_Escape)
+        {
+            self.nimbus.suppressed_keys.insert(code);
+            return FilterResult::Intercept(KeyAction::CancelSwitcher);
         }
         let locked = self.nimbus.is_locked();
         if is_emergency_quit(modified, &raw_syms, modifiers, locked) {

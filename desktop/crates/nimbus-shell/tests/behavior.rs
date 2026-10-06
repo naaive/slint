@@ -160,6 +160,7 @@ fn query(component: &PartComponent) -> ElementQuery {
         PartComponent::Overlay(ui) => ElementQuery::from_root(ui),
         PartComponent::Toasts(ui) => ElementQuery::from_root(ui),
         PartComponent::Osd(ui) => ElementQuery::from_root(ui),
+        PartComponent::Switcher(ui) => ElementQuery::from_root(ui),
         PartComponent::Auth(ui) => ElementQuery::from_root(ui),
     }
 }
@@ -182,6 +183,67 @@ fn escape() -> &'static str {
 
 fn anchor() -> RectData {
     RectData { x: 600.0, y: 3.0, width: 80.0, height: 26.0 }
+}
+
+#[test]
+fn window_switcher_follows_the_compositor_without_taking_input() {
+    let f = Fixture::new();
+    let shown = || {
+        let items = f.output().get_switcher_windows();
+        items.iter().map(|item| (item.title.to_string(), item.selected)).collect::<Vec<_>>()
+    };
+    // Windows the shell doesn't know, such as 99, are left out.
+    f.view().open_switcher(vec![1, 3, 99, 2], 3);
+    assert!(f.view().switcher_open());
+    assert!(f.shows(Part::Switcher));
+    assert_eq!(
+        shown(),
+        [
+            ("Nimbus — A Modern Wayland Desktop".to_string(), false),
+            ("Documents".to_string(), true),
+            ("~/src/nimbus — cargo test".to_string(), false),
+        ]
+    );
+    let tiles: Vec<_> = query(&f.part(Part::Switcher))
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::ListItem)
+        .find_all()
+        .into_iter()
+        .filter_map(|tile| tile.accessible_label())
+        .collect();
+    assert_eq!(
+        tiles,
+        ["Nimbus — A Modern Wayland Desktop", "Documents", "~/src/nimbus — cargo test"]
+    );
+    assert_eq!(f.output().get_switcher_title(), "Documents");
+
+    // It sits in the middle above everything, and leaves the keyboard and pointer alone.
+    let placement = f.desk.with(Part::Switcher, |s| s.window.placement().unwrap()).unwrap();
+    assert_eq!(placement.edges, nimbus_shell::Edges::default());
+    assert!(placement.above_fullscreen && !placement.keyboard);
+    assert!(f.desk.input_region(Part::Switcher).is_empty());
+    assert!(f.desk.keyboard_window().is_none());
+
+    f.view().select_in_switcher(2);
+    assert_eq!(
+        shown().iter().map(|(_, selected)| *selected).collect::<Vec<_>>(),
+        [false, false, true]
+    );
+    assert_eq!(f.output().get_switcher_title(), "~/src/nimbus — cargo test");
+    f.model.handle_compositor_event(&Event::WindowClosed { id: 3 });
+    assert_eq!(shown().len(), 2, "a closed window leaves the switcher");
+
+    f.view().close_switcher();
+    assert!(!f.shows(Part::Switcher));
+    assert!(shown().is_empty());
+    assert!(f.take_actions().is_empty(), "the compositor focuses the choice, not the shell");
+
+    // Locking closes it, and it doesn't open on the lock screen.
+    f.view().open_switcher(vec![1, 2], 2);
+    f.model.set_locked(true);
+    assert!(!f.shows(Part::Switcher));
+    f.view().open_switcher(vec![1, 2], 2);
+    assert!(!f.view().switcher_open());
 }
 
 #[test]

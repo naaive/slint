@@ -24,6 +24,13 @@ impl FocusStack {
     pub fn recent(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.order.iter().rev().copied()
     }
+
+    /// Sorts `windows` most recently focused first, followed by those never focused in their given order.
+    pub fn order(&self, windows: impl IntoIterator<Item = WindowId>) -> Vec<WindowId> {
+        let mut windows: Vec<WindowId> = windows.into_iter().collect();
+        windows.sort_by_key(|id| std::cmp::Reverse(self.order.iter().position(|w| w == id)));
+        windows
+    }
 }
 
 /// Picks the window to focus when moving from `from` in `direction`.
@@ -71,6 +78,18 @@ mod tests {
         assert_eq!(stack.recent().collect::<Vec<_>>(), vec![1, 3, 2]);
         stack.remove(3);
         assert_eq!(stack.recent().collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn order_puts_recent_windows_first_and_unfocused_ones_last() {
+        let mut stack = FocusStack::default();
+        stack.touch(2);
+        stack.touch(4);
+        stack.touch(1);
+        assert_eq!(stack.order([1, 2, 3, 4, 5]), vec![1, 4, 2, 3, 5]);
+        // Windows that aren't listed, such as unmapped ones, stay out.
+        assert_eq!(stack.order([5, 2]), vec![2, 5]);
+        assert_eq!(FocusStack::default().order([3, 1]), vec![3, 1]);
     }
 
     #[test]

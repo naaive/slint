@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, FocusRing } from "@nimbus/theme.slint";
+import { SwitcherItem } from "models.slint";
+import { AppIcon } from "common.slint";
+
+component SwitcherTile inherits Rectangle {
+    in property <SwitcherItem> item;
+
+    border-radius: Theme.radius-xlarge;
+    background: root.item.selected ? Theme.surface-selected : transparent;
+    accessible-role: list-item;
+    accessible-label: root.item.title;
+    accessible-description: root.item.app-name;
+    accessible-item-selected: root.item.selected;
+
+    VerticalLayout {
+        padding: Theme.spacing-md;
+        spacing: Theme.spacing-sm;
+        alignment: start;
+
+        AppIcon {
+            size: 64px;
+            visual: root.item.visual;
+            cross-axis-self-alignment: center;
+        }
+        Text {
+            text: root.item.title;
+            color: Theme.text;
+            font-family: Theme.font-family;
+            font-size: Theme.body.font-size;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    if root.item.selected: FocusRing {
+        radius: Theme.radius-xlarge;
+    }
+}
+
+// The window switcher: windows in the order they last had focus, in rows, with the selected one highlighted
+// and its whole title below.
+// It takes no input; the compositor steps through it and focuses the selection.
+export component SwitcherCard inherits Rectangle {
+    in property <[SwitcherItem]> windows;
+    in property <string> title;
+
+    private property <int> columns: max(1, min(root.windows.length, 6));
+    private property <int> rows: max(1, ceil(root.windows.length / root.columns));
+    private property <length> tile-width: 136px;
+    private property <length> tile-height: 124px;
+    private property <length> inset: Theme.spacing-md;
+    private property <length> title-height: 2 * Theme.body-strong.font-size;
+
+    width: root.columns * root.tile-width + 2 * root.inset;
+    height: root.rows * root.tile-height + root.title-height + 2 * root.inset;
+    border-radius: Theme.radius-xlarge + root.inset;
+    background: Theme.popup-background;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: Theme.elevation-3.blur;
+    drop-shadow-offset-y: Theme.elevation-3.offset-y;
+    drop-shadow-color: Theme.elevation-3.color;
+    accessible-role: list;
+    accessible-label: "Windows";
+
+    for item[index] in root.windows: SwitcherTile {
+        x: root.inset + mod(index, root.columns) * root.tile-width;
+        y: root.inset + floor(index / root.columns) * root.tile-height;
+        width: root.tile-width;
+        height: root.tile-height;
+        item: item;
+    }
+
+    Text {
+        x: root.inset + Theme.spacing-md;
+        y: root.inset + root.rows * root.tile-height;
+        width: parent.width - 2 * self.x;
+        height: root.title-height;
+        text: root.title;
+        color: Theme.text;
+        font-family: Theme.font-family;
+        font-size: Theme.body-strong.font-size;
+        font-weight: Theme.body-strong.font-weight;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+}

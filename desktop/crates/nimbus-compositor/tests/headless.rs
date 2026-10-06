@@ -154,6 +154,117 @@ fn synthetic_clicks_focus_windows_and_keys_run_shortcuts() {
     assert!(unknown.is_err(), "an unknown output is an error: {unknown:?}");
 }
 
+/// Linux input event codes of the keys the window switcher tests hold and press.
+const ALT: u32 = 56;
+const TAB: u32 = 15;
+const SHIFT: u32 = 42;
+const ESCAPE: u32 = 1;
+
+#[test]
+fn alt_tab_switches_windows_in_most_recently_used_order() {
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
+    for name in ["A", "B", "C"] {
+        client.create_window(&format!("org.nimbus.{name}"), name);
+    }
+    let state = compositor.wait_state("three windows", |s| s.windows.len() == 3);
+    let id = |name: &str| {
+        state.windows.iter().find(|w| w.app_id == format!("org.nimbus.{name}")).unwrap().id
+    };
+    let (a, b, c) = (id("A"), id("B"), id("C"));
+    let focused = || compositor.state().windows.iter().find(|w| w.focused).map(|w| w.id);
+    assert_eq!(focused(), Some(c));
+
+    let events = compositor.subscribe();
+    let next_command = || {
+        events.wait("a switcher command", |event| match event {
+            Event::ShellCommand { command, output } => Some((command, output)),
+            _ => None,
+        })
+    };
+    let key = |code, pressed| compositor.request(Request::Key { code, pressed });
+
+    // Alt+Tab opens on the previous window, Tab moves on, and Shift+Tab goes back.
+    key(ALT, true);
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(
+        next_command(),
+        (
+            ShellCommand::SwitcherOpen { windows: vec![c, b, a], selected: b },
+            Some("HEADLESS-1".into())
+        )
+    );
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(next_command().0, ShellCommand::SwitcherStep { selected: a });
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(next_command().0, ShellCommand::SwitcherStep { selected: c });
+    key(SHIFT, true);
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(next_command().0, ShellCommand::SwitcherStep { selected: a });
+    key(SHIFT, false);
+    assert_eq!(focused(), Some(c), "focus stays until the switcher commits");
+
+    // Releasing Alt focuses the selection.
+    key(ALT, false);
+    assert_eq!(next_command().0, ShellCommand::SwitcherCommit);
+    assert_eq!(focused(), Some(a));
+
+    // Escape cancels.
+    key(ALT, true);
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(
+        next_command().0,
+        ShellCommand::SwitcherOpen { windows: vec![a, c, b], selected: c }
+    );
+    compositor.request(Request::PressKey { code: ESCAPE });
+    assert_eq!(next_command().0, ShellCommand::SwitcherCancel);
+    key(ALT, false);
+    assert_eq!(focused(), Some(a));
+
+    // A quick Alt+Tab goes back to the previous window, and another one returns.
+    for expected in [c, a] {
+        key(ALT, true);
+        compositor.request(Request::PressKey { code: TAB });
+        key(ALT, false);
+        assert_eq!(focused(), Some(expected));
+    }
+}
+
+#[test]
+fn alt_tab_without_a_shell_focuses_each_selection_at_once() {
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
+    for name in ["A", "B", "C"] {
+        client.create_window(&format!("org.nimbus.{name}"), name);
+    }
+    let state = compositor.wait_state("three windows", |s| s.windows.len() == 3);
+    let id = |name: &str| {
+        state.windows.iter().find(|w| w.app_id == format!("org.nimbus.{name}")).unwrap().id
+    };
+    let (a, b, c) = (id("A"), id("B"), id("C"));
+    let focused = || compositor.state().windows.iter().find(|w| w.focused).map(|w| w.id);
+    let key = |code, pressed| compositor.request(Request::Key { code, pressed });
+    assert_eq!(focused(), Some(c));
+
+    // With nothing subscribed to show the switcher, every Tab moves focus along the order it opened with.
+    key(ALT, true);
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(focused(), Some(b));
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(focused(), Some(a));
+    key(ALT, false);
+    assert_eq!(focused(), Some(a));
+
+    // Escape gives focus back to the window that had it; B had focus last on the way to A.
+    key(ALT, true);
+    compositor.request(Request::PressKey { code: TAB });
+    assert_eq!(focused(), Some(b));
+    compositor.request(Request::PressKey { code: ESCAPE });
+    assert_eq!(focused(), Some(a));
+    key(ALT, false);
+    assert_eq!(focused(), Some(a));
+}
+
 #[test]
 fn workspaces_close_and_tiling_work() {
     let compositor = common::start(CONFIG);

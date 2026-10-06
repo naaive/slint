@@ -118,12 +118,17 @@ impl State {
 
     /// Presses and releases the key with the Linux input event `code`, as a user would.
     pub fn press_key(&mut self, code: u32) {
+        self.key(code, true);
+        self.key(code, false);
+    }
+
+    /// Presses or releases the key with the Linux input event `code`, as a user would.
+    pub fn key(&mut self, code: u32, pressed: bool) {
         let time = self.input_time();
         self.input_arrived();
         let keycode = Keycode::new(code + XKB_KEYCODE_OFFSET);
-        for state in [KeyState::Pressed, KeyState::Released] {
-            self.keyboard_key(keycode, state, time);
-        }
+        let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+        self.keyboard_key(keycode, state, time);
     }
 
     /// Milliseconds since the compositor started, the clock of input events.

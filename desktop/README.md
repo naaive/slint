@@ -27,6 +27,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - Input methods such as fcitx5 and IBus, through text-input-v3, input-method-v2, and virtual-keyboard-v1,
   with their candidate popups below the text cursor.
 - Keyboard shortcuts from the configuration, with live reload.
+- Alt+Tab and Super+Tab switch windows in the order they last had focus, with the shell's switcher or, without the shell, by focusing each window in turn.
 - Touchpad gestures for apps through pointer-gestures, and a three-finger horizontal swipe that switches workspaces,
   with the finger count in `[input] workspace_swipe_fingers`.
 - Games and remote desktops lock or confine the pointer through relative-pointer and pointer-constraints.
@@ -50,6 +51,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - Quick settings for volume, brightness, Wi-Fi, Bluetooth, do not disturb, dark style, media playback, and power.
 - A notification server with toasts, actions, and a notification center next to the calendar.
 - On-screen displays for volume and brightness keys, and a lock screen.
+- A window switcher in the middle of the output, with the icon and title of each window, while Alt+Tab is held.
 - A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
 - Input methods such as fcitx5 and IBus type into the launcher search, the lock screen, and the polkit dialog through text-input-v3;
   password fields tell the input method they're passwords and never share their text.
@@ -215,7 +217,8 @@ Default shortcuts:
 | Keys | Action |
 | --- | --- |
 | Super+Space | Launcher |
-| Super+Tab | Overview |
+| Super+S | Overview |
+| Alt+Tab or Super+Tab, with Shift to go back | Switch windows |
 | Super+Return | Terminal |
 | Super+E | Files |
 | Super+Q | Close the window |
@@ -301,6 +304,8 @@ The headless backend and the shell run end to end in tests, but the udev and win
   Typing into the polkit dialog through an input method has no end-to-end test.
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.
+- The window switcher lists the windows of every workspace, one per window, not grouped by app.
+  It takes no clicks or arrow keys, and keys other than Tab and Escape reach the focused window while it's open.
 - When an `ext-session-lock` client dies, the session stays locked and black until another client locks it.
   The shell locks again right away, or once `nimbus-session` restarts it after a crash.
 - The compositor checks a lock surface's size only on commits that attach a buffer.

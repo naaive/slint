@@ -74,6 +74,10 @@ impl Connection {
     fn finished(&self) -> bool {
         self.read_closed && self.output.is_empty() && self.replies.is_empty()
     }
+
+    fn listening(&self) -> bool {
+        self.subscribed && !self.dead && !self.read_closed
+    }
 }
 
 /// What a read left of a connection.
@@ -314,17 +318,18 @@ impl IpcServer {
 
     /// Sends `events` to every subscribed connection.
     pub fn broadcast(&mut self, events: &[Event]) {
-        let subscribed: Vec<ConnectionId> = self
-            .connections
-            .iter()
-            .filter(|(_, c)| c.subscribed && !c.dead && !c.read_closed)
-            .map(|(&id, _)| id)
-            .collect();
+        let subscribed: Vec<ConnectionId> =
+            self.connections.iter().filter(|(_, c)| c.listening()).map(|(&id, _)| id).collect();
         for id in subscribed {
             for event in events {
                 self.send(id, event);
             }
         }
+    }
+
+    /// Whether any connection receives events, as the shell's does.
+    pub fn has_subscribers(&self) -> bool {
+        self.connections.values().any(Connection::listening)
     }
 
     /// Flushes every connection and drops dead ones; runs outside of connection callbacks.

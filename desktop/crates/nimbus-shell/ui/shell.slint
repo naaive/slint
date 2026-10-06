@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The Nimbus shell's windows, each shown on a surface of its own.
-// Per output: the panel, the dock, a popup, the overlay with the launcher, overview, and power dialog, the toasts, the OSD,
+// Per output: the panel, the dock, a popup, the overlay with the launcher, overview, and power dialog, the toasts, the OSD, the window switcher,
 // and on one output the polkit authentication dialog;
 // and while locked, the lock screen.
 // Rust sets what every window shows alike on the `Desktop` global, and what the parts of one output show on `ShellOutput`;
@@ -12,7 +12,7 @@ import { Theme, Motion, Icons, Icon, Divider } from "@nimbus/theme.slint";
 import {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
-    NetworkKind, SystemStatus, PanelSettings, AuthState,
+    NetworkKind, SystemStatus, PanelSettings, AuthState, SwitcherItem,
 } from "models.slint";
 import { Desktop } from "desktop.slint";
 import { ShellOutput } from "output.slint";
@@ -25,6 +25,7 @@ import { QuickSettings } from "quick-settings.slint";
 import { CalendarPopup } from "calendar.slint";
 import { ToastStack } from "toasts.slint";
 import { OsdPill } from "osd.slint";
+import { SwitcherCard } from "switcher.slint";
 import { LockScreen } from "lock-screen.slint";
 import { PowerDialog } from "power-menu.slint";
 import { AuthDialog } from "auth-dialog.slint";
@@ -33,7 +34,7 @@ export { Theme, Desktop, ShellOutput }
 export {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
-    NetworkKind, SystemStatus, PanelSettings, AuthState,
+    NetworkKind, SystemStatus, PanelSettings, AuthState, SwitcherItem,
 }
 
 // The room around a floating part for its drop shadow.
@@ -450,6 +451,24 @@ export component OsdWindow inherits Window {
         kind: Desktop.osd-kind;
         level: Desktop.osd-level;
         muted: Desktop.osd-muted;
+    }
+}
+
+// The window switcher in the middle of the output, which takes no input.
+export component SwitcherWindow inherits Window {
+    out property <length> surface-width: card.width + 2 * ShadowRoom.size;
+    out property <length> surface-height: card.height + 2 * ShadowRoom.size;
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Window Switcher";
+
+    card := SwitcherCard {
+        x: ShadowRoom.size;
+        y: ShadowRoom.size;
+        windows: ShellOutput.switcher-windows;
+        title: ShellOutput.switcher-title;
     }
 }
 

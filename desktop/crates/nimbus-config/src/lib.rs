@@ -225,6 +225,9 @@ pub enum Action {
     PreviousWorkspace,
     ToggleLauncher,
     ToggleOverview,
+    /// Starts or advances the window switcher, which focuses its choice when the chord's modifiers are released.
+    SwitchWindows,
+    SwitchWindowsBackward,
     Lock,
     Screenshot,
     VolumeUp,
@@ -245,7 +248,11 @@ impl Default for Keybindings {
         bind("Super+Return", Spawn("nimbus-terminal".into()));
         bind("Super+E", Spawn("nimbus-files".into()));
         bind("Super+Space", ToggleLauncher);
-        bind("Super+Tab", ToggleOverview);
+        bind("Super+S", ToggleOverview);
+        bind("Alt+Tab", SwitchWindows);
+        bind("Alt+Shift+Tab", SwitchWindowsBackward);
+        bind("Super+Tab", SwitchWindows);
+        bind("Super+Shift+Tab", SwitchWindowsBackward);
         bind("Super+Q", CloseWindow);
         bind("Super+Up", ToggleMaximize);
         bind("Super+F", ToggleFullscreen);
@@ -492,6 +499,17 @@ mod tests {
                 .unwrap();
         assert_eq!(config.keybindings.0["Super+Return"], Action::Spawn("foot".into()));
         assert_eq!(config.keybindings.0["Super+3"], Action::Workspace(2));
+    }
+
+    #[test]
+    fn default_bindings_switch_windows() {
+        let bindings = Keybindings::default().0;
+        assert_eq!(bindings["Alt+Tab"], Action::SwitchWindows);
+        assert_eq!(bindings["Alt+Shift+Tab"], Action::SwitchWindowsBackward);
+        assert_eq!(bindings["Super+Tab"], Action::SwitchWindows);
+        let config: Config =
+            toml::from_str("[keybindings]\n\"Alt+Tab\" = \"switch-windows-backward\"\n").unwrap();
+        assert_eq!(config.keybindings.0["Alt+Tab"], Action::SwitchWindowsBackward);
     }
 
     #[test]

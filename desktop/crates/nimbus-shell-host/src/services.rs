@@ -78,17 +78,40 @@ impl State {
                     self.services.send(command);
                 }
             }
+            ShellCommand::SwitcherOpen { windows, selected } => {
+                let target = self.target_output(output);
+                for (index, shell) in self.outputs.iter().enumerate() {
+                    if Some(index) == target {
+                        shell.view().open_switcher(windows.clone(), selected);
+                    } else {
+                        shell.view().close_switcher();
+                    }
+                }
+            }
+            ShellCommand::SwitcherStep { selected } => {
+                for shell in &self.outputs {
+                    shell.view().select_in_switcher(selected);
+                }
+            }
+            ShellCommand::SwitcherCommit | ShellCommand::SwitcherCancel => {
+                for shell in &self.outputs {
+                    shell.view().close_switcher();
+                }
+            }
         }
+    }
+
+    /// The index of the output named `output`, or else of the first one.
+    fn target_output(&self, output: Option<&str>) -> Option<usize> {
+        self.outputs
+            .iter()
+            .position(|o| Some(o.name()) == output)
+            .or((!self.outputs.is_empty()).then_some(0))
     }
 
     /// Toggles a full-output view on `output`, or the first one, and closes the launcher and overview elsewhere.
     fn toggle_on(&mut self, output: Option<&str>, toggle: fn(&ShellView)) {
-        let target = self
-            .outputs
-            .iter()
-            .position(|o| Some(o.name()) == output)
-            .or((!self.outputs.is_empty()).then_some(0));
-        let Some(target) = target else {
+        let Some(target) = self.target_output(output) else {
             return;
         };
         for (_, other) in self.outputs.iter().enumerate().filter(|(i, _)| *i != target) {

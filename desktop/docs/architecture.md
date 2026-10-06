@@ -97,9 +97,10 @@ Modules in `crates/nimbus-compositor/src`:
   `on_demand` ones take it when clicked.
   `gestures.rs`, `constraints.rs`, `touch.rs`, `tablet.rs`, and `devices.rs` handle the rest; see [Pointer, Touch, and Tablets](#pointer-touch-and-tablets).
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
+- `switcher.rs`: the window switcher; see [Window Switcher](#window-switcher).
 - `actions.rs`: control requests and keybinding actions.
   Shortcuts aimed at the shell become `Event::ShellCommand`s; see [Shell](#shell).
-  On the headless backend, `Request::Click` and `Request::PressKey` feed input as if a user made it, for tests.
+  On the headless backend, `Request::Click`, `Request::PressKey`, and `Request::Key` feed input as if a user made it, for tests.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 - `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshot files.
 - `decoration/`: server-side titlebars; see [Decorations](#decorations).
@@ -356,6 +357,7 @@ The parts of an output, in the order a host creates their surfaces:
 | `Popup` | `PopupWindow` | The calendar, quick settings, or dock menu, next to the button of the part that opened it, which a host passes as `ShellView::popup_placement()`; it closes when that part goes. |
 | `Toasts` | `ToastWindow` | In the top right corner, below the panel, sized to the toasts, while there are toasts and no popup or power dialog. |
 | `Osd` | `OsdWindow` | Above the bottom edge, while the OSD shows and fades out. It takes no input. |
+| `Switcher` | `SwitcherWindow` | In the middle of the output and above fullscreen windows, while the compositor's window switcher is open there. It takes no input. |
 | `Auth` | `AuthWindow` | Over the whole output and above everything else, with the keyboard, on one output while a polkit request is open and the session is unlocked; see [polkit Authentication](#polkit-authentication). |
 
 `PartWindow::placement()` describes where a part goes in terms of output edges, size, margin, exclusive zone, stacking, and keyboard,
@@ -384,8 +386,27 @@ Surfaces:
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
 Shortcuts and requests aimed at the shell reach it on the control socket as `Event::ShellCommand`:
-toggling the launcher or overview, and volume and brightness keys.
+toggling the launcher or overview, volume and brightness keys, and the window switcher.
 The compositor handles the keys and names the output under the pointer; the shell carries the commands out.
+
+### Window Switcher
+
+The compositor owns the window switcher, so it works the same with or without the shell.
+`FocusStack::order` lists the mapped windows of every workspace, most recently focused first, then those never focused.
+The first press of `switch-windows`, Alt+Tab or Super+Tab by default, opens a session on the window after the focused one,
+and `switch-windows-backward`, the same chords with Shift, on the last.
+Each further press steps on, wrapping around.
+The session commits when a key release lets go of a modifier of the chord that opened it, other than Shift,
+and focuses its window through `Request::Activate`, which also switches workspaces and unminimizes.
+Escape cancels it, and so does locking.
+A chord without such a modifier commits at once, so it cycles focus directly.
+
+While a control socket client subscribes to events, as the shell does, the session emits `ShellCommand::SwitcherOpen`
+with the window ids and the selection, `SwitcherStep` with each new selection, and `SwitcherCommit` or `SwitcherCancel` at the end.
+Without a subscriber, nothing could show the switcher, so each selection takes focus at once,
+and Escape gives focus back to the window that had it when the session opened.
+The shell shows the windows it knows from that list on the `Switcher` part of the named output, and closes it elsewhere.
+The part takes neither keyboard nor pointer, so the focused window keeps its keyboard focus until the commit.
 
 ## Shell Process
 
@@ -648,6 +669,9 @@ The release profile aborts on panic, because every process is supervised or rest
   They also check that popup grabs and the input method's grab take turns with the keyboard,
   and find a candidate popup below the text cursor in a screenshot.
   A headless test checks that synthetic clicks focus the window under them and synthetic keys run shortcuts.
+  The window switcher tests hold Alt through `Request::Key`, and check the order of `SwitcherOpen`, steps forward and with Shift,
+  the commit's focus, Escape, and quick Alt+Tab presses that toggle between two windows;
+  without a subscriber, they check that each step takes focus and Escape restores it.
   The capture tests check that an output captured through `wlr-screencopy` and `ext-image-copy-capture` matches `Request::Screenshot` pixel for pixel,
   that a toplevel capture shows the window, that a session's second frame waits for damage,
   and that every capture while locked is black.
@@ -666,7 +690,7 @@ The release profile aborts on panic, because every process is supervised or rest
   the panel renders, the launcher and overview open and close an overlay surface through shell command events,
   the panel and dock reserve their space and an autohidden dock none, the launcher takes typing and closes on Escape,
   quick settings open in a popup that a click outside dismisses, a toast shows on its own surface until it expires,
-  `Request::Lock` shows the lock screen on a lock surface,
+  `Request::Lock` shows the lock screen on a lock surface, Alt+Tab opens the switcher's surface until Alt is released and focuses its choice,
   an input method client from `nimbus-test-support` composes and commits Chinese text in the launcher search and sees the field's new text,
   the lock screen's password field asks for the `password` purpose without its text,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.

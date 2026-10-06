@@ -171,6 +171,8 @@ pub enum ActionKind {
     FocusRight,
     FocusUp,
     FocusDown,
+    SwitchWindows,
+    SwitchWindowsBackward,
     Workspace,
     MoveToWorkspace,
     NextWorkspace,
@@ -194,7 +196,7 @@ pub enum Parameter {
 }
 
 impl ActionKind {
-    pub const ALL: [ActionKind; 24] = [
+    pub const ALL: [ActionKind; 26] = [
         ActionKind::Spawn,
         ActionKind::ToggleLauncher,
         ActionKind::ToggleOverview,
@@ -207,6 +209,8 @@ impl ActionKind {
         ActionKind::FocusRight,
         ActionKind::FocusUp,
         ActionKind::FocusDown,
+        ActionKind::SwitchWindows,
+        ActionKind::SwitchWindowsBackward,
         ActionKind::Workspace,
         ActionKind::MoveToWorkspace,
         ActionKind::NextWorkspace,
@@ -233,6 +237,8 @@ impl ActionKind {
             Action::FocusRight => ActionKind::FocusRight,
             Action::FocusUp => ActionKind::FocusUp,
             Action::FocusDown => ActionKind::FocusDown,
+            Action::SwitchWindows => ActionKind::SwitchWindows,
+            Action::SwitchWindowsBackward => ActionKind::SwitchWindowsBackward,
             Action::Workspace(_) => ActionKind::Workspace,
             Action::MoveToWorkspace(_) => ActionKind::MoveToWorkspace,
             Action::NextWorkspace => ActionKind::NextWorkspace,
@@ -264,6 +270,8 @@ impl ActionKind {
             ActionKind::FocusRight => "Focus the window to the right",
             ActionKind::FocusUp => "Focus the window above",
             ActionKind::FocusDown => "Focus the window below",
+            ActionKind::SwitchWindows => "Switch windows",
+            ActionKind::SwitchWindowsBackward => "Switch windows backward",
             ActionKind::Workspace => "Switch to a workspace",
             ActionKind::MoveToWorkspace => "Move window to a workspace",
             ActionKind::NextWorkspace => "Switch to the next workspace",
@@ -292,7 +300,9 @@ impl ActionKind {
             | ActionKind::FocusLeft
             | ActionKind::FocusRight
             | ActionKind::FocusUp
-            | ActionKind::FocusDown => "Windows",
+            | ActionKind::FocusDown
+            | ActionKind::SwitchWindows
+            | ActionKind::SwitchWindowsBackward => "Windows",
             ActionKind::Workspace
             | ActionKind::MoveToWorkspace
             | ActionKind::NextWorkspace
@@ -341,6 +351,8 @@ impl ActionKind {
             ActionKind::FocusRight => Action::FocusRight,
             ActionKind::FocusUp => Action::FocusUp,
             ActionKind::FocusDown => Action::FocusDown,
+            ActionKind::SwitchWindows => Action::SwitchWindows,
+            ActionKind::SwitchWindowsBackward => Action::SwitchWindowsBackward,
             ActionKind::NextWorkspace => Action::NextWorkspace,
             ActionKind::PreviousWorkspace => Action::PreviousWorkspace,
             ActionKind::ToggleLauncher => Action::ToggleLauncher,

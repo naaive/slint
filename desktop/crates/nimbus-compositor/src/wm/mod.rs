@@ -467,6 +467,11 @@ impl Wm {
         }
     }
 
+    /// Mapped windows on every workspace, most recently focused first; see [`FocusStack::order`].
+    pub fn recent_windows(&self) -> Vec<WindowId> {
+        self.focus_stack.order(self.windows.iter().filter(|w| w.mapped).map(|w| w.id))
+    }
+
     /// Focuses the most recently focused visible window.
     pub fn focus_fallback(&mut self) {
         let next = self.focus_stack.recent().find(|&id| self.is_visible(id));

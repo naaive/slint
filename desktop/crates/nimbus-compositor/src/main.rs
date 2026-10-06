@@ -17,6 +17,7 @@ mod outputs;
 mod process;
 mod render;
 mod state;
+mod switcher;
 mod wm;
 mod xwayland;
 
