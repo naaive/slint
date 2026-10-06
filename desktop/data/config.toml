@@ -24,7 +24,7 @@ icon_theme = "Adwaita"
 font_family = "Inter"
 # Point size of the interface font.
 font_size = 11.0
-# Output scale factor, such as 1.25 or 2.0.
+# Scale factor of displays without their own scale under [[outputs]], such as 1.25 or 2.0.
 scale = 1.0
 animations = true
 # Window and surface corner radius, in logical pixels.
@@ -113,3 +113,19 @@ suspend_on_lid_close = true
 "Super+Shift+7" = { move-to-workspace = 6 }
 "Super+Shift+8" = { move-to-workspace = 7 }
 "Super+Shift+9" = { move-to-workspace = 8 }
+
+# Display settings, one [[outputs]] entry per display.
+# The compositor saves them whenever a display configuration is applied, such as from Settings.
+# An entry matches a display by make, model, and serial number, or by connector without a serial number.
+# Fields left out keep the display's default: its preferred mode, `appearance.scale`,
+# no rotation, and a place to the right of the other displays.
+# [[outputs]]
+# connector = "DP-1"
+# make = "DEL"
+# model = "DELL U2720Q"
+# serial = "CN0ABC123"
+# enabled = true
+# mode = "3840x2160@60"
+# position = [0, 0]
+# scale = 1.5
+# transform = "90"

@@ -210,3 +210,58 @@ fn background_data_is_shown() {
     assert_eq!(displays.get_state(), 1);
     assert_eq!(displays.get_items().row_count(), 2);
 }
+
+#[test]
+fn displays_are_edited_applied_and_reverted() {
+    let f = Fixture::new(Page::Displays);
+    let displays = f.app.window().global::<nimbus_settings::DisplaysModel>();
+    let item = |index: usize| displays.get_items().row_data(index).expect("a display");
+    assert!(displays.get_editable());
+    assert!(!displays.get_changed());
+    assert_eq!(item(0).title, "Built-in Display");
+    assert_eq!(item(1).title, "DELL U2720Q");
+    assert_eq!(item(1).scale_index, 2);
+
+    displays.invoke_choose_scale(1, 0);
+    assert!(displays.get_changed());
+    displays.invoke_reset();
+    assert!(!displays.get_changed());
+    assert_eq!(item(1).scale_index, 2);
+
+    // At 100%, the monitor is wider than at 150%.
+    let width_before = item(1).frac_width;
+    displays.invoke_choose_scale(1, 0);
+    displays.invoke_apply();
+    assert!(!displays.get_changed());
+    assert_eq!(displays.get_confirm_seconds(), 15);
+    assert_eq!(item(1).scale_index, 0);
+    assert!(item(1).frac_width > width_before);
+    displays.invoke_revert();
+    assert_eq!(displays.get_confirm_seconds(), 0);
+    assert_eq!(item(1).scale_index, 2, "back at 150%");
+
+    // Rotating the laptop and keeping it.
+    displays.invoke_choose_rotation(0, 1);
+    displays.invoke_apply();
+    displays.invoke_keep();
+    assert_eq!(displays.get_confirm_seconds(), 0);
+    assert_eq!(item(0).rotation_index, 1);
+
+    // Dropping the monitor above the laptop.
+    displays.invoke_moved(1, 0.0, -0.9);
+    assert!(displays.get_changed());
+    assert!(item(1).frac_y < item(0).frac_y);
+
+    // Turning the monitor off hides it from the arrangement.
+    displays.invoke_set_enabled(1, false);
+    assert!(!item(1).enabled);
+    assert_eq!(item(1).frac_width, 0.0);
+    assert_eq!(item(0).frac_width, 1.0);
+
+    // The resolution list goes largest first, and changing it picks the fastest rate.
+    displays.invoke_reset();
+    assert_eq!(item(1).resolutions.row_data(1).as_deref(), Some("2560 × 1440"));
+    displays.invoke_choose_resolution(1, 1);
+    assert_eq!(item(1).refresh_rates.row_data(0).as_deref(), Some("59.95 Hz"));
+    assert_eq!(f.saved().outputs, [], "the compositor saves displays, not Settings");
+}

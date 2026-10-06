@@ -47,11 +47,18 @@ export struct ShortcutCategory {
 }
 
 export struct DisplayItem {
-    name: string,
-    resolution: string,
-    refresh: string,
-    scale: string,
-    // The output's rectangle in the arrangement preview, as fractions of the whole arrangement.
+    title: string,
+    connector: string,
+    enabled: bool,
+    resolutions: [string],
+    resolution-index: int,
+    refresh-rates: [string],
+    refresh-index: int,
+    scales: [string],
+    scale-index: int,
+    // Quarter turns clockwise.
+    rotation-index: int,
+    // The display's rectangle in the arrangement preview, as fractions of the whole arrangement; empty while it's off.
     frac-x: float,
     frac-y: float,
     frac-width: float,
@@ -194,12 +201,31 @@ export global ShortcutsModel {
 export global DisplaysModel {
     // 0: loading, 1: ready, 2: unavailable.
     in property <int> state;
+    // Why displays are unavailable, or why they can't be changed.
     in property <string> message;
     in property <[DisplayItem]> items;
     // The arrangement's width divided by its height.
     in property <float> arrangement-aspect: 1;
+    // Whether the displays can be configured, rather than only listed.
+    in property <bool> editable;
+    // Whether the edits differ from the displays' current settings.
+    in property <bool> changed;
+    in property <bool> applying;
+    // Seconds until applied settings revert unless they're kept; 0 when not asking.
+    in property <int> confirm-seconds;
 
     callback refresh();
+    callback set-enabled(index: int, enabled: bool);
+    callback choose-resolution(index: int, choice: int);
+    callback choose-refresh(index: int, choice: int);
+    callback choose-scale(index: int, choice: int);
+    callback choose-rotation(index: int, choice: int);
+    // A display was dropped with its top-left corner at these fractions of the arrangement.
+    callback moved(index: int, frac-x: float, frac-y: float);
+    callback apply();
+    callback reset();
+    callback keep();
+    callback revert();
 }
 
 export global AboutModel {

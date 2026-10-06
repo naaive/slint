@@ -6,7 +6,7 @@ import { ListView } from "std-widgets.slint";
 import {
     Theme, Motion, Icons, Icon, Label, Button, IconButton, Popover, SearchField, TextField, Dropdown,
 } from "@nimbus/theme.slint";
-import { Picker, ShortcutsModel } from "globals.slint";
+import { Picker, ShortcutsModel, DisplaysModel } from "globals.slint";
 import { Keycap } from "widgets.slint";
 
 // Dims the window and swallows clicks outside the dialog.
@@ -329,6 +329,53 @@ export component CaptureDialog {
                 enabled: ShortcutsModel.capture-can-apply;
                 clicked => {
                     ShortcutsModel.capture-apply();
+                }
+            }
+        }
+    }
+}
+
+// Asks to keep applied display settings, which revert when the countdown ends.
+export component KeepDisplaysDialog {
+    Scrim { }
+
+    Popover {
+        x: (parent.width - self.width) / 2;
+        y: max(Theme.spacing-xl, (parent.height - self.height) / 3);
+        width: min(420px, parent.width - 2 * Theme.spacing-xl);
+        content-padding: Theme.spacing-lg;
+        spacing: Theme.spacing-md;
+        accessible-role: groupbox;
+        accessible-label: "Keep These Display Settings?";
+
+        Label {
+            text: "Keep These Display Settings?";
+            style: Theme.title;
+        }
+
+        Label {
+            text: "The previous settings come back in " + DisplaysModel.confirm-seconds + (DisplaysModel.confirm-seconds == 1 ? " second." : " seconds.");
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: Theme.spacing-sm;
+            alignment: end;
+
+            Button {
+                text: "Revert";
+                variant: flat;
+                clicked => {
+                    DisplaysModel.revert();
+                }
+            }
+
+            Button {
+                text: "Keep Changes";
+                variant: primary;
+                clicked => {
+                    DisplaysModel.keep();
                 }
             }
         }

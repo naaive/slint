@@ -66,13 +66,24 @@ impl ConfigManager {
         }
     }
 
+    /// Applies `edit` to the configuration, and saves it without losing other programs' changes to the file.
+    pub fn update(&mut self, edit: impl Fn(&mut Config)) {
+        edit(&mut self.current);
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        if let Err(err) = nimbus_config::update(&self.path, |config| edit(config)) {
+            tracing::warn!("cannot save the configuration: {err}");
+        }
+    }
+
     fn replace(&mut self, config: Config) -> Config {
         std::mem::replace(&mut self.current, config)
     }
 }
 
 impl State {
-    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, scale, and wallpaper.
+    /// Applies a new configuration: input, keybindings, workspaces, gaps, layout, wallpaper, and displays.
     pub fn apply_config(&mut self, config: Config) {
         let old = self.nimbus.config.replace(config.clone());
         if old.input != config.input {
@@ -105,19 +116,8 @@ impl State {
         if old.appearance.wallpaper != config.appearance.wallpaper {
             self.nimbus.wallpaper = Wallpaper::new(config.appearance.wallpaper.clone());
         }
-        if old.appearance.scale != config.appearance.scale
-            && config.appearance.scale.is_finite()
-            && config.appearance.scale > 0.0
-        {
-            for output in self.nimbus.outputs().cloned().collect::<Vec<_>>() {
-                output.change_current_state(
-                    None,
-                    None,
-                    Some(smithay::output::Scale::Fractional(config.appearance.scale)),
-                    None,
-                );
-            }
-            self.nimbus.outputs_changed();
+        if old.outputs != config.outputs || old.appearance.scale != config.appearance.scale {
+            self.nimbus.reconfigure_outputs(&mut self.backend);
         }
         self.nimbus.arrange();
     }

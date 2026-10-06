@@ -91,7 +91,11 @@ pub const ENTRIES: &[Entry] = &[
     entry(Page::Input, "Pointer speed", "mouse touchpad acceleration sensitivity cursor"),
     entry(Page::Shortcuts, "Keyboard shortcuts", "keybindings hotkeys keys bindings chord"),
     entry(Page::Power, "Automatic screen lock", "lock screen idle timeout security"),
-    entry(Page::Displays, "Displays", "monitors screens resolution refresh rate scale outputs"),
+    entry(
+        Page::Displays,
+        "Displays",
+        "monitors screens resolution refresh rate scale rotation arrangement outputs",
+    ),
     entry(Page::Notifications, "Do not disturb", "notifications banners popups quiet"),
     entry(
         Page::About,

@@ -6,6 +6,7 @@ pub mod headless;
 pub mod udev;
 pub mod winit;
 
+use crate::outputs::{OutputBackend, OutputError, OutputState};
 use crate::render::Capture;
 use crate::state::Nimbus;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -74,6 +75,20 @@ impl Backend {
     pub fn apply_input_config(&mut self, input: &nimbus_config::Input) {
         if let Self::Udev(b) = self {
             b.apply_input_config(input);
+        }
+    }
+}
+
+impl OutputBackend for Backend {
+    fn apply_outputs(
+        &mut self,
+        layout: &[(Output, OutputState)],
+        test: bool,
+    ) -> Result<(), OutputError> {
+        match self {
+            Self::Winit(b) => b.apply_outputs(layout, test),
+            Self::Udev(b) => b.apply_outputs(layout, test),
+            Self::Headless(b) => b.apply_outputs(layout, test),
         }
     }
 }

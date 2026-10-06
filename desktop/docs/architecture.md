@@ -17,23 +17,23 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   D-Bus work runs on a Tokio runtime in `nimbus-services` and reaches the main thread through a `calloop` channel.
 - **Degrade, don't fail.** A missing D-Bus daemon, backlight, or battery hides that feature; it never stops the session.
 - **Standards first.** Desktop entries, icon themes, `org.freedesktop.Notifications`, MPRIS, UPower, NetworkManager, logind, the portal Settings interface,
-  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, and `xdg-activation` on the Wayland side.
+  and `xdg-shell`, `xdg-decoration`, `wlr-layer-shell`, `xdg-activation`, and `wlr-output-management` on the Wayland side.
 
 ## Crates
 
 | Crate | Kind | Responsibility |
 | --- | --- | --- |
 | `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker. |
-| `nimbus-config` | lib | TOML configuration schema with defaults, atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
+| `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output. |
-| `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, keyboard shortcuts, the session lock, control socket. |
+| `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
 | `nimbus-shell-host` | bin `nimbus-shell` | The shell process: a Wayland client showing `nimbus-shell` on layer-shell and session-lock surfaces, with PAM, idle locking, and the system services. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and the shell, and runs autostart; `nimbusctl` is the command-line client. |
-| `nimbus-settings` | app | System settings, editing `nimbus-config`. |
+| `nimbus-settings` | app | System settings, editing `nimbus-config`, and display configuration through wlr-output-management. |
 | `nimbus-files` | app | File manager. |
 | `nimbus-terminal` | app | Terminal emulator on `alacritty_terminal`. |
 | `nimbus-monitor` | app | System monitor on `sysinfo`. |
@@ -76,8 +76,11 @@ Modules in `crates/nimbus-compositor/src`:
   (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, ext and wlr data control,
   output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale,
   ext-session-lock, ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
+- `outputs/`: displays; see [Displays](#displays).
+  `layout.rs` turns `[[outputs]]` into a layout and back, `management.rs` serves wlr-output-management,
+  and `edid.rs` reads the make, model, and serial number of a DRM connector's display.
 - `backend/winit.rs`: nested session in a window, for development.
-- `backend/udev.rs`: DRM/KMS, GBM, libinput, and libseat for a real session, with hotplug.
+- `backend/udev.rs`: DRM/KMS, GBM, libinput, and libseat for a real session, with hotplug and display configuration.
 - `backend/headless.rs`: no output device; renders with Pixman into memory, for tests and screenshots.
 - `wm/`: window management: workspaces, focus stack, floating placement, a tiling layout (master-stack),
   maximize/fullscreen/minimize, interactive move and resize,
@@ -104,8 +107,45 @@ When the Wayland and control sockets accept connections, the compositor sets `WA
 for its children and prints exactly one line to standard output:
 `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`.
 All logging goes to standard error.
-The headless backend creates one 1920x1080 virtual output, or the sizes listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
+The headless backend creates one 1920x1080 virtual output, `HEADLESS-1`, or one per size listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
 `Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
+
+## Displays
+
+A head is a connected display, which the backend describes as a smithay `Output` with its modes, preferred mode, and EDID identity.
+It's enabled while it's mapped in the window manager's space; only enabled heads have a `wl_output` global.
+Every change of a head's mode, position, scale, transform, or enabled state goes through `Nimbus::configure_outputs`:
+
+1. `outputs::layout::validate` checks what every backend needs: one head stays on, scales from 0.25 to 8, and supported modes.
+2. The backend's `OutputBackend::apply_outputs` sets up the devices, or with `test` only checks that it could.
+3. The compositor applies the layout to the heads, moves windows along with moved outputs, and tells clients.
+
+What each backend can do:
+
+| Backend | Applies |
+| --- | --- |
+| udev | Everything. It plans the CRTCs first, then turns heads off, changes modes, and turns heads on, and rolls back on failure. A test checks modes and free CRTCs; the kernel's own check comes with the apply. |
+| headless | Everything; the modes are the sizes from `NIMBUS_HEADLESS_OUTPUTS`. |
+| winit | Position and scale. The window's size is the mode, and the transform is fixed, because GL draws bottom-up. |
+
+The configuration's `[[outputs]]` entries store the layout, one per display.
+An entry matches a display by make, model, and serial number when both have a serial number, and by connector otherwise.
+`Nimbus::reconfigure_outputs` applies the stored layout at startup, on hotplug, after a VT switch back, and when the entries or `appearance.scale` change in the file.
+It falls back to the defaults when the backend refuses the stored layout:
+the preferred mode, `appearance.scale`, the native transform, and a place to the right of the other displays.
+When stored positions leave a display apart from the rest, as after unplugging the middle one of three,
+the displays line up from left to right in their stored order, so the pointer can reach each of them.
+
+wlr-output-management (version 4) advertises every head, enabled or not, and sends each client only what changed, followed by `done` with a new serial.
+A configuration made with an older serial is cancelled.
+Custom modes are accepted when they match a supported mode within 1 Hz, and adaptive sync can't be turned on.
+The compositor saves every applied configuration to `[[outputs]]` through `nimbus_config::update`,
+leaving out what matches a display's defaults, so `appearance.scale` keeps applying to displays at the default scale.
+
+The Displays page in Settings is a wlr-output-management client on its own thread and Wayland connection (`displays/wlr.rs`).
+It arranges displays by dragging, attaching each to the nearest edge of another, sets mode, scale, rotation, and whether each display is on,
+and reverts an applied configuration unless the user keeps it within 15 seconds.
+Without the protocol, it lists the outputs that the control socket reports, read-only.
 
 ## Shell
 
@@ -242,10 +282,11 @@ Every Nimbus UI imports it, so the shell and apps look like one product.
 
 `$XDG_CONFIG_HOME/nimbus/config.toml`; see `nimbus-config` for the schema.
 The compositor and the shell watch the file and apply changes live, so the Settings app only writes the file.
+Displays are the exception: Settings configures them through wlr-output-management, and the compositor saves `[[outputs]]`.
 The shell saves its own changes, such as the dark style toggle and dock pins, to the file named by `--config`, or the default one.
-The shell and Settings both write through `nimbus_config::update` or `update_with`,
+The shell, Settings, and the compositor all write through `nimbus_config::update` or `update_with`,
 which hold a lock on `config.toml.lock` from load to save,
-so neither loses the other's changes.
+so none loses another's changes.
 Settings and the compositor parse key chords with the same `nimbus_config::chord` grammar.
 
 ## Sessions and Logout
@@ -287,7 +328,9 @@ The release profile aborts on panic, because every process is supervised or rest
 - The shell has tests on Slint's testing backend.
   The shell and apps render reference screenshots off screen through `nimbus_theme::headless`.
 - The compositor runs headless in tests: a test client connects over Wayland, maps windows, and checks the control socket.
-  Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, and `wlr-layer-shell` with their own clients.
+  Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
+  The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
+  and check refused, outdated, and disabling configurations.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,
@@ -295,6 +338,7 @@ The release profile aborts on panic, because every process is supervised or rest
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
+- The Settings display client configures the headless compositor in a test, which builds the compositor first.
 - `nimbus-services` and `nimbus-portal` run their D-Bus tests against a private `dbus-daemon`, and skip them with a message when it's missing.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 

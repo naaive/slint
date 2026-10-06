@@ -1,32 +1,56 @@
 // SPDX-License-Identifier: MIT
 
-import { Theme, Icons, Icon, Label, Card, ListRow, Button, Spinner } from "@nimbus/theme.slint";
+import { Theme, Icons, Label, Card, Button, Spinner } from "@nimbus/theme.slint";
 import { DisplaysModel } from "../globals.slint";
-import { PageScroll, Group, RowDivider, EmptyState } from "../widgets.slint";
+import { PageScroll, Group, RowDivider, EmptyState, SwitchRow, ChoiceRow, SegmentRow } from "../widgets.slint";
 
-// The outputs side by side at their relative logical sizes.
+// The enabled displays at their relative logical sizes and positions; drag one to move it.
 component Arrangement inherits Rectangle {
     private property <length> area-height: 150px;
     private property <float> aspect: max(0.1, DisplaysModel.arrangement-aspect);
     private property <length> box-width: min(self.width - 2 * Theme.spacing-xl, root.area-height * root.aspect);
+    private property <bool> movable: DisplaysModel.editable && DisplaysModel.items.length > 1;
 
     height: root.area-height + 2 * Theme.spacing-xl;
     accessible-role: image;
     accessible-label: "Display arrangement";
 
-    Rectangle {
+    area := Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: root.box-width;
         height: root.box-width / root.aspect;
 
-        for item[index] in DisplaysModel.items: Rectangle {
-            x: item.frac-x * parent.width;
-            y: item.frac-y * parent.height;
+        for item[index] in DisplaysModel.items: display := Rectangle {
+            in-out property <length> dx;
+            in-out property <length> dy;
+            private property <bool> dragging: touch.pressed && (self.dx != 0 || self.dy != 0);
+
+            visible: item.enabled && item.frac-width > 0;
+            x: item.frac-x * parent.width + self.dx;
+            y: item.frac-y * parent.height + self.dy;
             width: item.frac-width * parent.width;
             height: item.frac-height * parent.height;
             border-radius: Theme.radius-medium;
-            background: index == 0 ? Theme.accent : Theme.control-pressed;
+            border-width: 2px;
+            border-color: Theme.background;
+            background: self.dragging ? Theme.accent : touch.has-hover && root.movable ? Theme.control-hover : Theme.control-pressed;
+
+            touch := TouchArea {
+                enabled: root.movable;
+                mouse-cursor: self.enabled ? MouseCursor.move : MouseCursor.default;
+                moved => {
+                    display.dx += self.mouse-x - self.pressed-x;
+                    display.dy += self.mouse-y - self.pressed-y;
+                }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up && (display.dx != 0 || display.dy != 0) {
+                        DisplaysModel.moved(index, display.x / area.width, display.y / area.height);
+                        display.dx = 0;
+                        display.dy = 0;
+                    }
+                }
+            }
 
             VerticalLayout {
                 alignment: center;
@@ -35,14 +59,14 @@ component Arrangement inherits Rectangle {
                 Label {
                     text: index + 1;
                     style: Theme.headline;
-                    color: index == 0 ? Theme.on-accent : Theme.text;
+                    color: display.dragging ? Theme.on-accent : Theme.text;
                     horizontal-alignment: center;
                 }
 
                 Label {
-                    text: item.name;
+                    text: item.title;
                     style: Theme.caption;
-                    color: index == 0 ? Theme.on-accent : Theme.text-secondary;
+                    color: display.dragging ? Theme.on-accent : Theme.text-secondary;
                     horizontal-alignment: center;
                     overflow: elide;
                 }
@@ -100,46 +124,97 @@ export component DisplaysPage inherits PageScroll {
         spacing: Theme.spacing-xl;
 
         for item[index] in DisplaysModel.items: Group {
-            title: (index + 1) + "  " + item.name;
+            private property <bool> editable: DisplaysModel.editable && item.enabled && !DisplaysModel.applying;
 
-            ListRow {
+            title: (index + 1) + "  " + item.title;
+            description: item.connector;
+
+            if DisplaysModel.editable && DisplaysModel.items.length > 1: SwitchRow {
+                title: "Use this display";
+                checked: item.enabled;
+                enabled: !DisplaysModel.applying;
+                toggled(checked) => {
+                    DisplaysModel.set-enabled(index, checked);
+                }
+            }
+
+            if DisplaysModel.editable && DisplaysModel.items.length > 1: RowDivider { }
+
+            ChoiceRow {
                 title: "Resolution";
-                clickable: false;
-
-                Label {
-                    text: item.resolution;
-                    color: Theme.text-secondary;
+                model: item.resolutions;
+                current-index: item.resolution-index;
+                enabled: editable;
+                chosen(choice) => {
+                    DisplaysModel.choose-resolution(index, choice);
                 }
             }
 
             RowDivider { }
 
-            ListRow {
+            ChoiceRow {
                 title: "Refresh rate";
-                clickable: false;
-
-                Label {
-                    text: item.refresh != "" ? item.refresh : "Unknown";
-                    color: Theme.text-secondary;
+                model: item.refresh-rates;
+                current-index: item.refresh-index;
+                enabled: editable;
+                chosen(choice) => {
+                    DisplaysModel.choose-refresh(index, choice);
                 }
             }
 
             RowDivider { }
 
-            ListRow {
+            SegmentRow {
                 title: "Scale";
-                clickable: false;
+                control-width: 340px;
+                model: item.scales;
+                current-index: item.scale-index;
+                enabled: editable;
+                chosen(choice) => {
+                    DisplaysModel.choose-scale(index, choice);
+                }
+            }
 
-                Label {
-                    text: item.scale;
-                    color: Theme.text-secondary;
+            RowDivider { }
+
+            SegmentRow {
+                title: "Rotation";
+                control-width: 300px;
+                model: ["None", "90°", "180°", "270°"];
+                current-index: item.rotation-index;
+                enabled: editable;
+                chosen(choice) => {
+                    DisplaysModel.choose-rotation(index, choice);
                 }
             }
         }
     }
 
+    if DisplaysModel.state == 1 && DisplaysModel.editable: HorizontalLayout {
+        alignment: end;
+        spacing: Theme.spacing-sm;
+
+        Button {
+            text: "Reset";
+            variant: flat;
+            enabled: DisplaysModel.changed && !DisplaysModel.applying;
+            clicked => {
+                DisplaysModel.reset();
+            }
+        }
+
+        Button {
+            text: "Apply";
+            variant: primary;
+            enabled: DisplaysModel.changed && !DisplaysModel.applying;
+            clicked => {
+                DisplaysModel.apply();
+            }
+        }
+    }
+
     if DisplaysModel.state == 1: Label {
-        text: "Displays are reported by the Nimbus compositor. Set the interface scale on the Appearance page.";
+        text: DisplaysModel.editable ? "Drag displays to arrange them. Nimbus remembers the settings of each display." : DisplaysModel.message != "" ? DisplaysModel.message : "Displays are reported by the Nimbus compositor.";
         style: Theme.caption;
         color: Theme.text-secondary;
         horizontal-alignment: center;

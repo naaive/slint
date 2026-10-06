@@ -15,6 +15,7 @@ use crate::ipc::IpcServer;
 use crate::keybindings::Bindings;
 use crate::lock::SessionLock;
 use crate::lock_marker::LockMarker;
+use crate::outputs::OutputManagementState;
 use crate::process::Children;
 use crate::render::Wallpaper;
 use crate::wm::layout::{self, Rect};
@@ -122,7 +123,10 @@ pub struct Nimbus {
     pub layer_focus: Option<WlSurface>,
 
     pub wm: Wm,
+    /// Every connected display; the enabled ones are also in `wm.space`.
+    pub heads: Vec<Output>,
     pub output_globals: HashMap<String, GlobalId>,
+    pub output_management: OutputManagementState,
     pub wallpaper: Wallpaper,
     pub config: ConfigManager,
     pub bindings: Bindings,
@@ -211,7 +215,9 @@ impl Nimbus {
             suppressed_keys: HashSet::new(),
             layer_focus: None,
             wm,
+            heads: Vec::new(),
             output_globals: HashMap::new(),
+            output_management: OutputManagementState::new(&dh),
             wallpaper,
             config,
             bindings,
@@ -240,78 +246,17 @@ impl Nimbus {
         self.outputs().find(|o| o.name() == name).cloned()
     }
 
-    /// Adds an output to the right of the existing ones and advertises it to clients.
-    pub fn add_output(&mut self, output: Output) {
-        let x = self
-            .outputs()
-            .filter_map(|o| self.wm.space.output_geometry(o))
-            .map(|g| g.loc.x + g.size.w)
-            .max()
-            .unwrap_or(0);
-        let scale = self.config.current().appearance.scale;
-        if scale.is_finite() && scale > 0.0 {
-            output.change_current_state(
-                None,
-                None,
-                Some(smithay::output::Scale::Fractional(scale)),
-                Some((x, 0).into()),
-            );
-        } else {
-            output.change_current_state(None, None, None, Some((x, 0).into()));
-        }
-        let global = output.create_global::<State>(&self.display_handle);
-        self.output_globals.insert(output.name(), global);
-        self.wm.space.map_output(&output, (x, 0));
-        if self.pointer_location == Point::from((0.0, 0.0))
-            && let Some(geo) = self.wm.space.output_geometry(&output)
-        {
-            self.pointer_location = layout::center(geo).into();
-        }
-        tracing::info!(name = %output.name(), "output added");
-        self.outputs_changed();
-    }
-
-    pub fn remove_output(&mut self, output: &Output) {
-        self.wm.space.unmap_output(output);
-        if let Some(global) = self.output_globals.remove(&output.name()) {
-            self.display_handle.remove_global::<State>(global);
-        }
-        {
-            let mut map = layer_map_for_output(output);
-            for layer in map.layers().cloned().collect::<Vec<_>>() {
-                layer.layer_surface().send_close();
-                map.unmap_layer(&layer);
-            }
-        }
-        self.lock.remove_output(&output.name());
-        self.pending_redraws.remove(&output.name());
-        tracing::info!(name = %output.name(), "output removed");
-        self.outputs_changed();
-    }
-
-    /// Re-arranges after an output was added, removed, or changed its mode or scale.
-    pub fn outputs_changed(&mut self) {
-        // Close gaps between outputs left by a removed one.
-        let mut x = 0;
-        let outputs: Vec<Output> = self.outputs().cloned().collect();
-        let mut moved = Vec::new();
-        for output in &outputs {
-            let Some(geo) = self.wm.space.output_geometry(output) else {
-                continue;
-            };
-            if geo.loc != Point::from((x, 0)) {
-                output.change_current_state(None, None, None, Some((x, 0).into()));
-                self.wm.space.map_output(output, (x, 0));
-                moved.push((output.name(), Point::from((x, 0)) - geo.loc));
-            }
-            x += geo.size.w;
+    /// Re-arranges after outputs were enabled, disabled, moved by `moved`, or changed their mode or scale.
+    pub fn outputs_changed(&mut self, moved: &[(String, Point<i32, Logical>)]) {
+        for output in self.outputs() {
             layer_map_for_output(output).arrange();
         }
         let areas = self.output_areas();
-        self.wm.reassign_outputs(&areas, &moved);
+        self.wm.reassign_outputs(&areas, moved);
         self.clamp_pointer();
         self.arrange();
         self.events.push(Event::OutputsChanged { outputs: self.output_infos() });
+        self.refresh_output_management();
     }
 
     pub fn output_infos(&self) -> Vec<OutputInfo> {

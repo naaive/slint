@@ -14,8 +14,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub mod chord;
+mod outputs;
 mod update;
 mod watch;
+pub use outputs::{InvalidOutputMode, OutputConfig, OutputId, OutputMode, Transform};
 pub use update::{update, update_with};
 pub use watch::{ConfigWatcher, watch};
 
@@ -32,6 +34,9 @@ pub struct Config {
     pub autostart: Vec<String>,
     /// Desktop entry ids pinned to the dock, in order, without the `.desktop` suffix.
     pub favorites: Vec<String>,
+    /// Display settings, which the compositor saves whenever a display configuration is applied.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<OutputConfig>,
 }
 
 impl Default for Config {
@@ -52,6 +57,7 @@ impl Default for Config {
             ]
             .map(String::from)
             .to_vec(),
+            outputs: Vec::new(),
         }
     }
 }

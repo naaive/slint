@@ -10,6 +10,7 @@ use image::RgbaImage;
 use nimbus_ipc::OutputInfo;
 
 use crate::about::{Probe, SystemInfo};
+use crate::displays::{DisplayControl, DisplayEvent, DisplayEvents, Head, HeadConfig, HeadMode};
 use crate::wallpapers::{self, Wallpaper};
 use crate::xkb;
 
@@ -21,6 +22,10 @@ pub trait Sources: Send + Sync + 'static {
     fn system_info(&self) -> SystemInfo;
     /// The distribution logo named by `info`, about 128 pixels tall.
     fn logo(&self, info: &SystemInfo) -> Option<RgbaImage>;
+    /// Starts reporting displays to `events`, with a way to configure them;
+    /// `None` when displays can only be listed with [`Sources::outputs`].
+    fn display_control(&self, events: DisplayEvents) -> Option<Box<dyn DisplayControl>>;
+    /// The outputs, read-only.
     fn outputs(&self) -> Result<Vec<OutputInfo>, String>;
     /// The time used for clock previews.
     fn now(&self) -> NaiveDateTime;
@@ -65,6 +70,16 @@ impl Sources for SystemSources {
     fn logo(&self, info: &SystemInfo) -> Option<RgbaImage> {
         let path = crate::about::find_logo(Path::new("/"), &info.os_logo)?;
         crate::imaging::load_fitting(&path, LOGO_SIZE, LOGO_SIZE)
+    }
+
+    fn display_control(&self, events: DisplayEvents) -> Option<Box<dyn DisplayControl>> {
+        match crate::displays::wlr::WlrControl::spawn(events) {
+            Ok(control) => Some(Box::new(control)),
+            Err(error) => {
+                tracing::error!("cannot start the display thread: {error}");
+                None
+            }
+        }
     }
 
     fn outputs(&self) -> Result<Vec<OutputInfo>, String> {
@@ -151,6 +166,12 @@ impl Sources for SampleSources {
         None
     }
 
+    fn display_control(&self, events: DisplayEvents) -> Option<Box<dyn DisplayControl>> {
+        let control = SampleDisplays { heads: std::sync::Mutex::new(sample_heads()), events };
+        control.report();
+        Some(Box::new(control))
+    }
+
     fn outputs(&self) -> Result<Vec<OutputInfo>, String> {
         Ok(vec![
             OutputInfo {
@@ -174,6 +195,73 @@ impl Sources for SampleSources {
         NaiveDate::from_ymd_opt(2026, 10, 5)
             .and_then(|d| d.and_hms_opt(9, 41, 0))
             .unwrap_or_default()
+    }
+}
+
+fn sample_heads() -> Vec<Head> {
+    let mode =
+        |width, height, refresh_mhz, preferred| HeadMode { width, height, refresh_mhz, preferred };
+    let laptop = vec![mode(2880, 1800, 120_000, true), mode(2880, 1800, 60_000, false)];
+    let monitor = vec![
+        mode(3840, 2160, 59_997, true),
+        mode(3840, 2160, 30_000, false),
+        mode(2560, 1440, 59_951, false),
+        mode(1920, 1080, 60_000, false),
+    ];
+    vec![
+        Head {
+            name: "eDP-1".into(),
+            make: "BOE".into(),
+            model: "0x0BCA".into(),
+            current_mode: Some(laptop[0]),
+            modes: laptop,
+            enabled: true,
+            position: (0, 360),
+            transform: nimbus_config::Transform::Normal,
+            scale: 2.0,
+        },
+        Head {
+            name: "DP-2".into(),
+            make: "DEL".into(),
+            model: "DELL U2720Q".into(),
+            current_mode: Some(monitor[0]),
+            modes: monitor,
+            enabled: true,
+            position: (1440, 0),
+            transform: nimbus_config::Transform::Normal,
+            scale: 1.5,
+        },
+    ]
+}
+
+/// Displays that take any configuration, reporting synchronously like a compositor would.
+struct SampleDisplays {
+    heads: std::sync::Mutex<Vec<Head>>,
+    events: DisplayEvents,
+}
+
+impl SampleDisplays {
+    fn report(&self) {
+        let heads = self.heads.lock().map(|heads| heads.clone()).unwrap_or_default();
+        (self.events)(DisplayEvent::Heads(heads));
+    }
+}
+
+impl DisplayControl for SampleDisplays {
+    fn apply(&self, configuration: Vec<HeadConfig>) {
+        if let Ok(mut heads) = self.heads.lock() {
+            for head in heads.iter_mut() {
+                if let Some(config) = configuration.iter().find(|c| c.name == head.name) {
+                    head.enabled = config.enabled;
+                    head.current_mode = config.mode;
+                    head.position = config.position;
+                    head.transform = config.transform;
+                    head.scale = config.scale;
+                }
+            }
+        }
+        self.report();
+        (self.events)(DisplayEvent::Applied(Ok(())));
     }
 }
 

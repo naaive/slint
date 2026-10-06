@@ -4,6 +4,8 @@
 //!
 //! Follows the structure of Smithay's `anvil` reference compositor, restricted to a single GPU.
 
+use crate::outputs::edid::Edid;
+use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
 use crate::render::{self, CLEAR_COLOR, Capture, OutputRenderElement, SceneOptions};
 use crate::state::{Nimbus, State};
 use anyhow::{Context, anyhow};
@@ -27,10 +29,12 @@ use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier}
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{UdevBackend as UdevMonitor, UdevEvent, all_gpus, primary_gpu};
 use smithay::desktop::utils::OutputPresentationFeedback;
-use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
-use smithay::reexports::drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc};
+use smithay::reexports::drm::control::{
+    self, Device as ControlDevice, ModeTypeFlags, connector, crtc,
+};
 use smithay::reexports::input::{self as libinput, Libinput};
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
@@ -49,10 +53,12 @@ type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 type Feedback = Option<OutputPresentationFeedback>;
 
+/// An enabled head, driven by a CRTC.
 struct Surface {
     output: Output,
     drm_output: DrmOutput<Allocator, Exporter, Feedback, DrmDeviceFd>,
     connector: connector::Handle,
+    mode: control::Mode,
     waiting_for_vblank: bool,
     /// `waiting_for_vblank` was set by an estimated-vblank timer rather than a queued page flip.
     estimated_vblank: bool,
@@ -67,12 +73,199 @@ fn frame_interval(output: &Output) -> Duration {
         .map_or(Duration::from_micros(16_667), |mhz| Duration::from_nanos(1_000_000_000_000 / mhz))
 }
 
+/// A connected connector, enabled or not.
+struct Head {
+    output: Output,
+    info: connector::Info,
+}
+
 struct Gpu {
     node: DrmNode,
     manager: DrmOutputManager<Allocator, Exporter, Feedback, DrmDeviceFd>,
     renderer: GlesRenderer,
+    heads: HashMap<connector::Handle, Head>,
     surfaces: HashMap<crtc::Handle, Surface>,
     notifier_token: RegistrationToken,
+}
+
+/// The steps that turn the current CRTC setup into a layout's.
+#[derive(Default)]
+struct Plan {
+    disable: Vec<crtc::Handle>,
+    modes: Vec<(crtc::Handle, control::Mode)>,
+    enable: Vec<(connector::Handle, crtc::Handle, control::Mode)>,
+}
+
+/// The steps of a [`Plan`] that were carried out, to roll them back.
+#[derive(Default)]
+struct Undo {
+    disabled: Vec<(connector::Handle, crtc::Handle, control::Mode)>,
+    modes: Vec<(crtc::Handle, control::Mode)>,
+    enabled: Vec<crtc::Handle>,
+}
+
+impl Gpu {
+    fn plan(&self, layout: &[(Output, OutputState)]) -> Result<Plan, OutputError> {
+        let device = self.manager.device();
+        let resources = device
+            .resource_handles()
+            .map_err(|e| OutputError::Failed(format!("cannot read DRM resources: {e}")))?;
+        let mut plan = Plan::default();
+        let mut kept = HashSet::new();
+        let mut new = Vec::new();
+        for (output, state) in layout {
+            let Some((&connector, head)) = self.heads.iter().find(|(_, h)| &h.output == output)
+            else {
+                return Err(OutputError::Invalid(format!("{} isn't connected", output.name())));
+            };
+            let current = self
+                .surfaces
+                .iter()
+                .find(|(_, s)| s.connector == connector)
+                .map(|(&c, s)| (c, s.mode));
+            if !state.enabled {
+                plan.disable.extend(current.map(|(crtc, _)| crtc));
+                continue;
+            }
+            let mode = head
+                .info
+                .modes()
+                .iter()
+                .copied()
+                .find(|&m| Mode::from(m) == state.mode)
+                .ok_or_else(|| {
+                    OutputError::Invalid(format!("{} doesn't support this mode", output.name()))
+                })?;
+            match current {
+                Some((crtc, current)) => {
+                    kept.insert(crtc);
+                    if current != mode {
+                        plan.modes.push((crtc, mode));
+                    }
+                }
+                None => new.push((connector, head, mode)),
+            }
+        }
+        for (connector, head, mode) in new {
+            let crtc = head
+                .info
+                .encoders()
+                .iter()
+                .filter_map(|&encoder| device.get_encoder(encoder).ok())
+                .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()))
+                .find(|crtc| !kept.contains(crtc))
+                .ok_or_else(|| {
+                    OutputError::Failed(format!(
+                        "no display controller is free for {}",
+                        head.output.name()
+                    ))
+                })?;
+            kept.insert(crtc);
+            plan.enable.push((connector, crtc, mode));
+        }
+        Ok(plan)
+    }
+
+    /// Carries out `plan`, disabling first to free CRTCs and bandwidth, and records each step in `undo`.
+    fn execute(&mut self, plan: &Plan, undo: &mut Undo) -> Result<(), OutputError> {
+        for crtc in &plan.disable {
+            if let Some(surface) = self.surfaces.remove(crtc) {
+                undo.disabled.push((surface.connector, *crtc, surface.mode));
+            }
+        }
+        for &(crtc, mode) in &plan.modes {
+            let surface = self
+                .surfaces
+                .get_mut(&crtc)
+                .ok_or_else(|| OutputError::Failed("the CRTC vanished".into()))?;
+            surface
+                .drm_output
+                .use_mode(
+                    mode,
+                    &mut self.renderer,
+                    &DrmOutputRenderElements::<_, OutputRenderElement<GlesRenderer>>::default(),
+                )
+                .map_err(|e| {
+                    OutputError::Failed(format!(
+                        "cannot change the mode of {}: {e}",
+                        surface.output.name()
+                    ))
+                })?;
+            undo.modes.push((crtc, surface.mode));
+            surface.mode = mode;
+        }
+        for &(connector, crtc, mode) in &plan.enable {
+            self.enable(connector, crtc, mode)?;
+            undo.enabled.push(crtc);
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self, undo: Undo) {
+        for crtc in undo.enabled {
+            self.surfaces.remove(&crtc);
+        }
+        for (crtc, mode) in undo.modes {
+            if let Some(surface) = self.surfaces.get_mut(&crtc) {
+                let restored = surface.drm_output.use_mode(
+                    mode,
+                    &mut self.renderer,
+                    &DrmOutputRenderElements::<_, OutputRenderElement<GlesRenderer>>::default(),
+                );
+                match restored {
+                    Ok(()) => surface.mode = mode,
+                    Err(err) => {
+                        tracing::error!(output = %surface.output.name(), "cannot restore the mode: {err}")
+                    }
+                }
+            }
+        }
+        for (connector, crtc, mode) in undo.disabled {
+            if let Err(err) = self.enable(connector, crtc, mode) {
+                tracing::error!("cannot turn a display back on: {err}");
+            }
+        }
+    }
+
+    fn enable(
+        &mut self,
+        connector: connector::Handle,
+        crtc: crtc::Handle,
+        mode: control::Mode,
+    ) -> Result<(), OutputError> {
+        let output = self
+            .heads
+            .get(&connector)
+            .map(|head| head.output.clone())
+            .ok_or_else(|| OutputError::Failed("the display was disconnected".into()))?;
+        // The head isn't advertised while it's disabled, so this reaches no client;
+        // it gives the first frame, rendered right away, the right size.
+        output.change_current_state(Some(Mode::from(mode)), None, None, None);
+        let drm_output = self
+            .manager
+            .initialize_output::<_, OutputRenderElement<GlesRenderer>>(
+                crtc,
+                mode,
+                &[connector],
+                &output,
+                None,
+                &mut self.renderer,
+                &DrmOutputRenderElements::default(),
+            )
+            .map_err(|e| OutputError::Failed(format!("cannot drive {}: {e}", output.name())))?;
+        self.surfaces.insert(
+            crtc,
+            Surface {
+                output,
+                drm_output,
+                connector,
+                mode,
+                waiting_for_vblank: false,
+                estimated_vblank: false,
+            },
+        );
+        Ok(())
+    }
 }
 
 pub struct UdevBackend {
@@ -234,7 +427,14 @@ impl UdevBackend {
             }
         }
 
-        self.gpu = Some(Gpu { node, manager, renderer, surfaces: HashMap::new(), notifier_token });
+        self.gpu = Some(Gpu {
+            node,
+            manager,
+            renderer,
+            heads: HashMap::new(),
+            surfaces: HashMap::new(),
+            notifier_token,
+        });
         self.scan_connectors(nimbus);
         Ok(())
     }
@@ -247,8 +447,8 @@ impl UdevBackend {
             return;
         }
         if let Some(gpu) = self.gpu.take() {
-            for surface in gpu.surfaces.values() {
-                nimbus.remove_output(&surface.output);
+            for head in gpu.heads.values() {
+                nimbus.disconnect_head(&head.output);
             }
             self.handle.remove(gpu.notifier_token);
             if let Some(global) = nimbus.dmabuf_global.take() {
@@ -258,7 +458,8 @@ impl UdevBackend {
         tracing::warn!("the primary GPU was removed");
     }
 
-    /// Creates outputs for newly connected connectors and removes those of disconnected ones.
+    /// Connects heads for newly connected connectors, disconnects those of unplugged ones,
+    /// and applies the configured layout when that changed anything.
     fn scan_connectors(&mut self, nimbus: &mut Nimbus) {
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -275,95 +476,33 @@ impl UdevBackend {
             .connectors()
             .iter()
             .filter_map(|&handle| device.get_connector(handle, true).ok())
-            .filter(|info| info.state() == connector::State::Connected)
+            .filter(|info| info.state() == connector::State::Connected && !info.modes().is_empty())
             .collect();
 
-        let gone: Vec<crtc::Handle> = gpu
-            .surfaces
-            .iter()
-            .filter(|(_, s)| !connected.iter().any(|c| c.handle() == s.connector))
-            .map(|(crtc, _)| *crtc)
+        let gone: Vec<connector::Handle> = gpu
+            .heads
+            .keys()
+            .filter(|&&handle| !connected.iter().any(|c| c.handle() == handle))
+            .copied()
             .collect();
-        for crtc in gone {
-            if let Some(surface) = gpu.surfaces.remove(&crtc) {
-                nimbus.remove_output(&surface.output);
+        let mut changed = !gone.is_empty();
+        for handle in gone {
+            gpu.surfaces.retain(|_, surface| surface.connector != handle);
+            if let Some(head) = gpu.heads.remove(&handle) {
+                nimbus.disconnect_head(&head.output);
             }
         }
-
-        let mut used: HashSet<crtc::Handle> = gpu.surfaces.keys().copied().collect();
         for info in connected {
-            if gpu.surfaces.values().any(|s| s.connector == info.handle()) {
+            if gpu.heads.contains_key(&info.handle()) {
                 continue;
             }
-            let device = gpu.manager.device();
-            let crtc = info.encoders().iter().filter_map(|&e| device.get_encoder(e).ok()).find_map(
-                |encoder| {
-                    resources
-                        .filter_crtcs(encoder.possible_crtcs())
-                        .into_iter()
-                        .find(|c| !used.contains(c))
-                },
-            );
-            let Some(crtc) = crtc else {
-                tracing::warn!(connector = ?info.handle(), "no free CRTC for connector");
-                continue;
-            };
-            let Some(&drm_mode) = info
-                .modes()
-                .iter()
-                .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-                .or_else(|| info.modes().first())
-            else {
-                continue;
-            };
-            let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let (w_mm, h_mm) = info.size().unwrap_or((0, 0));
-            let output = Output::new(
-                name.clone(),
-                PhysicalProperties {
-                    size: (i32::try_from(w_mm).unwrap_or(0), i32::try_from(h_mm).unwrap_or(0))
-                        .into(),
-                    subpixel: Subpixel::Unknown,
-                    make: "Unknown".into(),
-                    model: name.clone(),
-                },
-            );
-            for &mode in info.modes() {
-                output.add_mode(Mode::from(mode));
-            }
-            let mode = Mode::from(drm_mode);
-            output.set_preferred(mode);
-            output.change_current_state(Some(mode), Some(Transform::Normal), None, None);
-
-            let drm_output =
-                match gpu.manager.initialize_output::<_, OutputRenderElement<GlesRenderer>>(
-                    crtc,
-                    drm_mode,
-                    &[info.handle()],
-                    &output,
-                    None,
-                    &mut gpu.renderer,
-                    &DrmOutputRenderElements::default(),
-                ) {
-                    Ok(drm_output) => drm_output,
-                    Err(err) => {
-                        tracing::warn!(output = %name, "cannot drive output: {err}");
-                        continue;
-                    }
-                };
-            used.insert(crtc);
-            nimbus.add_output(output.clone());
-            nimbus.queue_redraw(&output);
-            gpu.surfaces.insert(
-                crtc,
-                Surface {
-                    output,
-                    drm_output,
-                    connector: info.handle(),
-                    waiting_for_vblank: false,
-                    estimated_vblank: false,
-                },
-            );
+            let output = describe(gpu.manager.device(), &info);
+            nimbus.connect_head(output.clone());
+            gpu.heads.insert(info.handle(), Head { output, info });
+            changed = true;
+        }
+        if changed {
+            nimbus.reconfigure_outputs(self);
         }
     }
 
@@ -495,6 +634,8 @@ impl UdevBackend {
         }
         self.active = true;
         self.scan_connectors(nimbus);
+        // The configuration may have changed while the session was in the background.
+        nimbus.reconfigure_outputs(self);
         nimbus.queue_redraw_all();
     }
 
@@ -527,7 +668,7 @@ impl UdevBackend {
         );
         render::render_to_memory::<_, GlesTexture>(
             &mut gpu.renderer,
-            mode.size,
+            output.current_transform().transform_size(mode.size),
             output.current_scale().fractional_scale(),
             &elements,
         )
@@ -545,6 +686,78 @@ impl UdevBackend {
         configure_device(&mut device, &self.input_config);
         self.input_devices.push(device);
     }
+}
+
+/// Applies a plan, or checks that the displays exist, take their modes, and have CRTCs with `test`.
+/// The kernel has the last word only when a plan is carried out, which rolls back what it did on failure.
+impl OutputBackend for UdevBackend {
+    fn apply_outputs(
+        &mut self,
+        layout: &[(Output, OutputState)],
+        test: bool,
+    ) -> Result<(), OutputError> {
+        let gpu = self.gpu.as_mut().ok_or_else(|| OutputError::Failed("there's no GPU".into()))?;
+        let plan = gpu.plan(layout)?;
+        if test {
+            return Ok(());
+        }
+        if !self.active {
+            return Err(OutputError::Failed("the session is in the background".into()));
+        }
+        let mut undo = Undo::default();
+        if let Err(err) = gpu.execute(&plan, &mut undo) {
+            gpu.rollback(undo);
+            return Err(err);
+        }
+        if !plan.disable.is_empty()
+            && let Err(err) =
+                gpu.manager.try_to_restore_modifiers::<_, OutputRenderElement<GlesRenderer>>(
+                    &mut gpu.renderer,
+                    &DrmOutputRenderElements::default(),
+                )
+        {
+            tracing::debug!("cannot restore explicit modifiers: {err}");
+        }
+        Ok(())
+    }
+}
+
+/// A head for `info`, named and described from its EDID where there is one.
+fn describe(device: &DrmDevice, info: &connector::Info) -> Output {
+    let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+    let edid = read_edid(device, info.handle());
+    let (make, model, serial) = match edid {
+        Some(edid) => (edid.make, edid.model, edid.serial),
+        None => ("Unknown".into(), name.clone(), String::new()),
+    };
+    let modes: Vec<Mode> = info.modes().iter().copied().map(Mode::from).collect();
+    let preferred = info
+        .modes()
+        .iter()
+        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .map_or(modes[0], |&m| Mode::from(m));
+    let (w_mm, h_mm) = info.size().unwrap_or((0, 0));
+    HeadDescription {
+        name,
+        make,
+        model,
+        serial,
+        physical_size: (i32::try_from(w_mm).unwrap_or(0), i32::try_from(h_mm).unwrap_or(0)),
+        modes,
+        preferred,
+        native_transform: Transform::Normal,
+    }
+    .into_output()
+}
+
+fn read_edid(device: &DrmDevice, connector: connector::Handle) -> Option<Edid> {
+    let properties = device.get_properties(connector).ok()?;
+    let (handles, values) = properties.as_props_and_values();
+    let blob = handles.iter().zip(values).find_map(|(&handle, &value)| {
+        let info = device.get_property(handle).ok()?;
+        (info.name().to_str() == Ok("EDID")).then_some(value)
+    })?;
+    Edid::parse(&device.get_property_blob(blob).ok()?)
 }
 
 /// `dev_t`, which is 64 bits on every Linux target.

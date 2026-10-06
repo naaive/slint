@@ -3,6 +3,7 @@
 //! Renders virtual outputs into memory with Pixman at a fixed frame clock, for tests and screenshots.
 
 use super::DEFAULT_REFRESH_MHZ;
+use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
 use crate::render::{self, CLEAR_COLOR, Capture, SceneOptions};
 use crate::state::Nimbus;
 use anyhow::{Context, anyhow};
@@ -10,7 +11,7 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::backend::renderer::{Bind, Offscreen};
-use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::output::{Mode, Output};
 use smithay::reexports::pixman::Image;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::utils::{Monotonic, Size, Transform};
@@ -72,7 +73,8 @@ impl ScreenshotRequest {
 
 struct HeadlessOutput {
     output: Output,
-    buffer: Image<'static, 'static>,
+    /// Allocated at the output's mode size while it's enabled.
+    buffer: Option<Image<'static, 'static>>,
     damage_tracker: OutputDamageTracker,
     frames: u64,
 }
@@ -87,38 +89,39 @@ pub struct HeadlessBackend {
 }
 
 impl HeadlessBackend {
+    /// Connects a head per entry of `sizes`; [`Nimbus::reconfigure_outputs`] enables them.
     pub fn new(
         nimbus: &mut Nimbus,
         sizes: &[(i32, i32)],
         screenshot: Option<ScreenshotRequest>,
     ) -> anyhow::Result<Self> {
-        let mut renderer =
+        let renderer =
             PixmanRenderer::new().map_err(|e| anyhow!("cannot create the Pixman renderer: {e}"))?;
-        let mut outputs = Vec::with_capacity(sizes.len());
-        for (index, &(w, h)) in sizes.iter().enumerate() {
-            let output = Output::new(
-                format!("HEADLESS-{}", index + 1),
-                PhysicalProperties {
-                    size: (0, 0).into(),
-                    subpixel: Subpixel::Unknown,
+        let outputs = sizes
+            .iter()
+            .enumerate()
+            .map(|(index, &(w, h))| {
+                let mode = Mode { size: (w, h).into(), refresh: DEFAULT_REFRESH_MHZ };
+                let output = HeadDescription {
+                    name: format!("HEADLESS-{}", index + 1),
                     make: "Nimbus".into(),
                     model: "Headless".into(),
-                },
-            );
-            let mode = Mode { size: (w, h).into(), refresh: DEFAULT_REFRESH_MHZ };
-            output.change_current_state(Some(mode), Some(Transform::Normal), None, None);
-            output.set_preferred(mode);
-            nimbus.add_output(output.clone());
-            let buffer: Image<'static, 'static> = renderer
-                .create_buffer(Fourcc::Abgr8888, Size::from((w, h)))
-                .map_err(|e| anyhow!("cannot allocate a {w}x{h} buffer: {e}"))?;
-            outputs.push(HeadlessOutput {
-                damage_tracker: OutputDamageTracker::from_output(&output),
-                output,
-                buffer,
-                frames: 0,
-            });
-        }
+                    serial: String::new(),
+                    physical_size: (0, 0),
+                    modes: vec![mode],
+                    preferred: mode,
+                    native_transform: Transform::Normal,
+                }
+                .into_output();
+                nimbus.connect_head(output.clone());
+                HeadlessOutput {
+                    damage_tracker: OutputDamageTracker::from_output(&output),
+                    output,
+                    buffer: None,
+                    frames: 0,
+                }
+            })
+            .collect();
         let frame_interval =
             Duration::from_micros(1_000_000_000 / u64::from(DEFAULT_REFRESH_MHZ.unsigned_abs()));
         if let Some(request) = &screenshot {
@@ -159,7 +162,7 @@ impl HeadlessBackend {
         }
         if let Some(request) = self.screenshot.clone().filter(|r| self.ticks >= r.after_frames) {
             self.screenshot = None;
-            for output in self.outputs.iter().map(|o| o.output.clone()).collect::<Vec<_>>() {
+            for output in nimbus.outputs().cloned().collect::<Vec<_>>() {
                 let path = request.dir.join(format!("{}.png", output.name()));
                 match self.capture(nimbus, &output).and_then(|capture| capture.save_png(&path)) {
                     Ok(()) => tracing::info!(path = %path.display(), "wrote headless screenshot"),
@@ -184,7 +187,8 @@ impl HeadlessBackend {
             SceneOptions { cursor: false },
         );
         let age = if out.frames == 0 { 0 } else { 1 };
-        let mut framebuffer = self.renderer.bind(&mut out.buffer).map_err(|e| anyhow!("{e}"))?;
+        let buffer = out.buffer.as_mut().context("the output has no buffer")?;
+        let mut framebuffer = self.renderer.bind(buffer).map_err(|e| anyhow!("{e}"))?;
         let result = out
             .damage_tracker
             .render_output(&mut self.renderer, &mut framebuffer, age, &elements, CLEAR_COLOR)
@@ -212,10 +216,44 @@ impl HeadlessBackend {
         );
         render::render_to_memory::<_, Image<'static, 'static>>(
             &mut self.renderer,
-            mode.size,
+            output.current_transform().transform_size(mode.size),
             output.current_scale().fractional_scale(),
             &elements,
         )
+    }
+}
+
+/// Virtual outputs take any of their modes and transforms, and can be turned off.
+impl OutputBackend for HeadlessBackend {
+    fn apply_outputs(
+        &mut self,
+        layout: &[(Output, OutputState)],
+        test: bool,
+    ) -> Result<(), OutputError> {
+        let mut buffers = Vec::new();
+        for (index, out) in self.outputs.iter().enumerate() {
+            let Some((_, state)) = layout.iter().find(|(o, s)| o == &out.output && s.enabled)
+            else {
+                continue;
+            };
+            let (w, h) = (state.mode.size.w, state.mode.size.h);
+            let fits = out
+                .buffer
+                .as_ref()
+                .is_some_and(|b| (b.width(), b.height()) == (w as usize, h as usize));
+            if !fits && !test {
+                let buffer: Image<'static, 'static> =
+                    self.renderer.create_buffer(Fourcc::Abgr8888, Size::from((w, h))).map_err(
+                        |e| OutputError::Failed(format!("cannot allocate a {w}x{h} buffer: {e}")),
+                    )?;
+                buffers.push((index, buffer));
+            }
+        }
+        for (index, buffer) in buffers {
+            self.outputs[index].buffer = Some(buffer);
+            self.outputs[index].frames = 0;
+        }
+        Ok(())
     }
 }
 

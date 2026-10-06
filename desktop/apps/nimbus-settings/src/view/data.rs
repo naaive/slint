@@ -10,11 +10,9 @@ use nimbus_config::Appearance;
 use nimbus_theme::ThemeSettings;
 use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
 
-use super::{Inner, Message, PickerKind, With, deliver, post};
+use super::{Inner, Message, PickerKind, deliver, post};
 use crate::about::SystemInfo;
-use crate::{
-    AboutModel, AppWindow, DisplayItem, DisplaysModel, InfoRow, Prefs, WallpaperItem, displays,
-};
+use crate::{AboutModel, InfoRow, Prefs, WallpaperItem};
 
 fn pixels(image: RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
     SharedPixelBuffer::clone_from_slice(image.as_raw(), image.width(), image.height())
@@ -41,36 +39,6 @@ pub(super) fn start_theme_worker() -> Option<mpsc::Sender<Appearance>> {
             None
         }
     }
-}
-
-pub(super) fn wire(ui: &AppWindow, with: &With) {
-    let h = with.clone();
-    ui.global::<DisplaysModel>().on_refresh(move || h(&|i| i.load_displays()));
-}
-
-/// The arrangement preview's rectangles: outputs side by side, vertically centered, with small gaps.
-pub(crate) fn arrange(rows: &[displays::DisplayRow]) -> (Vec<(f32, f32, f32, f32)>, f32) {
-    let tallest = rows.iter().map(|r| r.logical_height).fold(0.0_f32, f32::max);
-    if rows.is_empty() || tallest <= 0.0 {
-        return (vec![(0.0, 0.0, 0.0, 0.0); rows.len()], 1.0);
-    }
-    let gap = tallest * 0.04;
-    let total = rows.iter().map(|r| r.logical_width).sum::<f32>() + gap * (rows.len() - 1) as f32;
-    let mut x = 0.0;
-    let rects = rows
-        .iter()
-        .map(|r| {
-            let rect = (
-                x / total,
-                (tallest - r.logical_height) / 2.0 / tallest,
-                r.logical_width / total,
-                r.logical_height / tallest,
-            );
-            x += r.logical_width + gap;
-            rect
-        })
-        .collect();
-    (rects, total / tallest)
 }
 
 impl Inner {
@@ -116,24 +84,7 @@ impl Inner {
             },
             deliver,
         );
-        self.load_displays();
-    }
-
-    pub fn load_displays(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            if state.displays_loading {
-                return;
-            }
-            state.displays_loading = true;
-        }
-        self.with_ui(|ui| ui.global::<DisplaysModel>().set_state(0));
-        let sources = self.sources.clone();
-        self.dispatch.run(
-            "nimbus-settings-displays",
-            move || sources.outputs(),
-            |o| deliver(Message::Outputs(o)),
-        );
+        self.start_displays();
     }
 
     pub(super) fn handle_data(&self, message: Message) {
@@ -172,10 +123,8 @@ impl Inner {
                 }
             }
             Message::About(info, logo) => self.show_about(&info, logo),
-            Message::Outputs(result) => {
-                self.state.borrow_mut().displays_loading = false;
-                self.show_outputs(result);
-            }
+            Message::Outputs(result) => self.handle_outputs(result),
+            Message::Display(event) => self.handle_display(event),
             other @ (Message::ExternalConfig(_) | Message::Saved(_) | Message::Theme(_)) => {
                 self.handle(other)
             }
@@ -213,82 +162,5 @@ impl Inner {
                 ("Kernel", &info.kernel),
             ]));
         });
-    }
-
-    fn show_outputs(&self, result: Result<Vec<nimbus_ipc::OutputInfo>, String>) {
-        self.with_ui(|ui| {
-            let model = ui.global::<DisplaysModel>();
-            match result {
-                Ok(outputs) if !outputs.is_empty() => {
-                    let rows = displays::rows(&outputs);
-                    let (rects, aspect) = arrange(&rows);
-                    let items: Vec<DisplayItem> = rows
-                        .iter()
-                        .zip(rects)
-                        .map(|(r, (x, y, w, h))| DisplayItem {
-                            name: r.name.as_str().into(),
-                            resolution: r.resolution.as_str().into(),
-                            refresh: r.refresh.as_str().into(),
-                            scale: r.scale.as_str().into(),
-                            frac_x: x,
-                            frac_y: y,
-                            frac_width: w,
-                            frac_height: h,
-                        })
-                        .collect();
-                    model.set_items(ModelRc::new(VecModel::from(items)));
-                    model.set_arrangement_aspect(aspect);
-                    model.set_state(1);
-                }
-                Ok(_) => {
-                    model.set_message("The compositor reports no connected displays.".into());
-                    model.set_state(2);
-                }
-                Err(error) => {
-                    let mut message = error;
-                    if let Some(first) = message.get(..1) {
-                        message = first.to_uppercase() + &message[1..];
-                    }
-                    model.set_message(
-                        format!(
-                            "{message}. Open Settings from a Nimbus session to see your displays."
-                        )
-                        .into(),
-                    );
-                    model.set_state(2);
-                }
-            }
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::displays::DisplayRow;
-
-    fn row(w: f32, h: f32) -> DisplayRow {
-        DisplayRow {
-            name: String::new(),
-            resolution: String::new(),
-            refresh: String::new(),
-            scale: String::new(),
-            logical_width: w,
-            logical_height: h,
-        }
-    }
-
-    #[test]
-    fn arrangement_is_normalized() {
-        let (rects, aspect) = arrange(&[row(1440.0, 900.0), row(2560.0, 1440.0)]);
-        let gap = 1440.0 * 0.04;
-        let total = 1440.0 + 2560.0 + gap;
-        assert!((aspect - total / 1440.0).abs() < 1e-4);
-        assert_eq!(rects[0].0, 0.0);
-        assert!((rects[0].1 - 270.0 / 1440.0).abs() < 1e-5, "smaller output is centered");
-        assert!((rects[1].0 + rects[1].2 - 1.0).abs() < 1e-5, "last output ends at the right edge");
-        assert_eq!(rects[1].3, 1.0);
-        assert_eq!(arrange(&[]).1, 1.0);
-        assert_eq!(arrange(&[row(0.0, 0.0)]).0, [(0.0, 0.0, 0.0, 0.0)]);
     }
 }

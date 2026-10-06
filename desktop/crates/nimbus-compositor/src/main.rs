@@ -11,6 +11,7 @@ mod ipc;
 mod keybindings;
 mod lock;
 mod lock_marker;
+mod outputs;
 mod process;
 mod render;
 mod state;
@@ -199,6 +200,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         }
     };
     let mut state = State { backend, nimbus };
+    state.nimbus.reconfigure_outputs(&mut state.backend);
     start_housekeeping(&mut state)?;
 
     state.nimbus.sync_lock_marker();

@@ -3068,6 +3068,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "xkbcommon",
 ]
 

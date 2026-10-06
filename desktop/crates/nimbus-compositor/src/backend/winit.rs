@@ -3,6 +3,7 @@
 //! A nested session in a window of the host's Wayland or X11 session, for development.
 
 use super::DEFAULT_REFRESH_MHZ;
+use crate::outputs::{HeadDescription, OutputBackend, OutputError, OutputState};
 use crate::render::{self, CLEAR_COLOR, Capture, SceneOptions};
 use crate::state::{Nimbus, State};
 use anyhow::{Context, anyhow};
@@ -12,7 +13,7 @@ use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{ImportDma, ImportEgl};
 use smithay::backend::winit::{self, WinitEvent, WinitEventLoop, WinitGraphicsBackend};
-use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
 use smithay::utils::{Monotonic, Physical, Size, Transform};
@@ -75,19 +76,19 @@ impl WinitBackend {
 
         let size = graphics.window_size();
         let mode = Mode { size, refresh: DEFAULT_REFRESH_MHZ };
-        let output = Output::new(
-            OUTPUT_NAME.into(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Nimbus".into(),
-                model: "Winit".into(),
-            },
-        );
-        // GL framebuffers are bottom-up.
-        output.change_current_state(Some(mode), Some(Transform::Flipped180), None, None);
-        output.set_preferred(mode);
-        nimbus.add_output(output.clone());
+        let output = HeadDescription {
+            name: OUTPUT_NAME.into(),
+            make: "Nimbus".into(),
+            model: "Winit".into(),
+            serial: String::new(),
+            physical_size: (0, 0),
+            modes: vec![mode],
+            preferred: mode,
+            // GL framebuffers are bottom-up.
+            native_transform: Transform::Flipped180,
+        }
+        .into_output();
+        nimbus.connect_head(output.clone());
 
         handle
             .insert_source(events, |event, _, state| state.handle_winit_event(event))
@@ -109,12 +110,15 @@ impl WinitBackend {
         nimbus.pending_redraws.contains(OUTPUT_NAME).then_some(self.next_frame)
     }
 
+    /// Makes the window's new size the output's only mode.
     fn resized(&mut self, size: Size<i32, Physical>, nimbus: &mut Nimbus) {
         let mode = Mode { size, refresh: DEFAULT_REFRESH_MHZ };
+        for old in self.output.modes() {
+            self.output.delete_mode(old);
+        }
         self.output.change_current_state(Some(mode), None, None, None);
         self.output.set_preferred(mode);
-        nimbus.outputs_changed();
-        nimbus.queue_redraw_all();
+        nimbus.outputs_changed(&[]);
     }
 
     pub fn render(&mut self, nimbus: &mut Nimbus) {
@@ -166,10 +170,32 @@ impl WinitBackend {
             render::output_elements(renderer, nimbus, output, SceneOptions { cursor: false });
         render::render_to_memory::<_, GlesTexture>(
             renderer,
-            mode.size,
+            output.current_transform().transform_size(mode.size),
             output.current_scale().fractional_scale(),
             &elements,
         )
+    }
+}
+
+/// The window's size sets the mode and the transform keeps GL's picture upright, so only position and scale change.
+impl OutputBackend for WinitBackend {
+    fn apply_outputs(
+        &mut self,
+        layout: &[(Output, OutputState)],
+        _test: bool,
+    ) -> Result<(), OutputError> {
+        for (output, state) in layout {
+            if !state.enabled {
+                return Err(OutputError::Unsupported("turn off the nested window"));
+            }
+            if output.current_mode() != Some(state.mode) {
+                return Err(OutputError::Unsupported("change the mode of the nested window"));
+            }
+            if output.current_transform() != state.transform {
+                return Err(OutputError::Unsupported("rotate the nested window"));
+            }
+        }
+        Ok(())
     }
 }
 

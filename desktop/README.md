@@ -17,7 +17,9 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
   interactive move and resize, and focus by direction.
 - Protocols: xdg-shell, xdg-decoration, wlr-layer-shell, xdg-activation, linux-dmabuf, presentation-time, viewporter,
   fractional-scale, single-pixel-buffer, cursor-shape, idle-notify, idle-inhibit, ext-session-lock, keyboard-shortcuts-inhibit,
-  ext-foreign-toplevel-list, primary selection, and ext/wlr data control for clipboard tools.
+  ext-foreign-toplevel-list, wlr-output-management, primary selection, and ext/wlr data control for clipboard tools.
+- Display configuration through wlr-output-management, from Settings or tools such as `wlr-randr` and `kanshi`,
+  remembered per display and applied again at startup and on hotplug.
 - Keyboard shortcuts from the configuration, with live reload.
 - A control socket that speaks JSON lines, used by the shell, `nimbusctl`, the Settings app, and scripts.
 - No UI of its own: the shell is a separate client, so a crashed shell doesn't take windows down.
@@ -49,7 +51,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 
 ### Apps
 
-- **Settings** (`nimbus-settings`): appearance, panel and dock, workspaces, keyboard and mouse, shortcuts, power, displays, notifications, and about.
+- **Settings** (`nimbus-settings`): appearance, panel and dock, workspaces, keyboard and mouse, shortcuts, power, notifications, about,
+  and displays, which you arrange by dragging and set up with resolution, refresh rate, scale, and rotation.
 - **Files** (`nimbus-files`): grid and list views, search, a freedesktop trash, thumbnails, and copy and move with conflict handling and undo.
 - **Terminal** (`nimbus-terminal`): tabs, color schemes, search, true color, and box drawing, on `alacritty_terminal`.
 - **System Monitor** (`nimbus-monitor`): processes with sorting, tree view, and signals; CPU, memory, network, and disk graphs; and file systems.
@@ -160,6 +163,7 @@ Run `nimbusctl --help` for every command.
 
 Nimbus reads `$XDG_CONFIG_HOME/nimbus/config.toml` and applies changes as soon as the file is saved.
 The Settings app edits the same file.
+The compositor saves display settings under `[[outputs]]` whenever a display configuration is applied.
 [data/config.toml](data/config.toml) lists every option with its default and a comment.
 
 Default shortcuts:
@@ -220,8 +224,11 @@ The headless backend and the shell run end to end in tests, but the udev and win
   because the headless compositor can't inject input.
 - There's no XWayland, so X11-only apps don't run.
 - Nimbus draws no server-side decorations; apps draw their own title bars, which don't follow the Nimbus theme.
-- Outputs are placed left to right at one global scale, and there's no output-management protocol;
-  the Displays page in Settings only lists outputs.
+- Display configuration has only run headless.
+  On udev, a test checks modes and free CRTCs but not the kernel's bandwidth limits; an apply that hits them rolls back.
+- Display settings are stored per display, not as profiles for each set of connected displays.
+  Custom modes, adaptive sync, and output power management aren't supported.
+- Any client may configure displays through wlr-output-management, as in other wlroots-style compositors.
 - Touch, tablet, and pointer-constraint protocols aren't implemented.
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.

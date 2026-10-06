@@ -5,7 +5,7 @@ import { Theme, Icons, IconButton, HeaderBar } from "@nimbus/theme.slint";
 import { Nav, Prefs, Picker, ShortcutsModel, DisplaysModel, AboutModel } from "globals.slint";
 import { Banner } from "widgets.slint";
 import { Sidebar, PageList } from "sidebar.slint";
-import { PickerDialog, CaptureDialog } from "dialogs.slint";
+import { PickerDialog, CaptureDialog, KeepDisplaysDialog } from "dialogs.slint";
 import { AppearancePage } from "pages/appearance.slint";
 import { PanelPage } from "pages/panel.slint";
 import { WorkspacesPage } from "pages/workspaces.slint";
@@ -87,7 +87,7 @@ export component AppWindow inherits Window {
                     title: PageList.pages[Nav.page].title;
                     background: Theme.background;
 
-                    if Nav.page == 6: IconButton {
+                    if Nav.page == 6 && !DisplaysModel.editable: IconButton {
                         icon: Icons.refresh;
                         accessible-label: "Refresh displays";
                         clicked => {
@@ -128,5 +128,7 @@ export component AppWindow inherits Window {
         if Picker.open: PickerDialog { }
 
         if ShortcutsModel.capture-open: CaptureDialog { }
+
+        if DisplaysModel.confirm-seconds > 0: KeepDisplaysDialog { }
     }
 }

@@ -3,6 +3,7 @@
 //! The UI: binds the Slint `AppWindow` to the [`ConfigStore`] and the data [`Sources`].
 
 mod data;
+mod displays;
 mod picker;
 mod shortcuts;
 mod sync;
@@ -74,6 +75,7 @@ pub(crate) enum Message {
     Thumbnail(String, SharedPixelBuffer<Rgba8Pixel>),
     About(Box<crate::about::SystemInfo>, Option<SharedPixelBuffer<Rgba8Pixel>>),
     Outputs(Result<Vec<nimbus_ipc::OutputInfo>, String>),
+    Display(crate::displays::DisplayEvent),
 }
 
 thread_local! {
@@ -81,13 +83,18 @@ thread_local! {
     static APP: RefCell<Weak<Inner>> = const { RefCell::new(Weak::new()) };
 }
 
-/// Delivers `message` to the app; must run on the UI thread.
-pub(crate) fn deliver(message: Message) {
+/// Runs `f` with the app; must run on the UI thread.
+pub(crate) fn with_app(f: impl FnOnce(&Inner)) {
     let app = APP.with(|app| app.borrow().upgrade());
     match app {
-        Some(app) => app.handle(message),
-        None => tracing::debug!("dropping a background result: the app is gone"),
+        Some(app) => f(&app),
+        None => tracing::debug!("dropping a callback: the app is gone"),
     }
+}
+
+/// Delivers `message` to the app; must run on the UI thread.
+pub(crate) fn deliver(message: Message) {
+    with_app(|app| app.handle(message));
 }
 
 /// Delivers `message` from any thread.
@@ -108,7 +115,7 @@ pub(crate) struct State {
     pub lock_values: Vec<u32>,
     /// The user chose "Custom" for the clock, so the custom field stays visible even for a preset format.
     pub custom_clock: bool,
-    pub displays_loading: bool,
+    pub displays: displays::Displays,
     pub applied_appearance: Option<Appearance>,
     /// Plain copies of the last pushed list models, to skip pushes that change nothing.
     pub pushed_sources: Vec<(String, String, bool)>,
@@ -355,7 +362,7 @@ fn wire(ui: &AppWindow, inner: &Rc<Inner>) {
 
     picker::wire(ui, &with);
     shortcuts::wire(ui, &with);
-    data::wire(ui, &with);
+    displays::wire(ui, &with);
 }
 
 /// A UI index as `usize`; negative indices, which name nothing, become `usize::MAX`.
