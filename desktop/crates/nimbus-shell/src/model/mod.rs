@@ -5,6 +5,7 @@
 //! State lives in one `RefCell`. Handlers finish with it before emitting a [`ShellAction`],
 //! because the host may call back into the shell from its action handler.
 
+mod auth;
 mod lock;
 mod notifications;
 
@@ -34,9 +35,9 @@ use crate::system_scheme::SYSTEM;
 use crate::view::View;
 use crate::windows::{DockEntry, Windows, dock_entries, readable_app_id};
 use crate::{
-    AppVisual, CalendarDay, Desktop, DockItem, DockWindow, LockWindow, NotificationAction,
-    NotificationItem, Osd, OsdKind, OsdWindow, OverlayWindow, PanelSettings, PanelWindow,
-    PopupWindow, ShellAction, SystemStatus, Theme, ToastWindow,
+    AppVisual, AuthState, AuthWindow, CalendarDay, Desktop, DockItem, DockWindow, LockWindow,
+    NotificationAction, NotificationItem, Osd, OsdKind, OsdWindow, OverlayWindow, PanelSettings,
+    PanelWindow, PopupWindow, ShellAction, SystemStatus, Theme, ToastWindow,
 };
 
 /// How long the OSD stays after the last change.
@@ -90,6 +91,7 @@ struct DesktopData {
     lock_error: SharedString,
     lock_backdrop: Image,
     user_name: SharedString,
+    auth: AuthState,
 }
 
 /// The rows every view shows alike.
@@ -131,6 +133,7 @@ impl DesktopData {
         desktop.set_lock_error(self.lock_error.clone());
         desktop.set_lock_backdrop(self.lock_backdrop.clone());
         desktop.set_user_name(self.user_name.clone());
+        desktop.set_auth(self.auth.clone());
     }
 }
 
@@ -158,7 +161,8 @@ shared_window!(
     OverlayWindow,
     ToastWindow,
     OsdWindow,
-    LockWindow
+    LockWindow,
+    AuthWindow
 );
 
 /// How a window shows in every view, resolved once per refresh.
@@ -193,6 +197,7 @@ pub struct State {
     /// The system color scheme query the theme waits for.
     scheme_ticket: Option<u64>,
     desktop: DesktopData,
+    auth: auth::Requests,
 }
 
 pub struct Model {
@@ -238,6 +243,7 @@ impl Model {
                 writer: ConfigWriter::new(),
                 backdrop: Backdrop::default(),
                 scheme_ticket: None,
+                auth: auth::Requests::default(),
                 desktop: DesktopData {
                     user_name: user_display_name().into(),
                     ..DesktopData::default()
@@ -609,6 +615,7 @@ impl Model {
             ServiceEvent::LockRequested => self.set_locked(true),
             ServiceEvent::UnlockRequested => self.set_locked(false),
             ServiceEvent::LogoutRequested => {}
+            ServiceEvent::Authentication(event) => self.handle_authentication(event),
         }
     }
 

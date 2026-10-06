@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: MIT
+
+import { Theme, Motion, Icons, Icon, Button, ButtonVariant, Dropdown, TextField, Spinner } from "@nimbus/theme.slint";
+import { AuthState } from "models.slint";
+
+// Asks for a password, or another PAM response, to allow an action that polkit guards.
+export component AuthDialog inherits Rectangle {
+    in property <AuthState> state;
+    in-out property <string> response;
+
+    callback responded(response: string);
+    callback cancelled;
+    callback identity-selected(index: int);
+
+    public function focus-response() {
+        field.focus();
+    }
+
+    function respond() {
+        if !root.state.busy && root.response != "" {
+            root.responded(root.response);
+        }
+    }
+
+    private property <float> progress: root.state.open ? 1 : 0;
+    private property <bool> several: root.state.identities.length > 1;
+
+    background: Theme.overlay;
+    opacity: root.progress;
+    animate progress { duration: Theme.duration-normal; easing: root.state.open ? Motion.enter : Motion.exit; }
+
+    // Clicks outside the dialog do nothing: it stays until answered or cancelled.
+    TouchArea { }
+
+    FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            width: 420px;
+            height: layout.preferred-height;
+            border-radius: Theme.radius-xlarge * 1.5;
+            background: Theme.popup-background;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Theme.elevation-3.blur;
+            drop-shadow-offset-y: Theme.elevation-3.offset-y;
+            drop-shadow-color: Theme.elevation-3.color;
+            transform-scale: 0.94 + 0.06 * root.progress;
+            accessible-role: groupbox;
+            accessible-label: "Authentication Required";
+
+            layout := VerticalLayout {
+                padding: Theme.spacing-xl;
+                spacing: Theme.spacing-md;
+
+                Rectangle {
+                    height: 56px;
+
+                    Rectangle {
+                        width: 56px;
+                        height: 56px;
+                        border-radius: 28px;
+                        background: Theme.accent.with-alpha(0.15);
+
+                        if root.state.visual.has-icon: Image {
+                            width: 32px;
+                            height: 32px;
+                            source: root.state.visual.icon;
+                        }
+                        if !root.state.visual.has-icon: Icon {
+                            source: Icons.lock;
+                            size: 26px;
+                            color: Theme.accent;
+                        }
+                    }
+                }
+                Text {
+                    text: "Authentication Required";
+                    color: Theme.text;
+                    font-family: Theme.font-family;
+                    font-size: Theme.headline.font-size;
+                    font-weight: Theme.headline.font-weight;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: root.state.message;
+                    color: Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                if root.several: Dropdown {
+                    model: root.state.identities;
+                    current-index: root.state.identity;
+                    enabled: !root.state.busy;
+                    accessible-label: "Authenticate As";
+                    selected(index) => {
+                        root.identity-selected(index);
+                    }
+                }
+                if !root.several: HorizontalLayout {
+                    alignment: center;
+                    spacing: Theme.spacing-sm;
+
+                    Icon {
+                        cross-axis-self-alignment: center;
+                        source: Icons.user;
+                        color: Theme.text-secondary;
+                    }
+                    Text {
+                        text: root.state.identities.length > 0 ? root.state.identities[0] : "";
+                        color: Theme.text;
+                        font-family: Theme.font-family;
+                        font-size: Theme.body-strong.font-size;
+                        font-weight: Theme.body-strong.font-weight;
+                        vertical-alignment: center;
+                    }
+                }
+                field := TextField {
+                    text <=> root.response;
+                    placeholder: root.state.prompt;
+                    password: !root.state.echo;
+                    enabled: !root.state.busy;
+                    invalid: root.state.error != "";
+                    icon: root.state.echo ? Icons.user : Icons.lock;
+                    accessible-label: root.state.prompt;
+                    accepted => {
+                        root.respond();
+                    }
+                }
+                if root.state.error != "" || root.state.info != "": Text {
+                    text: root.state.error != "" ? root.state.error : root.state.info;
+                    color: root.state.error != "" ? Theme.error : Theme.text-secondary;
+                    font-family: Theme.font-family;
+                    font-size: Theme.body.font-size;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    padding-top: Theme.spacing-sm;
+                    spacing: Theme.spacing-sm;
+
+                    Button {
+                        horizontal-stretch: 1;
+                        text: "Cancel";
+                        clicked => {
+                            root.cancelled();
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+
+                        Button {
+                            width: 100%;
+                            text: root.state.busy ? "" : "Authenticate";
+                            variant: ButtonVariant.primary;
+                            enabled: !root.state.busy && root.response != "";
+                            clicked => {
+                                root.respond();
+                            }
+                        }
+                        if root.state.busy: Spinner {
+                            size: 20px;
+                            color: Theme.on-accent;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

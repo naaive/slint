@@ -12,7 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use i_slint_backend_testing::ElementQuery;
-use nimbus_services::ServiceEvent;
+use nimbus_services::{AuthenticationEvent, AuthenticationRequest, ServiceEvent};
 use nimbus_shell::{
     LockView, Osd, Part, PartComponent, Popup, RectData, ShellAction, ShellModel, ShellView,
 };
@@ -149,6 +149,30 @@ fn shell_states_render() {
     assert!(differs_from_backdrop(&calendar, 640, 300), "the calendar draws");
     save("calendar", &calendar);
     desk.view.close_popup();
+
+    // A polkit request with several identities, as the helper asks for a password.
+    let started = AuthenticationEvent::Started(AuthenticationRequest {
+        id: 1,
+        action_id: "org.freedesktop.systemd1.manage-units".into(),
+        message: "Authentication is required to restart the network service.".into(),
+        icon_name: String::new(),
+        identities: vec!["alice".into(), "root".into()],
+        selected: 0,
+    });
+    let prompt = AuthenticationEvent::Prompt {
+        id: 1,
+        identity: 0,
+        prompt: "Password: ".into(),
+        echo: false,
+    };
+    for event in [started, prompt] {
+        model.handle_service_event(&ServiceEvent::Authentication(event));
+    }
+    let auth = render(&desk);
+    assert!(differs_from_backdrop(&auth, 640, 400), "the dialog draws");
+    assert!(differs_from_backdrop(&auth, 20, 400), "the dialog dims the output");
+    save("auth", &auth);
+    model.handle_service_event(&ServiceEvent::Authentication(AuthenticationEvent::Ended { id: 1 }));
 
     // The lock screen is a window of its own, which a host shows instead of the parts.
     model.set_locked(true);

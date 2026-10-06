@@ -38,13 +38,15 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - Quick settings for volume, brightness, Wi-Fi, Bluetooth, do not disturb, dark style, media playback, and power.
 - A notification server with toasts, actions, and a notification center next to the calendar.
 - On-screen displays for volume and brightness keys, and a lock screen.
+- A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
 - The `nimbus-shell` binary runs the shell as a Wayland client, on layer-shell and session-lock surfaces.
-  It hosts the system services, checks lock screen passwords through PAM on a worker thread,
+  It hosts the system services and the polkit agent, checks lock screen passwords through PAM on a worker thread,
   and locks on logind requests and after inactivity.
 
 ### Services (`nimbus-services`)
 
 - `org.freedesktop.Notifications`, UPower, NetworkManager, BlueZ, MPRIS, logind, PipeWire or PulseAudio volume, and backlight.
+- The session's polkit authentication agent, which checks responses through polkit's setuid `polkit-agent-helper-1`, never in process.
 - Each service degrades on its own: a missing daemon hides its feature and is picked up again when it appears.
 
 ### Portal (`nimbus-portal`)
@@ -254,5 +256,9 @@ The headless backend and the shell run end to end in tests, but the udev and win
   It reports no contrast preference, since the configuration has no high contrast option.
   Older `xdg-desktop-portal` releases look for backends only in their own data directory, usually `/usr/share`;
   install with `--prefix /usr` for them to find `nimbus.portal`.
+- The polkit agent has only run against a fake polkitd and a script standing in for `polkit-agent-helper-1`.
+  It registers only inside a logind session, so a nested session leaves polkit to the host desktop's agent.
+  It doesn't use polkit's socket-activated helper, which distributions that drop the helper's setuid bit need.
+- polkit requests wait while the session is locked, and their dialog shows once it unlocks.
 - The UI is English only.
 - Each crate's README lists its own gaps.

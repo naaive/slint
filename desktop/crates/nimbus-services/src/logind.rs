@@ -22,6 +22,18 @@ const AUTO_SESSION: &str = "/org/freedesktop/login1/session/auto";
 /// How long suspend waits for [`LoginCommand::LockPresented`], well below logind's default `InhibitDelayMaxSec` of 5 s.
 const LOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The id of this process's logind session, or `XDG_SESSION_ID` when logind can't tell.
+pub(crate) async fn session_id(conn: &Connection) -> Option<String> {
+    session_id_from(conn, Logind::NAME).await
+}
+
+async fn session_id_from(conn: &Connection, logind: &str) -> Option<String> {
+    match bus::get_property(conn, logind, AUTO_SESSION, SESSION_INTERFACE, "Id").await {
+        Ok(value) => String::try_from(value).ok(),
+        Err(_) => std::env::var("XDG_SESSION_ID").ok(),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum LoginCommand {
     Lock,
@@ -73,10 +85,7 @@ impl Logind {
 
     /// Resolves the object path of this process's session, whose signals carry its real path rather than `auto`.
     async fn session_path(conn: &Connection, owner: &str) -> Option<OwnedObjectPath> {
-        let id = match bus::get_property(conn, owner, AUTO_SESSION, SESSION_INTERFACE, "Id").await {
-            Ok(value) => String::try_from(value).ok(),
-            Err(_) => std::env::var("XDG_SESSION_ID").ok(),
-        }?;
+        let id = session_id_from(conn, owner).await?;
         bus::call_for(conn, owner, MANAGER_PATH, MANAGER_INTERFACE, "GetSession", &(id.as_str(),))
             .await
             .ok()

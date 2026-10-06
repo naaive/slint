@@ -32,6 +32,7 @@ fn disabled() -> ServicesConfig {
         mpris: false,
         bluetooth: false,
         logind: false,
+        polkit: false,
     }
 }
 

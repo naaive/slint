@@ -26,7 +26,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-ipc` | lib | Window/workspace model; JSON-lines protocol on the control socket; blocking client; runtime paths of the control socket and lock marker; the compositor's ready line (`Ready`). |
 | `nimbus-config` | lib | TOML configuration schema with defaults, the stored display layout (`[[outputs]]`) and its edge-to-edge geometry (`geometry`), atomic save, locked load-modify-save (`nimbus_config::update`), the key chord grammar (`chord`), and file watching. |
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
-| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
+| `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind, and the polkit authentication agent. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
 | `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output, in a window per part. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, displays and wlr-output-management, window management, input, keyboard shortcuts, the session lock, control socket. |
@@ -198,6 +198,7 @@ The parts of an output, in the order a host creates their surfaces:
 | `Popup` | `PopupWindow` | The calendar, quick settings, or dock menu, next to the button of the part that opened it, which a host passes as `ShellView::popup_placement()`; it closes when that part goes. |
 | `Toasts` | `ToastWindow` | In the top right corner, below the panel, sized to the toasts, while there are toasts and no popup or power dialog. |
 | `Osd` | `OsdWindow` | Above the bottom edge, while the OSD shows and fades out. It takes no input. |
+| `Auth` | `AuthWindow` | Over the whole output and above everything else, with the keyboard, on one output while a polkit request is open and the session is unlocked; see [polkit Authentication](#polkit-authentication). |
 
 `PartWindow::placement()` describes where a part goes in terms of output edges, size, margin, exclusive zone, stacking, and keyboard,
 which map directly onto a layer surface.
@@ -218,6 +219,7 @@ Surfaces:
 - **Quick settings**: volume and brightness sliders, Wi-Fi, Bluetooth, do-not-disturb, dark mode, media controls, power menu.
 - **Notifications**: toasts with actions and timeouts, and a notification center with history in the calendar popup.
 - **OSD**: volume and brightness feedback.
+- **Authentication**: the polkit dialog, with the action's message and icon, an identity picker, the PAM prompt, and errors.
 - **Lock screen**: clock and password field; authentication goes through PAM in the process hosting the shell.
   The shell hands passwords to the handler registered with `ShellModel::on_unlock_attempt`,
   and its host answers with `ShellModel::set_locked(false)` or `ShellModel::unlock_failed()`.
@@ -334,6 +336,30 @@ A compositor started with `--locked`, or with the marker present, starts locked 
 When the compositor crashes with the marker present, the session restarts it with `--locked`, then restarts the shell, which locks again.
 The marker is per runtime directory, so a nested compositor in the same `XDG_RUNTIME_DIR` shares it with the real session.
 
+## polkit Authentication
+
+The shell process is the session's polkit authentication agent; `crates/nimbus-services/src/polkit` implements it.
+Once polkitd runs, which the agent asks D-Bus to start, the agent exports `org.freedesktop.PolicyKit1.AuthenticationAgent`
+at `/org/freedesktop/PolicyKit1/AuthenticationAgent` and registers it for its logind session,
+with the session id from logind or `XDG_SESSION_ID`.
+It registers again whenever polkitd comes back, and it answers no one but polkitd.
+Without a session or an installed `polkit-agent-helper-1`, it stays off, and another agent has to answer.
+
+Each `BeginAuthentication` resolves its identities to login names, a `unix-group` to its members,
+and asks as the current user when it's one of them.
+It runs the setuid `polkit-agent-helper-1` for the chosen user, passing the cookie on standard input.
+The helper runs PAM and tells polkitd the result itself, so no password check happens in the shell.
+Its lines become `AuthenticationEvent`s: `PAM_PROMPT_ECHO_OFF` and `PAM_PROMPT_ECHO_ON` prompts,
+`PAM_TEXT_INFO` and `PAM_ERROR_MSG` messages, and `SUCCESS` or `FAILURE`.
+After a wrong response, or when the user picks another identity, the agent starts the helper again.
+A helper that fails before asking anything ends the request with `org.freedesktop.PolicyKit1.Error.Failed`.
+Cancelling, from the dialog or by polkitd's `CancelAuthentication`, kills the helper and ends the call with `Error.Cancelled`.
+
+The shell model queues requests and shows the first in the `Auth` part of one view:
+the output of the focused window when the request comes up, or the first output.
+Opening the dialog closes that view's launcher, overview, power dialog, and popup, and toasts step aside while it shows.
+Responses go back as `ServiceCommand::Authentication`; `Secret` keeps them out of debug logs.
+
 ## Portal
 
 `nimbus-portal` implements `org.freedesktop.impl.portal.Settings` for `xdg-desktop-portal`.
@@ -442,6 +468,8 @@ The release profile aborts on panic, because every process is supervised or rest
 - The Settings display client configures the headless compositor in a test, which builds the compositor first.
 - `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` toast test run against a private `dbus-daemon`,
   and skip with a message when it's missing.
+  The polkit test registers the agent with a fake polkitd and logind there, and calls `BeginAuthentication` and `CancelAuthentication`;
+  unit tests drive the helper protocol with shell scripts standing in for `polkit-agent-helper-1`.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.
 
 ## Running

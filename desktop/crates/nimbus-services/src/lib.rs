@@ -3,7 +3,7 @@
 //! System integration for the Nimbus shell.
 //!
 //! [`Services::spawn`] starts a Tokio runtime on a background thread that talks to D-Bus
-//! (UPower, NetworkManager, MPRIS, logind, and the session's `org.freedesktop.Notifications` server)
+//! (UPower, NetworkManager, MPRIS, logind, the session's `org.freedesktop.Notifications` server, and its polkit agent)
 //! and to PipeWire or PulseAudio through `wpctl`/`pactl`.
 //! Every service degrades gracefully: a missing bus or daemon leaves its part of [`SystemState`] at `None` or default.
 
@@ -20,9 +20,11 @@ mod logind;
 mod mpris;
 mod network;
 mod notifications;
+mod polkit;
 mod upower;
 
 pub use notifications::DEFAULT_TIMEOUT as DEFAULT_NOTIFICATION_TIMEOUT;
+pub use polkit::{AuthenticationCommand, AuthenticationEvent, AuthenticationRequest, Secret};
 
 /// How long dropping [`Services`] waits for the background thread to finish.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -147,6 +149,8 @@ pub enum ServiceEvent {
     /// [`ServiceCommand::Logout`] couldn't end the session through logind,
     /// for example in a nested session; the compositor should exit on its own.
     LogoutRequested,
+    /// polkit asks the user to authenticate; see [`AuthenticationEvent`].
+    Authentication(AuthenticationEvent),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +187,8 @@ pub enum ServiceCommand {
     Reboot,
     PowerOff,
     Logout,
+    /// Answers the polkit agent's [`ServiceEvent::Authentication`].
+    Authentication(AuthenticationCommand),
 }
 
 /// Configures which services to start; tests and the shell preview disable the bus-backed ones.
@@ -196,6 +202,7 @@ pub struct ServicesConfig {
     pub mpris: bool,
     pub bluetooth: bool,
     pub logind: bool,
+    pub polkit: bool,
 }
 
 impl Default for ServicesConfig {
@@ -209,6 +216,7 @@ impl Default for ServicesConfig {
             mpris: true,
             bluetooth: true,
             logind: true,
+            polkit: true,
         }
     }
 }
@@ -239,6 +247,7 @@ impl ServicesBuilder {
                 config,
                 session_bus: BusAddress::Default,
                 system_bus: BusAddress::Default,
+                polkit_helper: None,
             },
         }
     }
@@ -250,10 +259,17 @@ impl ServicesBuilder {
         self
     }
 
-    /// Sets the bus for UPower, NetworkManager, BlueZ, logind, and logind's brightness control.
+    /// Sets the bus for UPower, NetworkManager, BlueZ, logind, logind's brightness control, and polkit.
     #[must_use]
     pub fn system_bus(mut self, address: BusAddress) -> Self {
         self.options.system_bus = address;
+        self
+    }
+
+    /// Sets the `polkit-agent-helper-1` that checks responses, instead of the installed one.
+    #[must_use]
+    pub fn polkit_helper(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.options.polkit_helper = Some(path.into());
         self
     }
 

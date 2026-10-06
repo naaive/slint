@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // The Nimbus shell's windows, each shown on a surface of its own.
-// Per output: the panel, the dock, a popup, the overlay with the launcher, overview, and power dialog, the toasts, and the OSD;
+// Per output: the panel, the dock, a popup, the overlay with the launcher, overview, and power dialog, the toasts, the OSD,
+// and on one output the polkit authentication dialog;
 // and while locked, the lock screen.
 // Rust sets what every window shows alike on the `Desktop` global, and what the parts of one output show on `ShellOutput`;
 // see `src/model/mod.rs` and `src/view.rs`.
@@ -11,7 +12,7 @@ import { Theme, Motion, Icons, Icon, Divider } from "@nimbus/theme.slint";
 import {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
-    NetworkKind, SystemStatus, PanelSettings,
+    NetworkKind, SystemStatus, PanelSettings, AuthState,
 } from "models.slint";
 import { Desktop } from "desktop.slint";
 import { ShellOutput } from "output.slint";
@@ -26,12 +27,13 @@ import { ToastStack } from "toasts.slint";
 import { OsdPill } from "osd.slint";
 import { LockScreen } from "lock-screen.slint";
 import { PowerDialog } from "power-menu.slint";
+import { AuthDialog } from "auth-dialog.slint";
 
 export { Theme, Desktop, ShellOutput }
 export {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
-    NetworkKind, SystemStatus, PanelSettings,
+    NetworkKind, SystemStatus, PanelSettings, AuthState,
 }
 
 // The room around a floating part for its drop shadow.
@@ -448,5 +450,33 @@ export component OsdWindow inherits Window {
         kind: Desktop.osd-kind;
         level: Desktop.osd-level;
         muted: Desktop.osd-muted;
+    }
+}
+
+// The polkit authentication dialog over the whole output.
+export component AuthWindow inherits Window {
+    in-out property <string> response;
+
+    public function focus-response() {
+        dialog.focus-response();
+    }
+
+    background: transparent;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Authentication";
+
+    dialog := AuthDialog {
+        state: Desktop.auth;
+        response <=> root.response;
+        responded(response) => {
+            ShellOutput.auth-responded(response);
+        }
+        cancelled => {
+            ShellOutput.auth-cancelled();
+        }
+        identity-selected(index) => {
+            ShellOutput.auth-identity-selected(index);
+        }
     }
 }

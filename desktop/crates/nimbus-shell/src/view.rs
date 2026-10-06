@@ -13,9 +13,9 @@ use slint::{ComponentHandle, Model as _, ModelRc, SharedString, VecModel};
 use crate::model::{Model, SharedWindow, State, display_title, sync_rows};
 use crate::windows::{DockClick, DockEntry, dock_click};
 use crate::{
-    AppItem, Desktop, DockMenuWindow, DockWindow, OsdWindow, OverlayWindow, PanelWindow, Popup,
-    PopupWindow, PowerAction, Rect, RectData, ShellAction, ShellModel, ShellOutput, ToastWindow,
-    WindowItem, WorkspaceItem,
+    AppItem, AuthWindow, Desktop, DockMenuWindow, DockWindow, OsdWindow, OverlayWindow,
+    PanelWindow, Popup, PopupWindow, PowerAction, Rect, RectData, ShellAction, ShellModel,
+    ShellOutput, ToastWindow, WindowItem, WorkspaceItem,
 };
 
 /// The most workspace dots the panel shows.
@@ -44,6 +44,9 @@ pub enum Part {
     Toasts,
     /// The on-screen display above the bottom edge.
     Osd,
+    /// The polkit authentication dialog, over the whole output and above everything else,
+    /// on one output while a request is open.
+    Auth,
 }
 
 /// The output edges a part is attached to.
@@ -103,6 +106,7 @@ pub enum PartComponent {
     Overlay(OverlayWindow),
     Toasts(ToastWindow),
     Osd(OsdWindow),
+    Auth(AuthWindow),
 }
 
 /// Runs `$body` with `$ui` bound to the component of whichever part `$component` is.
@@ -115,6 +119,7 @@ macro_rules! each_component {
             PartComponent::Overlay($ui) => $body,
             PartComponent::Toasts($ui) => $body,
             PartComponent::Osd($ui) => $body,
+            PartComponent::Auth($ui) => $body,
         }
     };
 }
@@ -128,6 +133,7 @@ impl Clone for PartComponent {
             Self::Overlay(ui) => Self::Overlay(ui.clone_strong()),
             Self::Toasts(ui) => Self::Toasts(ui.clone_strong()),
             Self::Osd(ui) => Self::Osd(ui.clone_strong()),
+            Self::Auth(ui) => Self::Auth(ui.clone_strong()),
         }
     }
 }
@@ -187,7 +193,7 @@ impl PartWindow {
             PartComponent::Panel(ui) => (0.0, ui.get_surface_height()),
             PartComponent::Dock(ui) => (ui.get_surface_width(), ui.get_surface_height()),
             PartComponent::Popup(ui) => (ui.get_surface_width(), ui.get_surface_height()),
-            PartComponent::Overlay(_) => (0.0, 0.0),
+            PartComponent::Overlay(_) | PartComponent::Auth(_) => (0.0, 0.0),
             PartComponent::Toasts(ui) => (ui.get_surface_width(), ui.get_surface_height()),
             PartComponent::Osd(ui) => (ui.get_surface_width(), ui.get_surface_height()),
         }
@@ -214,7 +220,7 @@ impl PartWindow {
             }
             PartComponent::Dock(ui) => placement(bottom, 0.0, Some(ui.get_exclusive_zone()), false),
             PartComponent::Popup(_) => return None,
-            PartComponent::Overlay(_) => Placement {
+            PartComponent::Overlay(_) | PartComponent::Auth(_) => Placement {
                 keyboard: true,
                 ..placement(Edges { top: true, bottom: true, ..sides }, 0.0, None, true)
             },
@@ -242,7 +248,7 @@ impl PartWindow {
             PartComponent::Panel(ui) => ui.get_input_rect().into(),
             PartComponent::Dock(ui) => ui.get_input_rect().into(),
             PartComponent::Popup(ui) => ui.get_geometry().into(),
-            PartComponent::Overlay(_) => self.whole(),
+            PartComponent::Overlay(_) | PartComponent::Auth(_) => self.whole(),
             PartComponent::Toasts(ui) => ui.get_input_rect().into(),
             PartComponent::Osd(_) => Rect::default(),
         };
@@ -416,6 +422,10 @@ impl View {
         self.state.borrow().data.popup
     }
 
+    pub fn output(&self) -> &str {
+        &self.output
+    }
+
     /// The live windows of this view's parts.
     fn windows(&self) -> Vec<(Part, Rc<PartComponent>)> {
         let mut parts = self.parts.borrow_mut();
@@ -426,6 +436,13 @@ impl View {
     fn overlay(&self) -> Option<OverlayWindow> {
         self.windows().into_iter().find_map(|(_, ui)| match &*ui {
             PartComponent::Overlay(overlay) => Some(overlay.clone_strong()),
+            _ => None,
+        })
+    }
+
+    pub fn auth_window(&self) -> Option<AuthWindow> {
+        self.windows().into_iter().find_map(|(_, ui)| match &*ui {
+            PartComponent::Auth(auth) => Some(auth.clone_strong()),
             _ => None,
         })
     }
@@ -443,6 +460,7 @@ impl View {
         let data = &state.data;
         let model = &self.model;
         let locked = model.is_locked();
+        let auth = model.shows_auth(&self.output);
         let mut parts: Vec<Part> = [Part::Panel, Part::Dock, Part::Overlay]
             .into_iter()
             .filter(|&p| self.shown(p))
@@ -453,6 +471,7 @@ impl View {
         if !locked
             && data.popup == Popup::None
             && data.power_action == PowerAction::None
+            && !auth
             && model.has_toasts()
         {
             parts.push(Part::Toasts);
@@ -463,6 +482,9 @@ impl View {
         });
         if (model.osd_shown() && !locked) || osd_fading {
             parts.push(Part::Osd);
+        }
+        if auth {
+            parts.push(Part::Auth);
         }
         parts
     }
@@ -483,14 +505,17 @@ impl View {
             }
             Part::Toasts => PartComponent::Toasts(ToastWindow::new()?),
             Part::Osd => PartComponent::Osd(OsdWindow::new()?),
+            Part::Auth => PartComponent::Auth(AuthWindow::new()?),
         });
         self.model.show_shared_on(ui.shared(), &self.model.state.borrow(), true);
         let output = ui.output();
         self.state.borrow().data.write(&output, &self.models);
         self.connect(part, &output);
         self.parts.borrow_mut().push((part, Rc::downgrade(&ui)));
-        if let PartComponent::Overlay(overlay) = &*ui {
-            self.focus_overlay(overlay);
+        match &*ui {
+            PartComponent::Overlay(overlay) => self.focus_overlay(overlay),
+            PartComponent::Auth(auth) => auth.invoke_focus_response(),
+            _ => {}
         }
         Ok(PartWindow { part, ui })
     }
@@ -984,6 +1009,11 @@ impl View {
             .model
             .invoke_notification_action(id as u32, key.to_string()));
         on!(on_clear_notifications, |v| v.model.clear_notifications());
+        on!(on_auth_responded, |v, response| v.model.auth_responded(response.into()));
+        on!(on_auth_cancelled, |v| v.model.auth_cancelled());
+        on!(on_auth_identity_selected, |v, identity| if let Some(identity) = index(identity) {
+            v.model.auth_identity_selected(identity);
+        });
     }
 }
 

@@ -19,8 +19,8 @@ use crate::mpris::MediaCommand;
 use crate::network::NetworkCommand;
 use crate::notifications::NotificationCommand;
 use crate::{
-    Audio, Battery, Bluetooth, BusAddress, Media, Network, ServiceCommand, ServiceEvent,
-    ServicesConfig, SystemState,
+    Audio, AuthenticationCommand, Battery, Bluetooth, BusAddress, Media, Network, ServiceCommand,
+    ServiceEvent, ServicesConfig, SystemState,
 };
 
 /// State changes within this window are emitted as one [`ServiceEvent::State`].
@@ -82,6 +82,7 @@ pub(crate) struct Options {
     pub(crate) config: ServicesConfig,
     pub(crate) session_bus: BusAddress,
     pub(crate) system_bus: BusAddress,
+    pub(crate) polkit_helper: Option<std::path::PathBuf>,
 }
 
 /// Command senders for the services that are enabled.
@@ -93,6 +94,7 @@ struct Routes {
     media: Option<UnboundedSender<MediaCommand>>,
     notifications: Option<UnboundedSender<NotificationCommand>>,
     login: Option<UnboundedSender<LoginCommand>>,
+    polkit: Option<UnboundedSender<AuthenticationCommand>>,
     /// UPower takes no commands; holding the sender keeps it running until the central task stops.
     _upower: Option<UnboundedSender<Infallible>>,
 }
@@ -131,6 +133,7 @@ struct Receivers {
     media: Option<UnboundedReceiver<MediaCommand>>,
     notifications: Option<UnboundedReceiver<NotificationCommand>>,
     login: Option<UnboundedReceiver<LoginCommand>>,
+    polkit: Option<UnboundedReceiver<AuthenticationCommand>>,
     upower: Option<UnboundedReceiver<Infallible>>,
 }
 
@@ -142,6 +145,7 @@ fn routes(config: &ServicesConfig) -> (Routes, Receivers) {
     let (media_tx, media) = channel(config.mpris);
     let (notifications_tx, notifications) = channel(config.notifications);
     let (login_tx, login) = channel(config.logind);
+    let (polkit_tx, polkit) = channel(config.polkit);
     let (upower_tx, upower) = channel(config.upower);
     (
         Routes {
@@ -152,9 +156,20 @@ fn routes(config: &ServicesConfig) -> (Routes, Receivers) {
             media: media_tx,
             notifications: notifications_tx,
             login: login_tx,
+            polkit: polkit_tx,
             _upower: upower_tx,
         },
-        Receivers { audio, backlight, network, bluetooth, media, notifications, login, upower },
+        Receivers {
+            audio,
+            backlight,
+            network,
+            bluetooth,
+            media,
+            notifications,
+            login,
+            polkit,
+            upower,
+        },
     )
 }
 
@@ -168,6 +183,7 @@ async fn start_services(options: Options, receivers: Receivers, updates: Updates
         || receivers.network.is_some()
         || receivers.bluetooth.is_some()
         || receivers.login.is_some()
+        || receivers.polkit.is_some()
         || receivers.backlight.is_some();
     let (session, system) = tokio::join!(
         async {
@@ -208,6 +224,17 @@ async fn start_services(options: Options, receivers: Receivers, updates: Updates
     if let Some(commands) = receivers.bluetooth {
         let service = crate::bluetooth::Bluez::new(updates.clone());
         start_bus_service(service, system.clone(), commands);
+    }
+    if let Some(mut commands) = receivers.polkit {
+        match system.clone() {
+            Some(conn) => {
+                let helper = options.polkit_helper.clone();
+                tokio::spawn(crate::polkit::run(conn, updates.clone(), helper, commands));
+            }
+            None => {
+                tokio::spawn(async move { while commands.recv().await.is_some() {} });
+            }
+        }
     }
     if let Some(commands) = receivers.login {
         let service = crate::logind::Logind::new(updates);
@@ -350,6 +377,9 @@ fn dispatch(routes: &Routes, command: ServiceCommand) -> Dispatch {
             if !route(&routes.login, LoginCommand::Logout) {
                 return Dispatch::Emit(ServiceEvent::LogoutRequested);
             }
+        }
+        C::Authentication(command) => {
+            route(&routes.polkit, command);
         }
     }
     Dispatch::Routed

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! The Nimbus shell: panel, dock, launcher, overview, popups, toasts, OSD, and lock screen.
+//! The Nimbus shell: panel, dock, launcher, overview, popups, toasts, OSD, lock screen, and polkit dialog.
 //!
 //! The shell doesn't know how it's displayed.
 //! One [`ShellModel`] holds the state; data flows in through its methods and user intents flow out as [`ShellAction`]s.

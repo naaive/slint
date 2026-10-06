@@ -12,6 +12,7 @@ zbus = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+nix = { version = "0.30", features = ["user"] }
 
 [dev-dependencies]
 nimbus-test-support = { workspace = true }

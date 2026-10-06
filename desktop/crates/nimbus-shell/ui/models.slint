@@ -131,6 +131,24 @@ export struct SystemStatus {
     media-playing: bool,
 }
 
+// The polkit authentication dialog.
+export struct AuthState {
+    open: bool,
+    message: string,
+    // The icon of the action, if it names one.
+    visual: AppVisual,
+    // Who may authenticate, and the index of the one asked for.
+    identities: [string],
+    identity: int,
+    // What PAM asks for, such as "Password", or empty while waiting for the helper.
+    prompt: string,
+    // Shows the response as typed.
+    echo: bool,
+    busy: bool,
+    error: string,
+    info: string,
+}
+
 export struct PanelSettings {
     top: bool,
     height: length,

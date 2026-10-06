@@ -12,7 +12,10 @@ use std::time::Duration;
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery, mock_elapsed_time};
 use nimbus_config::{ColorScheme, Config, PanelPosition};
 use nimbus_ipc::{Event, Request, WindowInfo};
-use nimbus_services::{CloseReason, ServiceCommand, ServiceEvent, Urgency};
+use nimbus_services::{
+    AuthenticationCommand, AuthenticationEvent, AuthenticationRequest, CloseReason, Secret,
+    ServiceCommand, ServiceEvent, Urgency,
+};
 use nimbus_shell::{
     Align, Desktop, LockView, Osd, Part, PartComponent, Popup, PowerAction, Rect, RectData,
     ShellAction, ShellModel, ShellOutput, ShellView,
@@ -157,6 +160,7 @@ fn query(component: &PartComponent) -> ElementQuery {
         PartComponent::Overlay(ui) => ElementQuery::from_root(ui),
         PartComponent::Toasts(ui) => ElementQuery::from_root(ui),
         PartComponent::Osd(ui) => ElementQuery::from_root(ui),
+        PartComponent::Auth(ui) => ElementQuery::from_root(ui),
     }
 }
 
@@ -1015,4 +1019,149 @@ fn wait_for(mut condition: impl FnMut() -> bool) -> bool {
         std::thread::sleep(Duration::from_millis(10));
     }
     false
+}
+
+fn auth_started(id: u32, identities: &[&str]) -> ServiceEvent {
+    ServiceEvent::Authentication(AuthenticationEvent::Started(AuthenticationRequest {
+        id,
+        action_id: "org.example.reboot".into(),
+        message: format!("Authentication is required for request {id}"),
+        icon_name: String::new(),
+        identities: identities.iter().map(|name| (*name).to_owned()).collect(),
+        selected: 0,
+    }))
+}
+
+fn auth_prompt(id: u32, identity: usize) -> ServiceEvent {
+    let prompt = "Password: ".into();
+    ServiceEvent::Authentication(AuthenticationEvent::Prompt { id, identity, prompt, echo: false })
+}
+
+fn auth_command(command: AuthenticationCommand) -> ShellAction {
+    ShellAction::Service(ServiceCommand::Authentication(command))
+}
+
+impl Fixture {
+    fn auth(&self) -> nimbus_shell::AuthWindow {
+        match self.part(Part::Auth) {
+            PartComponent::Auth(auth) => auth,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn polkit_dialog_asks_until_the_helper_accepts() {
+    let f = Fixture::new();
+    let toast = support::notifications().remove(0);
+    f.model.handle_service_event(&ServiceEvent::Notification(toast));
+    f.view().toggle_launcher();
+    f.model.handle_service_event(&auth_started(1, &["alice"]));
+    assert!(!f.view().launcher_open(), "the dialog closes the launcher");
+    assert_eq!(f.desk.parts(), [Part::Panel, Part::Dock, Part::Auth], "toasts step aside");
+    let placement = f.desk.with(Part::Auth, |s| s.window.placement().unwrap()).unwrap();
+    assert!(placement.keyboard && placement.above_fullscreen);
+    assert_eq!(f.desk.input_region(Part::Auth), f.full_output(), "it's modal");
+    assert!(matches!(f.keyboard(), PartComponent::Auth(_)));
+    let state = f.desktop().get_auth();
+    assert!(state.open && state.busy, "it waits for the helper's prompt");
+    assert_eq!(state.message, "Authentication is required for request 1");
+    assert_eq!(state.identities.iter().collect::<Vec<_>>(), ["alice"]);
+
+    f.model.handle_service_event(&auth_prompt(1, 0));
+    let state = f.desktop().get_auth();
+    assert!(!state.busy && !state.echo);
+    assert_eq!(state.prompt, "Password");
+    f.type_text("wrong");
+    f.key("\n");
+    let respond = |response: &str| {
+        auth_command(AuthenticationCommand::Respond { id: 1, response: Secret::from(response) })
+    };
+    assert_eq!(f.take_actions(), [respond("wrong")]);
+    assert!(f.desktop().get_auth().busy);
+    assert_eq!(f.auth().get_response(), "", "the field doesn't keep the password");
+    f.key("\n");
+    assert!(f.take_actions().is_empty(), "no second response while one is checked");
+
+    f.model
+        .handle_service_event(&ServiceEvent::Authentication(AuthenticationEvent::Failed { id: 1 }));
+    f.model.handle_service_event(&auth_prompt(1, 0));
+    let state = f.desktop().get_auth();
+    assert!(!state.busy && !state.error.is_empty());
+    f.type_text("secret");
+    f.click_in(Part::Auth, "Authenticate");
+    assert_eq!(f.take_actions(), [respond("secret")]);
+    assert!(f.desktop().get_auth().error.is_empty());
+
+    f.model
+        .handle_service_event(&ServiceEvent::Authentication(AuthenticationEvent::Ended { id: 1 }));
+    assert_eq!(f.desk.parts(), [Part::Panel, Part::Dock, Part::Toasts]);
+    assert!(!f.desktop().get_auth().open);
+}
+
+#[test]
+fn polkit_dialog_picks_identities_and_cancels() {
+    let f = Fixture::new();
+    f.model.handle_service_event(&auth_started(1, &["alice", "bob"]));
+    f.model.handle_service_event(&auth_started(2, &["carol"]));
+    f.model.handle_service_event(&auth_prompt(1, 0));
+    let picker = query(&f.part(Part::Auth))
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Combobox)
+        .find_first()
+        .expect("several identities get a picker");
+    assert_eq!(picker.accessible_value().as_deref(), Some("alice"));
+
+    f.auth().global::<ShellOutput>().invoke_auth_identity_selected(1);
+    assert_eq!(
+        f.take_actions(),
+        [auth_command(AuthenticationCommand::SelectIdentity { id: 1, identity: 1 })]
+    );
+    let state = f.desktop().get_auth();
+    assert!(state.busy && state.prompt.is_empty() && state.identity == 1);
+    f.model.handle_service_event(&auth_prompt(1, 1));
+    assert_eq!(picker.accessible_value().as_deref(), Some("bob"));
+
+    f.key(escape());
+    assert_eq!(f.take_actions(), [auth_command(AuthenticationCommand::Cancel { id: 1 })]);
+    let state = f.desktop().get_auth();
+    assert_eq!(state.message, "Authentication is required for request 2", "the next one shows");
+    assert!(state.busy);
+    assert!(
+        query(&f.part(Part::Auth))
+            .match_descendants()
+            .match_accessible_role(AccessibleRole::Combobox)
+            .find_first()
+            .is_none(),
+        "one identity needs no picker"
+    );
+    // The helper's own end of the cancelled request changes nothing.
+    f.model
+        .handle_service_event(&ServiceEvent::Authentication(AuthenticationEvent::Ended { id: 1 }));
+    assert_eq!(f.desktop().get_auth().message, "Authentication is required for request 2");
+
+    f.click_in(Part::Auth, "Cancel");
+    assert_eq!(f.take_actions(), [auth_command(AuthenticationCommand::Cancel { id: 2 })]);
+    assert!(!f.shows(Part::Auth));
+}
+
+#[test]
+fn polkit_dialog_shows_on_the_focused_output_while_unlocked() {
+    let f = Fixture::new();
+    let other = f.desk_on("HDMI-1");
+    let mut state = support::compositor_state();
+    state.windows[0].output = "HDMI-1".into();
+    f.model.set_compositor_state(&state);
+
+    f.model.handle_service_event(&auth_started(1, &["alice"]));
+    assert!(other.parts().contains(&Part::Auth), "the focused window's output shows it");
+    assert!(!f.shows(Part::Auth));
+
+    f.model.set_locked(true);
+    assert!(!other.parts().contains(&Part::Auth), "the lock screen hides it");
+    f.model.set_locked(false);
+    assert!(other.parts().contains(&Part::Auth));
+
+    drop(other);
+    assert!(f.shows(Part::Auth), "it moves on when its output goes");
 }

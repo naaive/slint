@@ -62,4 +62,7 @@ export global ShellOutput {
     callback notification-dismissed(id: int);
     callback notification-action(id: int, key: string);
     callback clear-notifications;
+    callback auth-responded(response: string);
+    callback auth-cancelled;
+    callback auth-identity-selected(index: int);
 }

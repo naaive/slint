@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import { AppVisual, DockItem, NotificationItem, CalendarDay, OsdKind, SystemStatus, PanelSettings } from "models.slint";
+import { AppVisual, AuthState, DockItem, NotificationItem, CalendarDay, OsdKind, SystemStatus, PanelSettings } from "models.slint";
 
 // State that every view of the shell shows alike.
 // Each window holds its own copy of a global, so Rust sets this on every window; see `src/model/mod.rs`.
@@ -45,4 +45,7 @@ export global Desktop {
     in property <string> lock-error;
     in property <image> lock-backdrop;
     in property <string> user-name;
+
+    // polkit authentication.
+    in property <AuthState> auth;
 }
