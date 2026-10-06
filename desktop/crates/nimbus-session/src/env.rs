@@ -28,6 +28,7 @@ const TOOLKIT_HINTS: &[(&str, &str)] = &[
 /// Variables pushed into the D-Bus and systemd activation environments once the compositor is ready.
 pub const ACTIVATION_VARIABLES: &[&str] = &[
     "WAYLAND_DISPLAY",
+    "DISPLAY",
     "NIMBUS_SOCKET",
     "XDG_CURRENT_DESKTOP",
     "XDG_SESSION_TYPE",
@@ -40,7 +41,8 @@ pub const REEXEC_GUARD: &str = "NIMBUS_SESSION_UNDER_DBUS_RUN_SESSION";
 /// Overrides applied on top of the inherited environment of every process the session starts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionEnv {
-    vars: BTreeMap<String, String>,
+    /// `None` removes an inherited variable.
+    vars: BTreeMap<String, Option<String>>,
 }
 
 impl SessionEnv {
@@ -48,26 +50,35 @@ impl SessionEnv {
     pub fn new(lookup: impl Fn(&str) -> Option<String>) -> Self {
         let mut vars = BTreeMap::new();
         for (name, value) in SESSION_IDENTITY {
-            vars.insert(name.to_string(), value.to_string());
+            vars.insert(name.to_string(), Some(value.to_string()));
         }
         for (name, value) in TOOLKIT_HINTS {
             if lookup(name).is_none_or(|v| v.is_empty()) {
-                vars.insert(name.to_string(), value.to_string());
+                vars.insert(name.to_string(), Some(value.to_string()));
             }
         }
         Self { vars }
     }
 
     pub fn set(&mut self, name: &str, value: impl Into<String>) {
-        self.vars.insert(name.to_string(), value.into());
+        self.vars.insert(name.to_string(), Some(value.into()));
+    }
+
+    pub fn unset(&mut self, name: &str) {
+        self.vars.insert(name.to_string(), None);
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.vars.get(name).map(String::as_str)
+        self.vars.get(name)?.as_deref()
     }
 
     pub fn apply(&self, command: &mut Command) {
-        command.envs(&self.vars);
+        for (name, value) in &self.vars {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
     }
 }
 
@@ -173,6 +184,18 @@ mod tests {
             envs[std::ffi::OsStr::new("XDG_SESSION_TYPE")],
             Some(std::ffi::OsStr::new("wayland"))
         );
+    }
+
+    #[test]
+    fn unset_variables_are_removed_from_commands() {
+        let mut session = SessionEnv::new(env(&[]));
+        session.set("DISPLAY", ":3");
+        session.unset("DISPLAY");
+        assert_eq!(session.get("DISPLAY"), None);
+        let mut command = Command::new("true");
+        session.apply(&mut command);
+        let envs: HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(envs[std::ffi::OsStr::new("DISPLAY")], None);
     }
 
     #[test]

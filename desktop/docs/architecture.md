@@ -99,20 +99,39 @@ Modules in `crates/nimbus-compositor/src`:
   On the headless backend, `Request::Click` and `Request::PressKey` feed input as if a user made it, for tests.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
 - `render.rs`: the scene shared by all backends, the wallpaper or built-in gradient backdrop, and screenshots.
+- `xwayland/`: the X11 display for X11 apps; see [XWayland](#xwayland).
 
 Command line, which `nimbus-session` relies on:
 
 ```text
-nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--config <path>] [--locked]
+nimbus-compositor [--backend winit|udev|headless] [--socket <wayland socket name>] [--x11-display :<n>] [--config <path>] [--locked]
 ```
 
-When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`
-for its children and prints exactly one line to standard output:
-`NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`.
+When the Wayland and control sockets accept connections, the compositor sets `WAYLAND_DISPLAY`, `NIMBUS_SOCKET`,
+and `DISPLAY` when it serves X11 apps, for its children, and prints exactly one line to standard output:
+`NIMBUS_READY WAYLAND_DISPLAY=<name> [DISPLAY=:<n>] NIMBUS_SOCKET=<path>`.
 `nimbus_ipc::Ready` formats and parses this line.
 All logging goes to standard error.
 The headless backend creates one 1920x1080 virtual output, `HEADLESS-1`, or one per size listed in `NIMBUS_HEADLESS_OUTPUTS` such as `1280x720,1920x1080`.
 `Request::Quit` and the emergency exit end the compositor with status 0, which `nimbus-session` takes as a logout.
+
+### XWayland
+
+X11 apps run through [`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite),
+a separate process that runs `Xwayland` rootless and is an ordinary Wayland client of the compositor, as in niri.
+At startup, unless `[xwayland] enabled = false`, the compositor asks the satellite (`[xwayland] path`, or `xwayland-satellite` in `PATH`)
+whether it takes `-listenfd`, which needs version 0.6 or later.
+It then takes the X11 display that `--x11-display` names, or the lowest free one, the way X servers do:
+the lock file `/tmp/.X<n>-lock` with its process id, replacing one whose process is gone,
+and listening sockets at `/tmp/.X11-unix/X<n>` and the abstract address of the same name.
+`xwayland/display.rs` holds them and removes the files when the compositor exits.
+
+The compositor watches the sockets, and on the first connection starts `xwayland-satellite :<n> -listenfd <fd> -listenfd <fd>`
+with both sockets inherited, then stops watching until the satellite exits.
+Clients wait in the sockets' backlog meanwhile, so none is lost while it starts or restarts;
+the next connection after an exit starts it again.
+Without a usable satellite, the compositor logs why once and leaves `DISPLAY` unset.
+`NIMBUS_X11_DIR` replaces `/tmp` in tests.
 
 ## Displays
 
@@ -355,9 +374,10 @@ Settings and the compositor parse key chords with the same `nimbus_config::chord
 
 `nimbus-session` treats a compositor exit status of 0 as a logout and anything else as a crash.
 It restarts a crashed compositor up to three times a minute, then ends the session.
-A restarted compositor reuses the first one's Wayland socket name, so clients keep a valid `WAYLAND_DISPLAY`.
+A restarted compositor reuses the first one's Wayland socket name, and its X11 display when it's still free,
+so clients keep a valid `WAYLAND_DISPLAY` and `DISPLAY`.
 
-It starts `nimbus-shell` once the compositor reports readiness, with the compositor's `WAYLAND_DISPLAY` and `NIMBUS_SOCKET`,
+It starts `nimbus-shell` once the compositor reports readiness, with the compositor's `WAYLAND_DISPLAY`, `NIMBUS_SOCKET`, and `DISPLAY`,
 and passes it `--config` when the session has one.
 A shell that exits, for any reason, is restarted after a delay that doubles from half a second up to 30 seconds,
 and drops back to half a second once a shell ran for 30 seconds.
@@ -406,6 +426,9 @@ The release profile aborts on panic, because every process is supervised or rest
   that a client locks again after destroying its unconfirmed lock, that a second lock surface on an output is `duplicate_output`,
   that a surface that showed a buffer is `already_constructed`,
   and that a refused lock's surfaces are inert but still follow the role rule.
+  The XWayland tests check display allocation, stale and live lock files, and cleanup,
+  and, with a Python script standing in for `xwayland-satellite`, that the first X11 client starts it with both sockets,
+  the next client after it exits starts it again, and that `DISPLAY` stays unset without it.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   check the composited output through `Request::Screenshot`, click and type through `Request::Click` and `Request::PressKey`,
   and follow the shell's log of the surfaces it opens and closes:

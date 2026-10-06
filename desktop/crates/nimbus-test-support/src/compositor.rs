@@ -104,6 +104,7 @@ impl CompositorBuilder {
             .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
             .env("NIMBUS_HEADLESS_OUTPUTS", "1280x720")
             .env("RUST_LOG", "info")
+            .env("NIMBUS_X11_DIR", dir.path())
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("WAYLAND_SOCKET")
             .env_remove("DISPLAY")
@@ -130,17 +131,27 @@ impl CompositorBuilder {
                 std::fs::read_to_string(&log).unwrap_or_default()
             );
         };
-        Compositor { child, dir, display: ready.wayland_display, control: ready.socket, log }
+        Compositor {
+            child,
+            dir,
+            display: ready.wayland_display,
+            x11_display: ready.x11_display,
+            control: ready.socket,
+            log,
+        }
     }
 }
 
 /// A headless compositor process in a temporary directory, killed on drop.
 ///
 /// The directory holds `config.toml`, `compositor.log`, and the `runtime` directory.
+/// It also stands in for `/tmp` as the place of X11 sockets and lock files.
 pub struct Compositor {
     child: Child,
     pub dir: tempfile::TempDir,
     pub display: String,
+    /// The X11 display from the ready line, such as `:0`.
+    pub x11_display: Option<String>,
     pub control: PathBuf,
     log: PathBuf,
 }

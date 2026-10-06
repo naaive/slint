@@ -18,9 +18,11 @@ pub mod geometry;
 mod outputs;
 mod update;
 mod watch;
+mod xwayland;
 pub use outputs::{InvalidOutputMode, OutputConfig, OutputId, OutputMode, Transform, format_hz};
 pub use update::{update, update_with};
 pub use watch::{ConfigWatcher, watch};
+pub use xwayland::Xwayland;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -31,6 +33,7 @@ pub struct Config {
     pub input: Input,
     pub keybindings: Keybindings,
     pub power: Power,
+    pub xwayland: Xwayland,
     /// Command lines started once when the session starts.
     pub autostart: Vec<String>,
     /// Desktop entry ids pinned to the dock, in order, without the `.desktop` suffix.
@@ -49,6 +52,7 @@ impl Default for Config {
             input: Input::default(),
             keybindings: Keybindings::default(),
             power: Power::default(),
+            xwayland: Xwayland::default(),
             autostart: Vec::new(),
             favorites: [
                 "org.nimbus.Files",

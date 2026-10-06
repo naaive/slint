@@ -121,7 +121,7 @@ pub struct Program {
 }
 
 pub struct SessionPlan {
-    /// The compositor; the supervisor adds `--socket` and `--locked`.
+    /// The compositor; the supervisor adds `--socket`, `--x11-display`, and `--locked`.
     pub compositor: Program,
     /// The Wayland socket name; without one, restarts reuse the name the first compositor picked.
     pub socket: Option<String>,
@@ -140,6 +140,7 @@ pub struct SessionPlan {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Start {
     socket: Option<String>,
+    x11_display: Option<String>,
     locked: bool,
 }
 
@@ -154,6 +155,9 @@ fn compositor_command(compositor: &Program, env: &SessionEnv, start: &Start) -> 
     command.args(&compositor.args).stdin(Stdio::null()).stdout(Stdio::piped());
     if let Some(socket) = &start.socket {
         command.arg("--socket").arg(socket);
+    }
+    if let Some(display) = &start.x11_display {
+        command.arg("--x11-display").arg(display);
     }
     if start.locked {
         command.arg("--locked");
@@ -285,7 +289,7 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
     let mut children = Children::default();
     let mut target_started = false;
     let mut client_env = plan.env.clone();
-    let mut start = Start { socket: plan.socket.clone(), locked: false };
+    let mut start = Start { socket: plan.socket.clone(), x11_display: None, locked: false };
     let mut autostart = Some(plan.autostart);
     // The display manager authenticated the user, so a marker left by an earlier session is stale.
     if let Some(marker) = &plan.lock_marker {
@@ -320,8 +324,15 @@ pub fn run(plan: SessionPlan) -> anyhow::Result<ExitCode> {
                     );
                     // Autostarted clients keep their environment, so restarts keep the socket name.
                     start.socket.get_or_insert_with(|| ready.wayland_display.clone());
+                    if start.x11_display.is_none() {
+                        start.x11_display.clone_from(&ready.x11_display);
+                    }
                     client_env = plan.env.clone();
                     client_env.set("WAYLAND_DISPLAY", ready.wayland_display);
+                    match ready.x11_display {
+                        Some(display) => client_env.set("DISPLAY", display),
+                        None => client_env.unset("DISPLAY"),
+                    }
                     client_env.set(nimbus_ipc::SOCKET_ENV, ready.socket.to_string_lossy());
                     shell.start(&client_env);
                     update_activation_environment(&client_env);
@@ -690,12 +701,16 @@ mod tests {
         assert_eq!(names, [OsString::from("XDG_CURRENT_DESKTOP")]);
         assert_eq!(command.get_args().count(), 0);
 
-        let restart = Start { socket: Some("wayland-2".into()), locked: true };
+        let restart = Start {
+            socket: Some("wayland-2".into()),
+            x11_display: Some(":1".into()),
+            locked: true,
+        };
         let args: Vec<_> = compositor_command(&compositor, &env, &restart)
             .get_args()
             .map(ToOwned::to_owned)
             .collect();
-        assert_eq!(args, ["--socket", "wayland-2", "--locked"]);
+        assert_eq!(args, ["--socket", "wayland-2", "--x11-display", ":1", "--locked"]);
     }
 
     #[test]

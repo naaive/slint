@@ -16,6 +16,7 @@ mod process;
 mod render;
 mod state;
 mod wm;
+mod xwayland;
 
 use anyhow::{Context, anyhow};
 use backend::Backend;
@@ -61,6 +62,9 @@ struct Args {
     /// The compositor also starts locked when the lock marker in $XDG_RUNTIME_DIR/nimbus exists.
     #[arg(long)]
     locked: bool,
+    /// The X11 display to take when it's free, such as `:1`; nimbus-session passes the first compositor's after a crash.
+    #[arg(long, value_parser = xwayland::parse_display)]
+    x11_display: Option<u32>,
     /// Headless backend only: write a PNG of every output to this directory after a few frames.
     #[arg(long)]
     screenshot_dir: Option<PathBuf>,
@@ -157,9 +161,15 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     let ipc_path = nimbus_ipc::socket_path_for(&runtime_dir, &socket_name);
     let ipc = IpcServer::bind(ipc_path.clone(), &handle)?;
+    let xwayland = xwayland::Xwayland::start(&config.current().xwayland, args.x11_display, &handle);
+    let x11_display = xwayland.as_ref().map(|xwayland| xwayland.display_name().to_owned());
 
     // SAFETY: no other threads exist yet; the configuration watcher starts below.
     unsafe {
+        match &x11_display {
+            Some(name) => std::env::set_var("DISPLAY", name),
+            None => std::env::remove_var("DISPLAY"),
+        }
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
         std::env::set_var(nimbus_ipc::SOCKET_ENV, &ipc_path);
         std::env::set_var("XDG_CURRENT_DESKTOP", nimbus_xdg::DESKTOP_NAME);
@@ -208,7 +218,7 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     tracing::info!(backend = ?kind, socket = %socket_name, control = %ipc_path.display(), "Nimbus is ready");
     let mut stdout = std::io::stdout().lock();
-    let ready = nimbus_ipc::Ready { wayland_display: socket_name, socket: ipc_path };
+    let ready = nimbus_ipc::Ready { wayland_display: socket_name, x11_display, socket: ipc_path };
     writeln!(stdout, "{ready}").and_then(|()| stdout.flush()).context("cannot report readiness")?;
     drop(stdout);
 

@@ -220,40 +220,48 @@ pub const SOCKET_ENV: &str = "NIMBUS_SOCKET";
 
 /// The line the compositor prints on standard output once its sockets accept connections.
 ///
-/// It reads `NIMBUS_READY WAYLAND_DISPLAY=<name> NIMBUS_SOCKET=<path>`; the path may contain spaces.
+/// It reads `NIMBUS_READY WAYLAND_DISPLAY=<name> [DISPLAY=<x11 display>] NIMBUS_SOCKET=<path>`;
+/// the path may contain spaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ready {
     pub wayland_display: String,
+    /// The X11 display for X11 apps, such as `:1`, when the compositor serves one.
+    pub x11_display: Option<String>,
     pub socket: PathBuf,
 }
 
 impl Ready {
     const PREFIX: &str = "NIMBUS_READY ";
     const DISPLAY_KEY: &str = "WAYLAND_DISPLAY=";
+    const X11_DISPLAY_KEY: &str = "DISPLAY=";
     const SOCKET_KEY: &str = " NIMBUS_SOCKET=";
 
     /// Parses a ready line, with or without its line break.
     pub fn parse(line: &str) -> Option<Self> {
         let rest = line.trim_end_matches(['\r', '\n']).strip_prefix(Self::PREFIX)?;
         let rest = rest.trim_start().strip_prefix(Self::DISPLAY_KEY)?;
-        let (display, socket) = rest.split_once(Self::SOCKET_KEY)?;
-        let display = display.trim();
-        if display.is_empty() || display.contains(char::is_whitespace) || socket.is_empty() {
+        let (displays, socket) = rest.split_once(Self::SOCKET_KEY)?;
+        let mut displays = displays.split_whitespace();
+        let wayland_display = displays.next()?.to_string();
+        let x11_display = match displays.next() {
+            Some(field) => Some(field.strip_prefix(Self::X11_DISPLAY_KEY)?.to_string()),
+            None => None,
+        };
+        if x11_display.as_deref() == Some("") || displays.next().is_some() || socket.is_empty() {
             return None;
         }
-        Some(Self { wayland_display: display.to_string(), socket: PathBuf::from(socket) })
+        Some(Self { wayland_display, x11_display, socket: PathBuf::from(socket) })
     }
 }
 
 impl std::fmt::Display for Ready {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (prefix, display_key, socket_key) = (Self::PREFIX, Self::DISPLAY_KEY, Self::SOCKET_KEY);
-        write!(
-            f,
-            "{prefix}{display_key}{}{socket_key}{}",
-            self.wayland_display,
-            self.socket.display()
-        )
+        write!(f, "{prefix}{display_key}{}", self.wayland_display)?;
+        if let Some(x11_display) = &self.x11_display {
+            write!(f, " {}{x11_display}", Self::X11_DISPLAY_KEY)?;
+        }
+        write!(f, "{socket_key}{}", self.socket.display())
     }
 }
 
@@ -351,9 +359,17 @@ mod tests {
             ),
             Some(Ready {
                 wayland_display: "wayland-1".into(),
+                x11_display: None,
                 socket: "/run/user/1000/nimbus-wayland-1.sock".into()
             })
         );
+        assert_eq!(
+            Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w DISPLAY=:2 NIMBUS_SOCKET=/x")
+                .and_then(|r| r.x11_display),
+            Some(":2".into())
+        );
+        assert_eq!(Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w DISPLAY= NIMBUS_SOCKET=/x"), None);
+        assert_eq!(Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w OTHER=1 NIMBUS_SOCKET=/x"), None);
         assert_eq!(
             Ready::parse("NIMBUS_READY WAYLAND_DISPLAY=w NIMBUS_SOCKET=/tmp/a b.sock")
                 .map(|r| r.socket),
@@ -367,9 +383,21 @@ mod tests {
 
     #[test]
     fn ready_line_round_trips() {
-        let ready = Ready { wayland_display: "wayland-2".into(), socket: "/tmp/a b.sock".into() };
+        let mut ready = Ready {
+            wayland_display: "wayland-2".into(),
+            x11_display: None,
+            socket: "/tmp/a b.sock".into(),
+        };
         let line = ready.to_string();
         assert_eq!(line, "NIMBUS_READY WAYLAND_DISPLAY=wayland-2 NIMBUS_SOCKET=/tmp/a b.sock");
+        assert_eq!(Ready::parse(&line), Some(ready.clone()));
+
+        ready.x11_display = Some(":1".into());
+        let line = ready.to_string();
+        assert_eq!(
+            line,
+            "NIMBUS_READY WAYLAND_DISPLAY=wayland-2 DISPLAY=:1 NIMBUS_SOCKET=/tmp/a b.sock"
+        );
         assert_eq!(Ready::parse(&line), Some(ready));
     }
 

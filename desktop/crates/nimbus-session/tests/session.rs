@@ -240,6 +240,31 @@ fn autostart_runs_once_per_session() {
     assert_eq!(std::fs::read_to_string(runs).unwrap(), "run\n");
 }
 
+#[test]
+fn clients_get_the_x11_display_and_a_restart_keeps_it() {
+    let sandbox = Sandbox::new("");
+    let displays = sandbox.path("displays");
+    std::fs::write(
+        sandbox.path("config/nimbus/config.toml"),
+        format!("autostart = [\"echo $DISPLAY >> '{}'\"]\n", displays.display()),
+    )
+    .unwrap();
+    // Crashes after its first readiness, then logs out after the second.
+    let compositor = sandbox.compositor(&format!(
+        "echo 'NIMBUS_READY WAYLAND_DISPLAY=wayland-x11 DISPLAY=:7 NIMBUS_SOCKET=/tmp/x11.sock'\n\
+         sleep 1\n[ $(wc -l < '{}') -lt 2 ] && exit 3\nexit 0",
+        sandbox.path("starts").display()
+    ));
+    let mut session = sandbox.spawn(&compositor);
+    let status = wait_with_timeout(&mut session, Duration::from_secs(20));
+    assert!(status.success(), "{status}");
+    assert_eq!(
+        sandbox.starts(),
+        vec!["--backend headless", "--backend headless --socket wayland-x11 --x11-display :7"]
+    );
+    assert_eq!(std::fs::read_to_string(displays).unwrap(), ":7\n");
+}
+
 /// A fake compositor that creates the lock marker and crashes the first time, then logs out.
 fn crash_while_locked(sandbox: &Sandbox) -> PathBuf {
     let marker = sandbox.path("runtime/nimbus/locked");

@@ -25,6 +25,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - No UI of its own: the shell is a separate client, so a crashed shell doesn't take windows down.
   A locked session stays locked, and black, until a lock client takes over again.
 - Screenshots of any output, from a key binding or `nimbusctl screenshot`.
+- X11 apps through [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite),
+  which starts when the first X11 app connects and again after it exits.
 - A built-in gradient backdrop when no wallpaper is set.
 
 ### Shell (`nimbus-shell`)
@@ -227,7 +229,9 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - A click on an empty spot of the panel doesn't close an open popup; a click on a window or the dock does.
 - The shell has no input method support; it handles dead keys and Compose sequences with the locale's XKB compose table.
   A key that completes or cancels a sequence still sends its own key release.
-- There's no XWayland, so X11-only apps don't run.
+- X11 apps need xwayland-satellite 0.6 or later; without it, `DISPLAY` stays unset.
+  XWayland has only run against a script standing in for xwayland-satellite.
+  Changing `[xwayland]` takes effect when the compositor restarts.
 - Nimbus draws no server-side decorations; apps draw their own title bars, which don't follow the Nimbus theme.
 - Display configuration has only run headless.
   On udev, a test checks modes and free CRTCs but not the kernel's bandwidth limits; an apply that hits them rolls back.
