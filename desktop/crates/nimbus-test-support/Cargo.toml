@@ -1,6 +1,6 @@
 [package]
 name = "nimbus-test-support"
-description = "Test harness shared by the Nimbus integration tests: a headless compositor, Wayland test clients, and a private D-Bus daemon"
+description = "Test harness shared by the Nimbus integration tests: a headless compositor, Wayland test clients, a private D-Bus daemon, and fake system daemons"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

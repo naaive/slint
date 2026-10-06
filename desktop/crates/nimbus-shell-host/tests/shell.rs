@@ -9,7 +9,7 @@ use common::{
     mean, panel_visible, shell_visible,
 };
 use nimbus_ipc::Request;
-use nimbus_test_support::InputMethod;
+use nimbus_test_support::{FakeBattery, FakeLogind, FakeUPower, InputMethod, WarningLevel};
 use nix::sys::signal::Signal;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     ContentHint, ContentPurpose,
@@ -286,14 +286,9 @@ fn toasts_appear_in_their_own_surface_and_expire() {
 #[test]
 fn inserted_media_are_mounted_and_announced_in_a_toast() {
     let Some(bus) = PrivateBus::start() else { return };
-    // The fake answers on the runtime's worker thread while the test waits.
-    let runtime =
-        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let runtime = fake_runtime();
     let udisks = runtime.block_on(nimbus_test_support::FakeUdisks::start(&bus));
-    let mut session = Session::start_compositor(CONFIG, None);
-    session.system_bus = Some(bus.address.clone());
-    session.start_shell();
-    session.wait_screenshot("the panel and the dock", shell_visible);
+    let session = start_with_system_bus(&bus);
     session.wait_log("the udisks client", "Watching volumes from udisks");
 
     let device = "/org/freedesktop/UDisks2/block_devices/sdb1";
@@ -303,6 +298,67 @@ fn inserted_media_are_mounted_and_announced_in_a_toast() {
     common::wait_for("the stick to be mounted", || {
         udisks.calls().contains(&"mount STICK".into()).then_some(())
     });
+}
+
+/// A runtime for fakes on a private bus, which answer on its worker thread while the test waits.
+fn fake_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap()
+}
+
+/// Starts the compositor and the shell with `bus` as the system bus.
+fn start_with_system_bus(bus: &PrivateBus) -> Session {
+    let mut session = Session::start_compositor(CONFIG, None);
+    session.system_bus = Some(bus.address.clone());
+    session.start_shell();
+    session.wait_screenshot("the panel and the dock", shell_visible);
+    session
+}
+
+#[test]
+fn the_session_locks_before_suspend() {
+    let Some(bus) = PrivateBus::start() else { return };
+    let runtime = fake_runtime();
+    let logind = runtime.block_on(FakeLogind::start(&bus));
+    let session = start_with_system_bus(&bus);
+    common::wait_for("the sleep inhibitor", || logind.inhibitors().pop());
+    let inhibitor = &logind.inhibitors()[0];
+    assert_eq!((inhibitor.what.as_str(), inhibitor.mode.as_str()), ("sleep", "delay"));
+    assert!(!inhibitor.released);
+    assert!(!session.locked());
+
+    // Suspend goes ahead once the shell holds the lock.
+    runtime.block_on(logind.prepare_for_sleep(true));
+    common::wait_for("the inhibitor's release", || logind.inhibitors()[0].released.then_some(()));
+    assert_eq!(session.compositor.lock_state(), (true, true));
+    session.wait_log("the shell to hold the lock", "locked");
+
+    // After resuming, the shell delays the next suspend again and stays locked.
+    runtime.block_on(logind.prepare_for_sleep(false));
+    common::wait_for("a new inhibitor", || (logind.inhibitors().len() == 2).then_some(()));
+    assert!(!logind.inhibitors()[1].released);
+    assert!(session.locked());
+}
+
+#[test]
+fn low_battery_shows_a_toast_until_the_battery_charges() {
+    let Some(bus) = PrivateBus::start() else { return };
+    let runtime = fake_runtime();
+    let upower = runtime
+        .block_on(FakeUPower::start(&bus, FakeBattery::discharging(50.0, WarningLevel::None)));
+    let session = start_with_system_bus(&bus);
+
+    // A critical toast stays until the battery charges.
+    runtime.block_on(upower.set(FakeBattery::discharging(4.0, WarningLevel::Critical)));
+    session.wait_log("the critical warning", "battery warning level=Critical");
+    session.wait_opened("Toasts", 1);
+    runtime.block_on(upower.set(FakeBattery::charging(5.0)));
+    session.wait_log("the warning to clear", "battery warning cleared");
+    session.wait_closed("Toasts", 1);
+
+    // Running low again is a new crossing.
+    runtime.block_on(upower.set(FakeBattery::discharging(9.0, WarningLevel::Low)));
+    session.wait_log("the low warning", "battery warning level=Low");
+    session.wait_opened("Toasts", 2);
 }
 
 /// Linux input event codes.

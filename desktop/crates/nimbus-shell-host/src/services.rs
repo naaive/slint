@@ -2,6 +2,7 @@
 
 //! System services and the commands the compositor sends the shell, such as the volume keys.
 
+use crate::battery::BatteryAlert;
 use crate::ipc::log_failure;
 use crate::media::Media;
 use crate::state::{State, forward};
@@ -20,6 +21,7 @@ pub struct SystemServices {
     /// notification server's, which count up.
     next_local_notification: u32,
     pub media: Media,
+    pub battery: BatteryAlert,
 }
 
 impl SystemServices {
@@ -30,7 +32,12 @@ impl SystemServices {
         let services = Services::spawn(ServicesConfig::default(), move |event| {
             let _ = sender.send(event);
         });
-        Ok(Self { services, next_local_notification: u32::MAX, media: Media::default() })
+        Ok(Self {
+            services,
+            next_local_notification: u32::MAX,
+            media: Media::default(),
+            battery: BatteryAlert::default(),
+        })
     }
 
     pub fn send(&self, command: ServiceCommand) {
@@ -60,6 +67,10 @@ impl State {
             }
             ServiceEvent::UnlockRequested => self.unlock(),
             ServiceEvent::Disks(event) => self.disks_event(event),
+            ServiceEvent::State(ref system) => {
+                self.model.handle_service_event(&event);
+                self.battery_changed(system.battery.as_ref());
+            }
             event => self.model.handle_service_event(&event),
         }
     }

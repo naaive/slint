@@ -207,8 +207,13 @@ impl Compositor {
     }
 
     pub fn locked(&self) -> bool {
+        self.lock_state().0
+    }
+
+    /// Whether the session is locked, and whether a live lock client holds the lock.
+    pub fn lock_state(&self) -> (bool, bool) {
         match self.ipc().request(&Request::GetLockState).expect("get-lock-state") {
-            Response::LockState { locked, .. } => locked,
+            Response::LockState { locked, held } => (locked, held),
             other => panic!("unexpected response {other:?}"),
         }
     }

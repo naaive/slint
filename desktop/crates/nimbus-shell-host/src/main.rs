@@ -6,6 +6,7 @@
 
 mod actions;
 mod auth;
+mod battery;
 mod config;
 mod idle;
 mod input;

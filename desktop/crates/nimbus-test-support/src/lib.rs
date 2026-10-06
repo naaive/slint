@@ -5,13 +5,17 @@
 mod bus;
 mod compositor;
 mod input_method;
+mod logind;
 mod udisks;
+mod upower;
 mod wayland;
 
 pub use bus::PrivateBus;
 pub use compositor::{Compositor, CompositorBuilder, Events, compositor_binary};
 pub use input_method::{InputMethod, InputMethodState, TextInputState};
+pub use logind::{FakeLogind, Inhibitor};
 pub use udisks::{FAKE_DRIVE, FakeUdisks, MountAnswer};
+pub use upower::{FakeBattery, FakeUPower, WarningLevel};
 pub use wayland::{
     TestClient, TestClientState, TestWindow, attach_buffer, connect, dispatch_until,
 };

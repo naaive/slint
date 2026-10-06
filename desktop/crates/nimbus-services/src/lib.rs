@@ -58,6 +58,18 @@ pub struct Battery {
     /// On external power: charging, fully charged, or about to charge.
     pub charging: bool,
     pub time_to_empty: Option<std::time::Duration>,
+    pub warning: BatteryWarning,
+}
+
+/// How low UPower considers the charge, by the thresholds in its `UPower.conf`.
+/// It's [`BatteryWarning::None`] while the battery charges.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BatteryWarning {
+    #[default]
+    None,
+    Low,
+    /// Critically low, or so low that UPower is about to act, such as by hibernating.
+    Critical,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

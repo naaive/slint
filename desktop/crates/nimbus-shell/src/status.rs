@@ -84,7 +84,7 @@ fn player_name(bus_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nimbus_services::{Audio, Battery, Bluetooth, Media, Network};
+    use nimbus_services::{Audio, Battery, BatteryWarning, Bluetooth, Media, Network};
     use std::time::Duration;
 
     #[test]
@@ -103,6 +103,7 @@ mod tests {
                 level: 0.42,
                 charging: false,
                 time_to_empty: Some(Duration::from_secs(7500)),
+                warning: BatteryWarning::None,
             }),
             network: Network {
                 kind: ConnectionKind::Wifi,
@@ -136,14 +137,14 @@ mod tests {
 
     #[test]
     fn battery_details() {
-        let mut state = SystemState {
-            battery: Some(Battery { level: 1.0, charging: true, time_to_empty: None }),
-            ..Default::default()
+        let battery = |level, charging| {
+            Some(Battery { level, charging, time_to_empty: None, warning: BatteryWarning::None })
         };
+        let mut state = SystemState { battery: battery(1.0, true), ..Default::default() };
         assert_eq!(status(&state).status.battery_detail, "Fully charged");
-        state.battery = Some(Battery { level: 0.5, charging: true, time_to_empty: None });
+        state.battery = battery(0.5, true);
         assert_eq!(status(&state).status.battery_detail, "Charging");
-        state.battery = Some(Battery { level: 0.5, charging: false, time_to_empty: None });
+        state.battery = battery(0.5, false);
         assert_eq!(status(&state).status.battery_detail, "");
     }
 }

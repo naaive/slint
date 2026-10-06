@@ -27,6 +27,7 @@ mod system_scheme;
 mod view;
 mod windows;
 
+pub use clock::short_duration;
 pub use lock_view::LockView;
 pub use view::{
     Align, Edges, Part, PartComponent, PartWindow, Placement, PopupPlacement, ShellView,

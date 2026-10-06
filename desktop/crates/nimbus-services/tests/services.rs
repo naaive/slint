@@ -3,17 +3,14 @@
 //! End-to-end tests against a private `dbus-daemon`, with fake system daemons where needed.
 
 use std::collections::HashMap;
-use std::io::Read;
-use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use nimbus_services::{
-    Bluetooth, BusAddress, CloseReason, ConnectionKind, Network, ServiceCommand, ServiceEvent,
-    Services, ServicesBuilder, ServicesConfig, SystemState, Urgency,
+    BatteryWarning, Bluetooth, BusAddress, CloseReason, ConnectionKind, Network, ServiceCommand,
+    ServiceEvent, Services, ServicesBuilder, ServicesConfig, SystemState, Urgency,
 };
-use nimbus_test_support::PrivateBus;
+use nimbus_test_support::{FakeBattery, FakeLogind, FakeUPower, PrivateBus, WarningLevel};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::time::timeout;
 use zbus::object_server::SignalEmitter;
@@ -74,6 +71,16 @@ async fn next_non_state(events: &mut UnboundedReceiver<ServiceEvent>) -> Service
             event => return event,
         }
     }
+}
+
+async fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    timeout(WAIT, async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
 }
 
 async fn wait_for_owner(conn: &Connection, name: &str) {
@@ -423,43 +430,6 @@ async fn notification_server_yields_to_existing_daemon() {
     assert!(timeout(Duration::from_millis(200), next_non_state(&mut events)).await.is_err());
 }
 
-struct FakeDisplayDevice {
-    percentage: f64,
-}
-
-#[interface(name = "org.freedesktop.UPower.Device")]
-impl FakeDisplayDevice {
-    #[zbus(property)]
-    fn percentage(&self) -> f64 {
-        self.percentage
-    }
-    #[zbus(property)]
-    fn state(&self) -> u32 {
-        2
-    }
-    #[zbus(property)]
-    fn time_to_empty(&self) -> i64 {
-        5400
-    }
-    #[zbus(property)]
-    fn is_present(&self) -> bool {
-        true
-    }
-    #[zbus(property, name = "Type")]
-    fn kind(&self) -> u32 {
-        2
-    }
-
-    async fn set_percentage(
-        &mut self,
-        percentage: f64,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) {
-        self.percentage = percentage;
-        let _ = self.percentage_changed(&emitter).await;
-    }
-}
-
 #[tokio::test]
 async fn upower_appears_changes_and_leaves() {
     let Some(bus) = PrivateBus::start() else { return };
@@ -472,217 +442,72 @@ async fn upower_appears_changes_and_leaves() {
     // Give the service time to start watching before the daemon appears.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let daemon = bus.connect().await;
-    daemon
-        .object_server()
-        .at("/org/freedesktop/UPower/devices/DisplayDevice", FakeDisplayDevice { percentage: 50.0 })
-        .await
-        .unwrap();
-    daemon.request_name("org.freedesktop.UPower").await.unwrap();
-
+    let upower = FakeUPower::start(&bus, FakeBattery::discharging(50.0, WarningLevel::None)).await;
     let state = state_where(&mut events, |state| state.battery.is_some()).await;
     let battery = state.battery.unwrap();
     assert_eq!(battery.level, 0.5);
     assert!(!battery.charging);
     assert_eq!(battery.time_to_empty, Some(Duration::from_secs(5400)));
+    assert_eq!(battery.warning, BatteryWarning::None);
 
-    daemon
-        .call_method(
-            Some("org.freedesktop.UPower"),
-            "/org/freedesktop/UPower/devices/DisplayDevice",
-            Some("org.freedesktop.UPower.Device"),
-            "SetPercentage",
-            &(75.0f64,),
-        )
-        .await
-        .unwrap();
+    upower.set(FakeBattery::discharging(75.0, WarningLevel::None)).await;
     state_where(&mut events, |state| state.battery.as_ref().is_some_and(|b| b.level == 0.75)).await;
 
-    drop(daemon);
+    upower.set(FakeBattery::discharging(4.0, WarningLevel::Critical)).await;
+    state_where(&mut events, |state| {
+        state.battery.as_ref().is_some_and(|b| b.warning == BatteryWarning::Critical)
+    })
+    .await;
+
+    drop(upower);
     state_where(&mut events, |state| state.battery.is_none()).await;
-}
-
-/// Holds our end of every inhibitor handed out; it reads EOF once the services close theirs.
-#[derive(Clone, Default)]
-struct FakeManager {
-    inhibitors: Arc<Mutex<Vec<UnixStream>>>,
-}
-
-impl FakeManager {
-    fn count(&self) -> usize {
-        self.inhibitors.lock().unwrap().len()
-    }
-
-    fn latest_closed(&self) -> bool {
-        let inhibitors = self.inhibitors.lock().unwrap();
-        let mut latest = inhibitors.last().expect("no inhibitor");
-        latest.set_nonblocking(true).unwrap();
-        matches!(latest.read(&mut [0]), Ok(0))
-    }
-
-    async fn wait_until_latest_closed(&self) {
-        timeout(WAIT, async {
-            while !self.latest_closed() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("timed out waiting for the inhibitor to close");
-    }
-}
-
-#[interface(name = "org.freedesktop.login1.Manager")]
-impl FakeManager {
-    fn get_session(&self, id: String) -> zbus::fdo::Result<OwnedObjectPath> {
-        OwnedObjectPath::try_from(format!("/org/freedesktop/login1/session/{id}"))
-            .map_err(|err| zbus::fdo::Error::InvalidArgs(err.to_string()))
-    }
-
-    fn inhibit(
-        &self,
-        _what: &str,
-        _who: &str,
-        _why: &str,
-        _mode: &str,
-    ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
-        let (ours, theirs) =
-            UnixStream::pair().map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
-        self.inhibitors.lock().unwrap().push(ours);
-        Ok(std::os::fd::OwnedFd::from(theirs).into())
-    }
-
-    async fn emit_sleep(
-        &self,
-        start: bool,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
-    ) -> zbus::fdo::Result<()> {
-        Self::prepare_for_sleep(&emitter, start).await?;
-        Ok(())
-    }
-
-    #[zbus(signal)]
-    async fn prepare_for_sleep(emitter: &SignalEmitter<'_>, start: bool) -> zbus::Result<()>;
-}
-
-struct FakeSession;
-
-#[interface(name = "org.freedesktop.login1.Session")]
-impl FakeSession {
-    #[zbus(property)]
-    fn id(&self) -> String {
-        "c1".into()
-    }
-
-    #[zbus(name = "Lock")]
-    async fn lock_method(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
-        let emitter = SignalEmitter::new(conn, "/org/freedesktop/login1/session/c1")?;
-        Self::lock_signal(&emitter).await?;
-        Ok(())
-    }
-
-    async fn emit_unlock(&self, #[zbus(connection)] conn: &Connection) -> zbus::fdo::Result<()> {
-        let emitter = SignalEmitter::new(conn, "/org/freedesktop/login1/session/c1")?;
-        Self::unlock(&emitter).await?;
-        Ok(())
-    }
-
-    #[zbus(signal, name = "Lock")]
-    async fn lock_signal(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
-
-    #[zbus(signal)]
-    async fn unlock(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[tokio::test]
 async fn logind_lock_unlock_and_sleep() {
     let Some(bus) = PrivateBus::start() else { return };
-    let daemon = bus.connect().await;
-    let server = daemon.object_server();
-    let manager = FakeManager::default();
-    server.at("/org/freedesktop/login1", manager.clone()).await.unwrap();
-    server.at("/org/freedesktop/login1/session/auto", FakeSession).await.unwrap();
-    server.at("/org/freedesktop/login1/session/c1", FakeSession).await.unwrap();
-    daemon.request_name("org.freedesktop.login1").await.unwrap();
-
+    let logind = FakeLogind::start(&bus).await;
     let (services, mut events) = spawn(
         ServicesBuilder::new(ServicesConfig { logind: true, ..disabled() })
             .session_bus(BusAddress::Disabled)
             .system_bus(BusAddress::Address(bus.address.clone())),
     );
     assert!(matches!(next_event(&mut events).await, ServiceEvent::State(_)));
-    // Wait until the service has subscribed: its sleep inhibitor call is the last step of setup.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The sleep inhibitor is the last step of setup, after subscribing to signals.
+    wait_until("the sleep inhibitor", || logind.inhibitors().len() == 1).await;
+    let inhibitor = &logind.inhibitors()[0];
+    assert_eq!((inhibitor.what.as_str(), inhibitor.mode.as_str()), ("sleep", "delay"));
 
     services.send(ServiceCommand::LockSession);
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);
-
-    let call =
-        |path: &'static str, interface: &'static str, method: &'static str, body: Option<bool>| {
-            let daemon = daemon.clone();
-            async move {
-                match body {
-                    Some(body) => {
-                        daemon
-                            .call_method(
-                                Some("org.freedesktop.login1"),
-                                path,
-                                Some(interface),
-                                method,
-                                &(body,),
-                            )
-                            .await
-                    }
-                    None => {
-                        daemon
-                            .call_method(
-                                Some("org.freedesktop.login1"),
-                                path,
-                                Some(interface),
-                                method,
-                                &(),
-                            )
-                            .await
-                    }
-                }
-                .unwrap();
-            }
-        };
-    call(
-        "/org/freedesktop/login1/session/c1",
-        "org.freedesktop.login1.Session",
-        "EmitUnlock",
-        None,
-    )
-    .await;
+    logind.unlock_session().await;
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::UnlockRequested);
+
     // Suspend waits until the compositor presents the lock screen.
-    assert_eq!(manager.count(), 1);
-    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(true))
-        .await;
+    let latest_released = || logind.inhibitors().last().is_some_and(|i| i.released);
+    logind.prepare_for_sleep(true).await;
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);
     tokio::time::sleep(Duration::from_millis(800)).await;
-    assert!(!manager.latest_closed());
+    assert!(!latest_released());
     services.send(ServiceCommand::LockPresented);
-    manager.wait_until_latest_closed().await;
+    wait_until("the inhibitor's release", latest_released).await;
 
-    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(false))
-        .await;
+    // Resuming takes a new inhibitor.
+    logind.prepare_for_sleep(false).await;
     assert!(timeout(Duration::from_millis(200), next_non_state(&mut events)).await.is_err());
-    assert_eq!(manager.count(), 2);
-    assert!(!manager.latest_closed());
+    wait_until("a new inhibitor", || logind.inhibitors().len() == 2).await;
+    assert!(!latest_released());
 
     // Without that report, suspend proceeds after a timeout.
-    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(true))
-        .await;
+    logind.prepare_for_sleep(true).await;
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);
     tokio::time::sleep(Duration::from_millis(800)).await;
-    assert!(!manager.latest_closed());
-    manager.wait_until_latest_closed().await;
-    call("/org/freedesktop/login1", "org.freedesktop.login1.Manager", "EmitSleep", Some(false))
-        .await;
+    assert!(!latest_released());
+    wait_until("the inhibitor's release", latest_released).await;
+    logind.prepare_for_sleep(false).await;
 
     // Without logind, locking still reaches the shell.
-    drop(daemon);
+    drop(logind);
     tokio::time::sleep(Duration::from_millis(300)).await;
     services.send(ServiceCommand::LockSession);
     assert_eq!(next_non_state(&mut events).await, ServiceEvent::LockRequested);

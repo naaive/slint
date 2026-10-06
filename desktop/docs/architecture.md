@@ -481,6 +481,7 @@ Modules in `crates/nimbus-shell-host/src`:
   Volume and brightness keys go through `ShellModel::step_level`, so rapid presses build on the level the model shows.
 - `actions.rs`: `ShellAction`s, launching applications with an `xdg-activation` token, and the application index.
 - `media.rs`: removable media; see [Removable Media](#removable-media).
+- `battery.rs`: low battery toasts; see [Battery](#battery).
 
 ### Rendering
 
@@ -544,6 +545,16 @@ A compositor started with `--locked`, or with the marker present, starts locked 
 When the compositor crashes with the marker present, the session restarts it with `--locked`, then restarts the shell, which locks again.
 The marker is per runtime directory, so a nested compositor in the same `XDG_RUNTIME_DIR` shares it with the real session.
 
+### Before Suspend
+
+The shell's logind service takes a `sleep` inhibitor in `delay` mode as soon as it finds logind, and again after each resume.
+On `PrepareForSleep(true)`, the shell locks, and once the compositor confirms the lock, or right away if it already holds one,
+it sends `ServiceCommand::LockPresented`, which closes the inhibitor so suspend goes ahead.
+After 2 seconds without that, the inhibitor closes anyway, well before logind's default `InhibitDelayMaxSec` of 5 seconds.
+The compositor confirms with a frame drawn after the lock, which is black until the lock surfaces draw,
+so the lock screen itself may first show after resuming.
+When the compositor refuses the shell's lock because another client holds it, that client's lock screen counts, and suspend goes ahead too.
+
 ## polkit Authentication
 
 The shell process is the session's polkit authentication agent; `crates/nimbus-services/src/polkit` implements it.
@@ -590,6 +601,15 @@ Files adds the volumes to the devices in its sidebar.
 A mounted volume takes the place of its mount point from the mount table; opening one that isn't mounted mounts it and shows it.
 An eject button and a menu unmount it, eject its medium, or power off its drive, after leaving its folder if it's showing.
 A toast says when an ejected or powered off volume can be removed.
+
+## Battery
+
+UPower's display device reports a `WarningLevel` by the thresholds in `UPower.conf`, by percentage or time left;
+`Battery::warning` is `Low`, or `Critical` for its critical and action levels, and never set while charging.
+The shell shows a toast each time the battery reaches a lower level than it announced since it last charged:
+"Battery low" with the time or percentage left, then "Battery critically low", which replaces it and stays until dismissed.
+Both go when the warning ends, such as when the charger is plugged in.
+Like other toasts, they wait in the notification center while the session is locked or do not disturb is on.
 
 ## Portal
 
@@ -726,6 +746,8 @@ The release profile aborts on panic, because every process is supervised or rest
   an input method client from `nimbus-test-support` composes and commits Chinese text in the launcher search and sees the field's new text,
   the lock screen's password field asks for the `password` purpose without its text,
   a killed shell leaves the session locked and a restarted one locks again, and the exit statuses are right.
+  With the fake logind, `PrepareForSleep` makes the shell lock, the inhibitor goes only once the shell holds the lock, and resuming takes a new one.
+  With the fake UPower, a critical battery opens a toast that charging takes back, and running low again opens a new one.
   They render in software unless `NIMBUS_SHELL_RENDERER` is set; `NIMBUS_SHELL_RENDERER=gl` runs them on `GlRenderer`.
 - The `nimbus-session` tests run it with shell scripts standing in for the compositor and the shell.
   With a private `dbus-daemon`, they check that a script standing in for `gnome-keyring-daemon` runs when nothing owns `org.freedesktop.secrets`,
@@ -737,6 +759,9 @@ The release profile aborts on panic, because every process is supervised or rest
   the 24-hour clock, and default applications against sample sources.
 - `nimbus-services`, `nimbus-portal`, and the `nimbus-shell` toast test run against a private `dbus-daemon`,
   and skip with a message when it's missing.
+  `nimbus-test-support` has a fake logind, which hands out inhibitors and reports whether they're released, and a fake UPower with one battery.
+  The logind test checks the `sleep` delay inhibitor, its release on `LockPresented` or after the timeout, and a new one after resuming;
+  the UPower test follows the battery's level and warning, and its daemon leaving.
   The polkit test registers the agent with a fake polkitd and logind there, and calls `BeginAuthentication` and `CancelAuthentication`;
   unit tests drive the helper protocol with shell scripts standing in for `polkit-agent-helper-1`.
   The NetworkManager client test lists networks and wired details from a fake NetworkManager,

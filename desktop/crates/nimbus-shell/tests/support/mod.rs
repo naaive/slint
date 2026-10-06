@@ -12,7 +12,8 @@ use std::time::{Duration, SystemTime};
 use nimbus_config::{ColorScheme, Config};
 use nimbus_ipc::{CompositorState, LayoutMode, OutputInfo, WindowInfo};
 use nimbus_services::{
-    Audio, Battery, Bluetooth, ConnectionKind, Media, Network, Notification, SystemState, Urgency,
+    Audio, Battery, BatteryWarning, Bluetooth, ConnectionKind, Media, Network, Notification,
+    SystemState, Urgency,
 };
 use nimbus_xdg::{AppIndex, DesktopEntry, IconResolver};
 
@@ -147,6 +148,7 @@ pub fn system_state() -> SystemState {
             level: 0.78,
             charging: false,
             time_to_empty: Some(Duration::from_secs(3 * 3600 + 12 * 60)),
+            warning: BatteryWarning::None,
         }),
         network: Network {
             kind: ConnectionKind::Wifi,

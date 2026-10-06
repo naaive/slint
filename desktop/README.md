@@ -58,11 +58,14 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
 - Input methods such as fcitx5 and IBus type into the launcher search, the lock screen, and the polkit dialog through text-input-v3;
   password fields tell the input method they're passwords and never share their text.
+- Toasts warn when the battery runs low and again when it's critically low, at UPower's thresholds,
+  and go away once it charges.
 - Inserted USB sticks and memory cards mount on their own, unless `[media] automount` is off,
   and a toast offers to open them in the file manager.
 - The `nimbus-shell` binary runs the shell as a Wayland client, on layer-shell and session-lock surfaces.
   It hosts the system services and the polkit agent, checks lock screen passwords through PAM on a worker thread,
-  and locks on logind requests and after inactivity.
+  and locks on logind requests, before suspend, and after inactivity.
+  A logind delay inhibitor holds suspend until the compositor confirms the lock.
 
 ### Services (`nimbus-services`)
 
@@ -307,6 +310,10 @@ The headless backend and the shell run end to end in tests, but the udev and win
   The shell applies an input method's changes and reports its text fields without checking the serial of `done`.
   Typing into the polkit dialog through an input method has no end-to-end test.
 - Suspend on lid close isn't implemented yet.
+- Locking before suspend and low battery toasts have only run against fake logind and UPower daemons.
+  Suspend waits at most 2 seconds for the compositor to confirm the lock, then goes ahead anyway.
+  The confirmation comes with a black frame, so the lock screen itself may first show after resuming.
+  Battery toasts don't show while the session is locked or do not disturb is on; they wait in the notification center.
 - Screen blanking has only run headless; turning screens off through DPMS on udev is untested on real displays.
   Blanking doesn't come sooner while the session is locked, and an output that's off shows black in screen captures.
   Any input but a key release turns blanked screens on, and so does plugging in an input device.
