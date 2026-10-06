@@ -5,13 +5,12 @@
 //! The compositor keeps the session locked when the shell dies, and accepts a new lock from a restarted shell.
 
 use crate::auth::{AuthWorker, PamAuthenticator};
-use crate::state::State;
+use crate::state::{State, forward};
 use crate::surface::SlintSurface;
-use anyhow::anyhow;
+use anyhow::Context;
 use nimbus_services::ServiceCommand;
 use nimbus_shell::LockView;
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
-use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChannelEvent};
 use smithay_client_toolkit::session_lock::{SessionLock, SessionLockSurface};
 use wayland_client::protocol::wl_output::WlOutput;
 
@@ -48,14 +47,8 @@ impl Lock {
 
 /// Starts the PAM worker; its answers reach [`State::unlock_result`] on the event loop.
 pub fn spawn_auth(handle: &LoopHandle<'static, State>) -> anyhow::Result<Option<AuthWorker>> {
-    let (sender, receiver) = channel::channel::<bool>();
-    handle
-        .insert_source(receiver, |event, _, state| {
-            if let ChannelEvent::Msg(ok) = event {
-                state.unlock_result(ok);
-            }
-        })
-        .map_err(|e| anyhow!("cannot receive authentication results: {e}"))?;
+    let sender =
+        forward(handle, State::unlock_result).context("cannot receive authentication results")?;
     let service = crate::auth::service_name();
     let worker = AuthWorker::spawn(
         Box::new(PamAuthenticator::new(service)),

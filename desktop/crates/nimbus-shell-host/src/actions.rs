@@ -3,15 +3,16 @@
 //! What the user asks the shell for: compositor requests, service commands, and launching applications.
 
 use crate::ipc::log_failure;
-use crate::state::State;
-use anyhow::anyhow;
+use crate::state::{State, forward};
+use anyhow::Context;
 use nimbus_ipc::{Request, Response};
 use nimbus_services::ServiceCommand;
 use nimbus_shell::ShellAction;
 use nimbus_xdg::{AppIndex, DesktopEntry, IconResolver};
 use smithay_client_toolkit::activation::{ActivationHandler, RequestDataExt};
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
-use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChannelEvent, Sender};
+use smithay_client_toolkit::reexports::calloop::channel::Sender;
+use std::rc::Rc;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::protocol::wl_surface::WlSurface;
 
@@ -43,23 +44,20 @@ impl RequestDataExt for TokenRequest {
 
 /// The installed applications and icons, scanned in the background.
 pub struct Apps {
-    index: Option<AppIndex>,
+    index: Rc<AppIndex>,
     sender: Sender<(AppIndex, IconResolver)>,
 }
 
 impl Apps {
     pub fn new(handle: &LoopHandle<'static, State>) -> anyhow::Result<Self> {
-        let (sender, receiver) = channel::channel::<(AppIndex, IconResolver)>();
-        handle
-            .insert_source(receiver, |event, _, state| {
-                if let ChannelEvent::Msg((apps, icons)) = event {
-                    tracing::info!(count = apps.entries.len(), "applications loaded");
-                    state.model.set_apps(&apps, &icons);
-                    state.apps.index = Some(apps);
-                }
-            })
-            .map_err(|e| anyhow!("cannot receive applications: {e}"))?;
-        Ok(Self { index: None, sender })
+        let sender = forward(handle, |state, (apps, icons): (AppIndex, IconResolver)| {
+            tracing::info!(count = apps.entries.len(), "applications loaded");
+            let apps = Rc::new(apps);
+            state.model.set_apps(apps.clone(), icons);
+            state.apps.index = apps;
+        })
+        .context("cannot receive applications")?;
+        Ok(Self { index: Rc::default(), sender })
     }
 }
 
@@ -105,20 +103,16 @@ impl State {
                 self.with_activation_token(TokenPurpose::NotificationAction { id, action });
             }
             ShellAction::Service(command) => self.services.send(command),
-            ShellAction::Launch(id) => {
-                match self.apps.index.as_ref().and_then(|apps| apps.get(&id)).cloned() {
-                    Some(entry) => {
-                        self.with_activation_token(TokenPurpose::Launch(Box::new(entry)))
-                    }
-                    None => {
-                        tracing::warn!("cannot launch '{id}': no such application");
-                        self.show_error(
-                            format!("Couldn't start {id}"),
-                            "The application isn't installed.".into(),
-                        );
-                    }
+            ShellAction::Launch(id) => match self.apps.index.get(&id).cloned() {
+                Some(entry) => self.with_activation_token(TokenPurpose::Launch(Box::new(entry))),
+                None => {
+                    tracing::warn!("cannot launch '{id}': no such application");
+                    self.show_error(
+                        format!("Couldn't start {id}"),
+                        "The application isn't installed.".into(),
+                    );
                 }
-            }
+            },
             ShellAction::OpenSettings(page) => {
                 let mut command = String::from("nimbus-settings");
                 if let Some(page) = page.as_deref().filter(|p| is_page_name(p)) {

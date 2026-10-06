@@ -42,7 +42,7 @@ impl Fixture {
         let model = ShellModel::new(&config, move |action| sink.borrow_mut().push(action));
         model.set_config_path(dir.path().join("config.toml"));
         let (apps, icons) = support::apps(dir.path()).expect("mock apps are written");
-        model.set_apps(&apps, &icons);
+        model.set_apps(std::rc::Rc::new(apps), icons);
         model.set_compositor_state(&support::compositor_state());
         model.handle_service_event(&ServiceEvent::State(support::system_state()));
         let view = ShellView::new(&model, support::OUTPUT).expect("the view starts");
@@ -134,7 +134,6 @@ fn idle_shell_takes_only_the_panel_and_dock() {
     // The dock and its margins on both sides.
     assert_eq!(exclusive.bottom, f.view.component().get_dock_exclusive());
     assert_eq!(exclusive.bottom, dock.height + 2.0 * (800.0 - dock.y - dock.height));
-    assert_eq!((exclusive.left, exclusive.right), (0.0, 0.0));
     assert!(f.take_actions().is_empty());
 }
 

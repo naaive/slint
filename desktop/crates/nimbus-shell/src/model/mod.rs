@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Local};
 use nimbus_config::{ColorScheme, Config, PanelPosition};
-use nimbus_ipc::{CompositorState, Event, OutputInfo, WindowInfo};
+use nimbus_ipc::{CompositorState, Event, OutputInfo, ShellCommand, WindowInfo};
 use nimbus_services::{CloseReason, ServiceCommand, ServiceEvent, SystemState};
 use nimbus_theme::ThemeSettings;
 use nimbus_xdg::{AppIndex, IconResolver};
@@ -44,6 +44,8 @@ pub const OSD_TIMEOUT: Duration = Duration::from_millis(1500);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// The panel heights the layout supports.
 const PANEL_HEIGHT: std::ops::RangeInclusive<u32> = 24..=64;
+/// Change per volume or brightness key press.
+const LEVEL_STEP: f32 = 0.05;
 
 /// Updates `model` to `rows`, touching only the rows that differ.
 pub fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
@@ -133,20 +135,29 @@ impl DesktopData {
 
 /// A window that shows the shared state.
 trait SharedWindow {
-    fn show_shared(&self, state: &State, models: &Models);
+    fn show_shared(&self, state: &State, models: &Models, theme: bool);
 }
 
 macro_rules! shared_window {
     ($($window:ty),*) => {$(
         impl SharedWindow for $window {
-            fn show_shared(&self, state: &State, models: &Models) {
-                nimbus_theme::apply_theme!(self, state.theme);
+            fn show_shared(&self, state: &State, models: &Models, theme: bool) {
+                if theme {
+                    nimbus_theme::apply_theme!(self, state.theme);
+                }
                 state.desktop.write(&self.global::<Desktop>(), models);
             }
         }
     )*};
 }
 shared_window!(ShellWindow, LockWindow);
+
+/// How a window shows in every view, resolved once per refresh.
+pub struct WindowRow {
+    pub title: SharedString,
+    pub app_name: SharedString,
+    pub visual: AppVisual,
+}
 
 pub struct State {
     pub config: Config,
@@ -155,10 +166,14 @@ pub struct State {
     pub windows: Windows,
     pub workspace_count: u32,
     pub active_workspace: u32,
-    pub apps: AppIndex,
+    pub apps: Rc<AppIndex>,
+    /// The application name and icon per app id.
+    app_names: HashMap<String, (String, Option<String>)>,
     pub icons: IconCache,
     client_images: ClientImages,
     pub dock: Vec<DockEntry>,
+    /// One per window in [`Windows::list`].
+    pub window_rows: Vec<WindowRow>,
     notifications: Notifications,
     action_models: HashMap<u32, ModelRc<NotificationAction>>,
     system: SystemState,
@@ -177,6 +192,8 @@ pub struct Model {
     on_unlock: RefCell<Option<Rc<dyn Fn(String)>>>,
     pub state: RefCell<State>,
     models: Models,
+    /// The theme the windows show.
+    shown_theme: RefCell<Option<ThemeSettings>>,
     views: RefCell<Vec<Weak<View>>>,
     locks: RefCell<Vec<slint::Weak<LockWindow>>>,
     clock_timer: Timer,
@@ -199,10 +216,12 @@ impl Model {
                 windows: Windows::default(),
                 workspace_count: 0,
                 active_workspace: 0,
-                apps: AppIndex::default(),
+                apps: Rc::default(),
+                app_names: HashMap::new(),
                 icons: IconCache::default(),
                 client_images: ClientImages::new(ICON_SIZE),
                 dock: Vec::new(),
+                window_rows: Vec::new(),
                 notifications: Notifications::default(),
                 action_models: HashMap::new(),
                 system: SystemState::default(),
@@ -216,6 +235,7 @@ impl Model {
                 },
             }),
             models: Models::default(),
+            shown_theme: RefCell::new(None),
             views: RefCell::new(Vec::new()),
             locks: RefCell::new(Vec::new()),
             clock_timer: Timer::default(),
@@ -251,25 +271,29 @@ impl Model {
     /// Starts showing the shared state on a new view.
     pub fn add_view(&self, view: &Rc<View>) {
         self.views.borrow_mut().push(Rc::downgrade(view));
-        let mut state = self.state.borrow_mut();
-        view.refresh(&mut state);
-        view.ui().show_shared(&state, &self.models);
+        let state = self.state.borrow();
+        view.refresh(&state);
+        view.ui().show_shared(&state, &self.models, true);
     }
 
     /// Starts showing the shared state on a new lock screen.
     pub fn add_lock(&self, ui: &LockWindow) {
         self.locks.borrow_mut().push(ui.as_weak());
-        ui.show_shared(&self.state.borrow(), &self.models);
+        ui.show_shared(&self.state.borrow(), &self.models, true);
     }
 
-    /// Shows the current shared state on every window.
+    /// Shows the current shared state on every window, and the theme if it changed.
     fn publish(&self) {
         let state = self.state.borrow();
+        let theme = self.shown_theme.borrow().as_ref() != Some(&state.theme);
+        if theme {
+            *self.shown_theme.borrow_mut() = Some(state.theme.clone());
+        }
         for view in self.views() {
-            view.ui().show_shared(&state, &self.models);
+            view.ui().show_shared(&state, &self.models, theme);
         }
         for lock in self.lock_windows() {
-            lock.show_shared(&state, &self.models);
+            lock.show_shared(&state, &self.models, theme);
         }
     }
 
@@ -298,8 +322,9 @@ impl Model {
             state.backdrop.request(config.appearance.wallpaper.as_deref());
             update_scale(&mut state);
         }
-        self.refresh_windows();
-        self.refresh_clock();
+        self.update_windows();
+        self.update_clock();
+        self.publish();
         self.schedule_poll();
     }
 
@@ -324,11 +349,13 @@ impl Model {
 
     /// Applies the results of finished background work; returns whether any is still running.
     fn poll(&self) -> bool {
-        let images = {
+        let (changed, images) = {
             let mut state = self.state.borrow_mut();
             let state = &mut *state;
+            let mut changed = false;
             if let Some(image) = state.backdrop.take_update() {
                 state.desktop.lock_backdrop = image.unwrap_or_default();
+                changed = true;
             }
             let dark = state.scheme_ticket.and_then(|ticket| SYSTEM.answer(ticket));
             if let Some(dark) = dark {
@@ -336,14 +363,17 @@ impl Model {
                 if state.config.appearance.color_scheme == ColorScheme::System {
                     state.theme =
                         ThemeSettings::from_config_with_system(&state.config.appearance, || dark);
+                    changed = true;
                 }
             }
-            state.client_images.poll()
+            (changed, state.client_images.poll())
         };
         if images {
             self.refresh_notifications();
         }
-        self.publish();
+        if changed {
+            self.publish();
+        }
         let state = self.state.borrow();
         state.backdrop.is_pending()
             || state.scheme_ticket.is_some()
@@ -366,6 +396,11 @@ impl Model {
 
     /// Updates everything that shows the time: the clock, the lock screen, the calendar, and notification ages.
     pub fn refresh_clock(&self) {
+        self.update_clock();
+        self.publish();
+    }
+
+    fn update_clock(&self) {
         let now = Local::now();
         {
             let mut state = self.state.borrow_mut();
@@ -383,27 +418,24 @@ impl Model {
             }
         }
         self.refresh_notifications();
-        self.refresh_calendar();
+        self.update_calendar();
     }
 
-    fn refresh_calendar(&self) {
+    fn update_calendar(&self) {
         let today = Local::now().date_naive();
-        {
-            let mut state = self.state.borrow_mut();
-            let (year, month) = state.month;
-            let days = clock::month_grid(year, month, today)
-                .into_iter()
-                .map(|d| CalendarDay {
-                    day: d.date.day() as i32,
-                    in_month: d.in_month,
-                    today: d.today,
-                    weekend: d.weekend,
-                })
-                .collect();
-            sync_rows(&self.models.days, days);
-            state.desktop.month_title = clock::month_title(year, month).into();
-        }
-        self.publish();
+        let mut state = self.state.borrow_mut();
+        let (year, month) = state.month;
+        let days = clock::month_grid(year, month, today)
+            .into_iter()
+            .map(|d| CalendarDay {
+                day: d.date.day() as i32,
+                in_month: d.in_month,
+                today: d.today,
+                weekend: d.weekend,
+            })
+            .collect();
+        sync_rows(&self.models.days, days);
+        state.desktop.month_title = clock::month_title(year, month).into();
     }
 
     /// Shows the month `delta` months after the shown one, or the current month for 0.
@@ -417,7 +449,8 @@ impl Model {
                 clock::add_months(state.month.0, state.month.1, delta)
             };
         }
-        self.refresh_calendar();
+        self.update_calendar();
+        self.publish();
     }
 
     // Windows, workspaces, and applications.
@@ -434,76 +467,101 @@ impl Model {
         self.refresh_windows();
     }
 
-    pub fn handle_compositor_event(&self, event: &Event) {
+    /// Applies compositor events in order, then refreshes the views once.
+    pub fn handle_compositor_events(&self, events: &[Event]) {
+        let mut changed = false;
         {
             let mut state = self.state.borrow_mut();
-            match event {
-                Event::WindowOpened(info) | Event::WindowChanged(info) => {
-                    state.windows.upsert(info);
-                }
-                Event::WindowClosed { id } => {
-                    if let Some(row) = state.windows.remove(*id) {
-                        for view in self.views() {
-                            view.window_removed(row);
+            for event in events {
+                match event {
+                    Event::WindowOpened(info) | Event::WindowChanged(info) => {
+                        state.windows.upsert(info);
+                    }
+                    Event::WindowClosed { id } => {
+                        if let Some(row) = state.windows.remove(*id) {
+                            if row < state.window_rows.len() {
+                                state.window_rows.remove(row);
+                            }
+                            for view in self.views() {
+                                view.window_removed(row);
+                            }
                         }
                     }
+                    Event::WorkspaceActivated { workspace } => state.active_workspace = *workspace,
+                    Event::OutputsChanged { outputs } => {
+                        state.outputs = outputs.clone();
+                        update_scale(&mut state);
+                    }
+                    Event::LayoutChanged { .. }
+                    | Event::ShellCommand { .. }
+                    | Event::LockState { .. } => continue,
                 }
-                Event::WorkspaceActivated { workspace } => state.active_workspace = *workspace,
-                Event::OutputsChanged { outputs } => {
-                    state.outputs = outputs.clone();
-                    update_scale(&mut state);
-                }
-                Event::LayoutChanged { .. }
-                | Event::ShellCommand { .. }
-                | Event::LockState { .. } => return,
+                changed = true;
             }
         }
-        self.refresh_windows();
+        if changed {
+            self.refresh_windows();
+        }
     }
 
     /// Brings the dock, the focused window, and every view's windows up to date with the state.
     pub fn refresh_windows(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            let state = &mut *state;
-            state.dock = dock_entries(&state.config.favorites, &state.windows, &state.apps);
-            let dock = state
-                .dock
-                .iter()
-                .map(|entry| DockItem {
-                    id: entry.id.as_str().into(),
-                    name: entry.name.as_str().into(),
-                    visual: state.icons.visual(&entry.name, entry.icon.as_deref()),
-                    favorite: entry.favorite,
-                    windows: entry.windows.len() as i32,
-                    focused: entry.focused,
-                })
-                .collect();
-            sync_rows(&self.models.dock, dock);
-
-            let (title, visual) = match state.windows.focused() {
-                Some(window) => {
-                    let (name, icon) = app_name_and_icon(&state.apps, window);
-                    let visual = state.icons.visual(&name, icon.as_deref());
-                    (display_title(window, &name).into(), visual)
-                }
-                None => (SharedString::new(), state.desktop.focused_visual.clone()),
-            };
-            state.desktop.focused_title = title;
-            state.desktop.focused_visual = visual;
-            state.desktop.active_workspace = state.active_workspace as i32;
-            for view in self.views() {
-                view.refresh(state);
-            }
-        }
+        self.update_windows();
         self.publish();
     }
 
-    pub fn set_apps(&self, apps: &AppIndex, icons: &IconResolver) {
+    fn update_windows(&self) {
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        state.dock = dock_entries(&state.config.favorites, &state.windows, &state.apps);
+        let dock = state
+            .dock
+            .iter()
+            .map(|entry| DockItem {
+                id: entry.id.as_str().into(),
+                name: entry.name.as_str().into(),
+                visual: state.icons.visual(&entry.name, entry.icon.as_deref()),
+                favorite: entry.favorite,
+                windows: entry.windows.len() as i32,
+                focused: entry.focused,
+            })
+            .collect();
+        sync_rows(&self.models.dock, dock);
+
+        let rows = state
+            .windows
+            .list()
+            .iter()
+            .map(|window| {
+                let (name, icon) = app_name_and_icon(&state.apps, &mut state.app_names, window);
+                WindowRow {
+                    title: display_title(window, &name).into(),
+                    visual: state.icons.visual(&name, icon.as_deref()),
+                    app_name: name.into(),
+                }
+            })
+            .collect();
+        state.window_rows = rows;
+
+        let focused = state.windows.list().iter().position(|w| w.focused);
+        if let Some(row) = focused.and_then(|row| state.window_rows.get(row)) {
+            state.desktop.focused_visual = row.visual.clone();
+            state.desktop.focused_title = row.title.clone();
+        } else {
+            state.desktop.focused_title = SharedString::new();
+        }
+        state.desktop.active_workspace = state.active_workspace as i32;
+        for view in self.views() {
+            view.refresh(state);
+        }
+    }
+
+    pub fn set_apps(&self, apps: Rc<AppIndex>, icons: IconResolver) {
         {
             let mut state = self.state.borrow_mut();
-            state.apps = apps.clone();
-            state.icons.set_resolver(icons.clone());
+            state.apps = apps;
+            state.app_names.clear();
+            state.icons.set_resolver(icons);
             update_scale(&mut state);
         }
         self.refresh_windows();
@@ -518,7 +576,8 @@ impl Model {
         match event {
             ServiceEvent::State(system) => {
                 self.state.borrow_mut().system = system.clone();
-                self.refresh_status();
+                self.update_status();
+                self.publish();
             }
             ServiceEvent::Notification(notification) => self.add_notification(notification),
             ServiceEvent::NotificationClosed { id, reason } => {
@@ -541,22 +600,20 @@ impl Model {
         }
     }
 
-    fn refresh_status(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            let status = crate::status::status(&state.system);
-            state.desktop.do_not_disturb = state.system.do_not_disturb;
-            state.desktop.status = status.status;
-            state.desktop.volume = status.volume_percent;
-            state.desktop.brightness = status.brightness_percent;
-        }
-        self.publish();
+    fn update_status(&self) {
+        let mut state = self.state.borrow_mut();
+        let status = crate::status::status(&state.system);
+        state.desktop.do_not_disturb = state.system.do_not_disturb;
+        state.desktop.status = status.status;
+        state.desktop.volume = status.volume_percent;
+        state.desktop.brightness = status.brightness_percent;
     }
 
     /// Applies a change from quick settings right away, and asks the services to make it.
     pub fn update_system(&self, change: impl FnOnce(&mut SystemState) -> Option<ServiceCommand>) {
         let command = change(&mut self.state.borrow_mut().system);
-        self.refresh_status();
+        self.update_status();
+        self.publish();
         if let Some(command) = command {
             self.emit(ShellAction::Service(command));
         }
@@ -598,7 +655,8 @@ impl Model {
             (desktop.osd_kind, desktop.osd_level, desktop.osd_muted) = (kind, level, muted);
             desktop.osd_shown = true;
         }
-        self.refresh_status();
+        self.update_status();
+        self.publish();
         let weak = self.this.clone();
         self.osd_timer.start(TimerMode::SingleShot, OSD_TIMEOUT, move || {
             if let Some(this) = weak.upgrade() {
@@ -606,6 +664,16 @@ impl Model {
                 this.publish();
             }
         });
+    }
+
+    /// Applies a volume or brightness key to the shown level, shows the OSD,
+    /// and returns the command for the services.
+    pub fn step_level(&self, command: ShellCommand) -> Option<ServiceCommand> {
+        let (command, osd) = level_step(&mut self.state.borrow_mut().system, command)?;
+        if let Some(osd) = osd {
+            self.show_osd(osd);
+        }
+        Some(command)
     }
 
     /// Clears the unread dot once the user opened the notification history.
@@ -625,15 +693,60 @@ fn icon_scale(state: &State) -> f64 {
     state.outputs.iter().map(|o| o.scale).reduce(f64::max).unwrap_or(state.config.appearance.scale)
 }
 
-/// The application name and icon for a window, from its desktop entry when there is one.
-pub fn app_name_and_icon(apps: &AppIndex, window: &WindowInfo) -> (String, Option<String>) {
-    match apps.find_by_app_id(&window.app_id) {
-        Some(entry) => (entry.name.clone(), entry.icon.clone()),
-        None if !window.app_id.trim().is_empty() => {
-            (readable_app_id(&window.app_id), Some(window.app_id.clone()))
+/// Changes the level a key acts on, so the next press builds on it before the services report back.
+fn level_step(
+    system: &mut SystemState,
+    command: ShellCommand,
+) -> Option<(ServiceCommand, Option<Osd>)> {
+    let volume = |system: &mut SystemState, delta: f32| {
+        let audio = system.audio.as_mut()?;
+        audio.volume = (audio.volume + delta).clamp(0.0, 1.0);
+        let muted = audio.muted && delta <= 0.0;
+        Some((
+            ServiceCommand::SetVolume(audio.volume),
+            Some(Osd::Volume { level: audio.volume, muted }),
+        ))
+    };
+    let brightness = |system: &mut SystemState, delta: f32| {
+        let level = system.brightness.as_mut()?;
+        // Never fully dark: a black screen looks like a hang.
+        *level = (*level + delta).clamp(0.01, 1.0);
+        Some((ServiceCommand::SetBrightness(*level), Some(Osd::Brightness { level: *level })))
+    };
+    match command {
+        ShellCommand::VolumeUp => volume(system, LEVEL_STEP),
+        ShellCommand::VolumeDown => volume(system, -LEVEL_STEP),
+        ShellCommand::ToggleMute => {
+            let osd = system.audio.as_mut().map(|audio| {
+                audio.muted = !audio.muted;
+                Osd::Volume { level: audio.volume, muted: audio.muted }
+            });
+            Some((ServiceCommand::ToggleMute, osd))
         }
-        None => (window.title.clone(), None),
+        ShellCommand::BrightnessUp => brightness(system, LEVEL_STEP),
+        ShellCommand::BrightnessDown => brightness(system, -LEVEL_STEP),
+        ShellCommand::ToggleLauncher | ShellCommand::ToggleOverview => None,
     }
+}
+
+/// The application name and icon for a window, from its desktop entry when there is one.
+fn app_name_and_icon(
+    apps: &AppIndex,
+    cache: &mut HashMap<String, (String, Option<String>)>,
+    window: &WindowInfo,
+) -> (String, Option<String>) {
+    if window.app_id.trim().is_empty() {
+        return (window.title.clone(), None);
+    }
+    if let Some(found) = cache.get(&window.app_id) {
+        return found.clone();
+    }
+    let found = match apps.find_by_app_id(&window.app_id) {
+        Some(entry) => (entry.name.clone(), entry.icon.clone()),
+        None => (readable_app_id(&window.app_id), Some(window.app_id.clone())),
+    };
+    cache.insert(window.app_id.clone(), found.clone());
+    found
 }
 
 pub fn display_title(window: &WindowInfo, app_name: &str) -> String {
@@ -717,6 +830,34 @@ mod tests {
         i_slint_backend_testing::mock_elapsed_time(POLL_INTERVAL);
         assert!(backdrop() > 0);
         assert!(!model.poll_timer.running(), "polling stops once nothing is pending");
+    }
+
+    #[test]
+    fn rapid_level_keys_build_on_each_other() {
+        let mut system = SystemState {
+            audio: Some(nimbus_services::Audio { volume: 0.5, muted: false }),
+            brightness: Some(0.5),
+            ..Default::default()
+        };
+        let commands: Vec<ServiceCommand> = (0..2)
+            .filter_map(|_| level_step(&mut system, ShellCommand::VolumeUp).map(|(c, _)| c))
+            .collect();
+        assert!(matches!(
+            commands[..],
+            [ServiceCommand::SetVolume(a), ServiceCommand::SetVolume(b)]
+                if (a - 0.55).abs() < 1e-6 && (b - 0.60).abs() < 1e-6
+        ));
+        let mutes: Vec<Option<Osd>> = (0..2)
+            .filter_map(|_| level_step(&mut system, ShellCommand::ToggleMute).map(|(_, osd)| osd))
+            .collect();
+        assert!(matches!(
+            mutes[..],
+            [Some(Osd::Volume { muted: true, .. }), Some(Osd::Volume { muted: false, .. })]
+        ));
+        level_step(&mut system, ShellCommand::BrightnessDown);
+        level_step(&mut system, ShellCommand::BrightnessDown);
+        assert!(system.brightness.is_some_and(|b| (b - 0.40).abs() < 1e-6));
+        assert!(level_step(&mut system, ShellCommand::ToggleLauncher).is_none());
     }
 
     #[test]

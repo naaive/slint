@@ -32,12 +32,13 @@ use wayland_client::{Connection, Proxy, QueueHandle};
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// EGL on the compositor's connection, with the configuration every shell surface uses.
-#[derive(Clone)]
 pub struct Gl {
     display: Display,
     config: Config,
+    /// The context [`Gl::new`] checked, which the first surface takes.
+    spare: Cell<Option<PossiblyCurrentContext>>,
     /// EGL uses the connection's `wl_display`, so it stays open as long as EGL does.
-    _conn: Connection,
+    conn: Connection,
 }
 
 impl Gl {
@@ -61,7 +62,7 @@ impl Gl {
             .context("cannot list EGL configurations")?
             .min_by_key(GlConfig::num_samples)
             .context("EGL has no configuration with alpha and stencil channels")?;
-        let gl = Self { display, config, _conn: conn.clone() };
+        let gl = Self { display, config, spare: Cell::new(None), conn: conn.clone() };
 
         let context = gl.create_context()?.make_current_surfaceless()?;
         // SAFETY: the context is current, and EGL provides its functions.
@@ -70,11 +71,15 @@ impl Gl {
         };
         // SAFETY: the context is current.
         let renderer = unsafe { glow.get_parameter_string(glow::RENDERER) };
-        drop(context);
         tracing::info!("OpenGL renderer: {renderer}");
-        if require_hardware && is_software_rasterizer(&renderer) {
+        let software = gl
+            .display
+            .device()
+            .is_ok_and(|device| device.extensions().contains("EGL_MESA_device_software"));
+        if require_hardware && (software || is_software_rasterizer(&renderer)) {
             bail!("{renderer} rasterizes in software");
         }
+        gl.spare.set(Some(context));
         Ok(gl)
     }
 
@@ -100,14 +105,18 @@ fn is_software_rasterizer(renderer: &str) -> bool {
         .any(|name| renderer.contains(name))
 }
 
+type Size = (NonZeroU32, NonZeroU32);
+
 /// The EGL context and window surface of one Wayland surface, shared by FemtoVG and [`GlRenderer`].
 struct Egl {
-    /// Created for the first frame: Mesa's software rasterizer draws that one at the size the surface was created with.
     surface: OnceCell<Surface<WindowSurface>>,
-    size: Cell<Option<(NonZeroU32, NonZeroU32)>>,
+    size: Cell<Option<Size>>,
     context: PossiblyCurrentContext,
     handle: RawWindowHandle,
-    gl: Gl,
+    display: Display,
+    config: Config,
+    /// See [`Gl::conn`].
+    _conn: Connection,
 }
 
 impl Egl {
@@ -121,32 +130,35 @@ impl Egl {
         Ok(())
     }
 
-    /// Makes the window surface current at `width` × `height`; returns whether it had another size.
-    fn prepare(&self, width: NonZeroU32, height: NonZeroU32) -> anyhow::Result<bool> {
-        let resized = if let Some(surface) = self.surface.get() {
+    /// Makes the window surface current at `size`; returns whether it had another size.
+    fn prepare(&self, size: Size) -> anyhow::Result<bool> {
+        let resized = self.size.replace(Some(size)).is_some_and(|old| old != size);
+        if let Some(surface) = self.surface.get() {
             self.make_current().map_err(|err| anyhow!(err))?;
-            let resized = self.size.get() != Some((width, height));
             if resized {
-                surface.resize(&self.context, width, height);
+                surface.resize(&self.context, size.0, size.1);
             }
-            resized
-        } else {
-            let attributes =
-                SurfaceAttributesBuilder::<WindowSurface>::new().build(self.handle, width, height);
-            // SAFETY: the Wayland surface outlives the renderer; see `GlRenderer::new`.
-            let surface =
-                unsafe { self.gl.display.create_window_surface(&self.gl.config, &attributes) }
-                    .context("cannot create an EGL surface")?;
-            self.context.make_current(&surface)?;
-            // The Wayland surface's own frame callbacks pace the frames, so swapping buffers never waits.
-            if let Err(err) = surface.set_swap_interval(&self.context, SwapInterval::DontWait) {
-                tracing::debug!("cannot turn off EGL's frame pacing: {err}");
-            }
-            let _ = self.surface.set(surface);
-            false
-        };
-        self.size.set(Some((width, height)));
-        Ok(resized)
+            return Ok(resized);
+        }
+        let attributes =
+            SurfaceAttributesBuilder::<WindowSurface>::new().build(self.handle, size.0, size.1);
+        // SAFETY: the Wayland surface outlives the renderer; see `GlRenderer::new`.
+        let surface = unsafe { self.display.create_window_surface(&self.config, &attributes) }
+            .context("cannot create an EGL surface")?;
+        self.context.make_current(&surface)?;
+        // The Wayland surface's own frame callbacks pace the frames, so swapping buffers never waits.
+        if let Err(err) = surface.set_swap_interval(&self.context, SwapInterval::DontWait) {
+            tracing::debug!("cannot turn off EGL's frame pacing: {err}");
+        }
+        let _ = self.surface.set(surface);
+        Ok(false)
+    }
+
+    /// Whether EGL drew the last frame at `size`.
+    fn drew_at(&self, (width, height): Size) -> bool {
+        self.surface.get().is_some_and(|surface| {
+            surface.width() == Some(width.get()) && surface.height() == Some(height.get())
+        })
     }
 }
 
@@ -222,13 +234,18 @@ impl GlRenderer {
     pub fn new(gl: &Gl, surface: &WlSurface) -> anyhow::Result<Self> {
         let pointer = NonNull::new(surface.id().as_ptr().cast::<c_void>())
             .context("the Wayland surface is gone")?;
-        let context = gl.create_context()?.make_current_surfaceless()?;
+        let context = match gl.spare.take() {
+            Some(context) => context,
+            None => gl.create_context()?.make_current_surfaceless()?,
+        };
         let egl = Rc::new(Egl {
             surface: OnceCell::new(),
             size: Cell::new(None),
             context,
             handle: RawWindowHandle::Wayland(WaylandWindowHandle::new(pointer)),
-            gl: gl.clone(),
+            display: gl.display.clone(),
+            config: gl.config.clone(),
+            _conn: gl.conn.clone(),
         });
         let renderer = FemtoVGRenderer::new(SharedEgl(egl.clone()))?;
         let window = Rc::new_cyclic(|adapter: &Weak<GlWindow>| GlWindow {
@@ -256,18 +273,21 @@ impl Renderer for GlRenderer {
         if !self.window.needs_redraw.replace(false) {
             return false;
         }
-        match self.egl.prepare(width, height) {
-            // Mesa's software rasterizer shows the first frame after a resize at the old size.
-            Ok(resized) => self.window.needs_redraw.set(resized),
+        let resized = match self.egl.prepare((width, height)) {
+            Ok(resized) => resized,
             Err(err) => {
                 tracing::warn!("cannot draw a shell surface with OpenGL: {err:#}");
                 return false;
             }
-        }
+        };
         // Swapping buffers commits the surface, so the frame callback has to come first.
         self.surface.frame(qh, self.surface.clone());
         if let Err(err) = self.window.renderer.render() {
             tracing::warn!("cannot draw a shell surface with OpenGL: {err}");
+        }
+        // Mesa's software rasterizer draws the first frame after a resize at the old size.
+        if resized && !self.egl.drew_at((width, height)) {
+            self.window.needs_redraw.set(true);
         }
         true
     }

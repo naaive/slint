@@ -14,11 +14,13 @@ use crate::platform::Windows;
 use crate::render::{Preference, Renderers};
 use crate::services::SystemServices;
 use crate::surface::{Scaling, SlintSurface};
+use anyhow::anyhow;
 use nimbus_ipc::{Request, Response};
 use nimbus_shell::{ShellAction, ShellModel};
 use smithay_client_toolkit::activation::ActivationState;
 use smithay_client_toolkit::compositor::CompositorState;
 use smithay_client_toolkit::output::OutputState;
+use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChannelEvent, Sender};
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay_client_toolkit::registry::RegistryState;
 use smithay_client_toolkit::seat::SeatState;
@@ -38,7 +40,7 @@ use wayland_client::{Connection, QueueHandle};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
 use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 
-/// How often to redraw while Slint animations run on a surface that isn't waiting for a frame.
+/// How often to redraw while Slint animations run on a surface that isn't waiting for a frame callback.
 const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
 
 pub struct State {
@@ -239,13 +241,13 @@ impl State {
             lock.surface.commit();
         }
         if let Err(err) = self.conn.flush() {
-            self.stop(Err(anyhow::anyhow!(err).context("lost the Wayland connection")));
+            self.stop(Err(anyhow!(err).context("lost the Wayland connection")));
         }
     }
 
     /// How long the event loop may sleep before Slint needs it.
     pub fn next_timeout(&self) -> Option<Duration> {
-        let animating = self.surfaces().any(SlintSurface::has_active_animations);
+        let animating = self.surfaces().any(SlintSurface::animates_unpaced);
         let timer = slint::platform::duration_until_next_timer_update();
         match (animating, timer) {
             (true, Some(t)) => Some(t.min(ANIMATION_INTERVAL)),
@@ -258,4 +260,20 @@ impl State {
     pub fn transparent(&self) -> Option<&WlBuffer> {
         self.transparent.as_ref()
     }
+}
+
+/// Runs `on` on the event loop with each value sent through the returned sender, such as from a worker thread.
+pub fn forward<T: 'static>(
+    handle: &LoopHandle<'static, State>,
+    mut on: impl FnMut(&mut State, T) + 'static,
+) -> anyhow::Result<Sender<T>> {
+    let (sender, receiver) = channel::channel();
+    handle
+        .insert_source(receiver, move |event, _, state| {
+            if let ChannelEvent::Msg(value) = event {
+                on(state, value);
+            }
+        })
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(sender)
 }

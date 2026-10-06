@@ -175,19 +175,23 @@ impl SlintSurface {
         self.frame_pending = false;
     }
 
-    pub fn has_active_animations(&self) -> bool {
-        self.window().has_active_animations()
+    /// Whether Slint animates and no frame callback will wake the event loop for it.
+    pub fn animates_unpaced(&self) -> bool {
+        !self.frame_pending && self.window().has_active_animations()
     }
 
     /// Renders what changed, once the surface is configured and the last frame was shown.
-    pub fn render(&mut self, qh: &QueueHandle<State>) {
+    /// Returns whether it drew a frame.
+    pub fn render(&mut self, qh: &QueueHandle<State>) -> bool {
         if self.size.is_none() || self.frame_pending {
-            return;
+            return false;
         }
-        if self.renderer.render(qh) {
+        let rendered = self.renderer.render(qh);
+        if rendered {
             self.frame_pending = true;
             self.needs_commit = true;
         }
+        rendered
     }
 
     /// Commits a rendered frame and other pending state.

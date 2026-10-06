@@ -32,7 +32,7 @@ struct Session {
     lock: Option<LockView>,
     compositor: CompositorState,
     system: SystemState,
-    apps: AppIndex,
+    apps: Rc<AppIndex>,
     next_window: u64,
 }
 
@@ -284,13 +284,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.favorites = support::config().favorites;
     }
     let (apps, icons) = apps(&config, &scratch.join("apps"));
+    let apps = Rc::new(apps);
 
     let queue = Rc::new(RefCell::new(VecDeque::new()));
     let sink = queue.clone();
     let shell =
         ShellModel::new(&config, move |action| sink.borrow_mut().push_back(Input::Action(action)));
     shell.set_config_path(scratch.join("config.toml"));
-    shell.set_apps(&apps, &icons);
+    shell.set_apps(apps.clone(), icons);
     let view = ShellView::new(&shell, support::OUTPUT)?;
     view.component().set_wallpaper(wallpaper());
     view.window().set_size(LogicalSize::new(1280.0, 800.0));

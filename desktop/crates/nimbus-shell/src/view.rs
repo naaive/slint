@@ -10,7 +10,7 @@ use nimbus_ipc::Request;
 use nimbus_services::ServiceCommand;
 use slint::{ComponentHandle, Model as _, ModelRc, VecModel};
 
-use crate::model::{Model, State, app_name_and_icon, display_title, sync_rows};
+use crate::model::{Model, State, display_title, sync_rows};
 use crate::windows::{DockClick, DockEntry, dock_click};
 use crate::{
     AppItem, Desktop, DockMenuWindow, Exclusive, Popup, PowerAction, Rect, ShellAction, ShellModel,
@@ -103,9 +103,9 @@ impl ShellView {
         let dock =
             if panel.show_dock && !panel.dock_autohide { ui.get_dock_exclusive() } else { 0.0 };
         if panel.top {
-            Exclusive { top: panel.height, bottom: dock, ..Exclusive::default() }
+            Exclusive { top: panel.height, bottom: dock }
         } else {
-            Exclusive { bottom: panel.height + dock, ..Exclusive::default() }
+            Exclusive { top: 0.0, bottom: panel.height + dock }
         }
     }
 
@@ -161,16 +161,16 @@ impl View {
     }
 
     /// Brings the windows, workspaces, and dock menu of this output up to date with `state`.
-    pub fn refresh(&self, state: &mut State) {
+    pub fn refresh(&self, state: &State) {
         let ui = &self.ui;
         let slots = state.windows.slots(&self.output);
         let mut rows = Vec::with_capacity(slots.len());
-        for (window, (slot, count, on_output)) in state.windows.list().iter().zip(slots) {
-            let (name, icon) = app_name_and_icon(&state.apps, window);
+        let windows = state.windows.list().iter().zip(&state.window_rows);
+        for ((window, row), (slot, count, on_output)) in windows.zip(slots) {
             rows.push(WindowItem {
-                title: display_title(window, &name).into(),
-                app_name: name.as_str().into(),
-                visual: state.icons.visual(&name, icon.as_deref()),
+                title: row.title.clone(),
+                app_name: row.app_name.clone(),
+                visual: row.visual.clone(),
                 workspace: window.workspace as i32,
                 focused: window.focused,
                 minimized: window.minimized,

@@ -80,8 +80,6 @@ impl From<RectData> for Rect {
 pub struct Exclusive {
     pub top: f32,
     pub bottom: f32,
-    pub left: f32,
-    pub right: f32,
 }
 
 /// The shell's state, shared by all of its views.
@@ -102,7 +100,7 @@ impl ShellModel {
 
     /// Sets the configuration file that shell-initiated changes are saved to,
     /// such as the dark style toggle and dock pins.
-    /// Defaults to `nimbus_config::default_path()`; set it when the compositor runs with `--config`.
+    /// Defaults to `nimbus_config::default_path()`; set it to the file the host loaded.
     pub fn set_config_path(&self, path: impl Into<PathBuf>) {
         self.0.set_config_path(Some(path.into()));
     }
@@ -113,11 +111,16 @@ impl ShellModel {
 
     /// Applies one compositor event incrementally.
     pub fn handle_compositor_event(&self, event: &nimbus_ipc::Event) {
-        self.0.handle_compositor_event(event);
+        self.0.handle_compositor_events(std::slice::from_ref(event));
+    }
+
+    /// Applies compositor events in order, and updates the views once for all of them.
+    pub fn handle_compositor_events(&self, events: &[nimbus_ipc::Event]) {
+        self.0.handle_compositor_events(events);
     }
 
     /// Provides the launcher's application list and the icons for window and dock entries.
-    pub fn set_apps(&self, apps: &nimbus_xdg::AppIndex, icons: &nimbus_xdg::IconResolver) {
+    pub fn set_apps(&self, apps: Rc<nimbus_xdg::AppIndex>, icons: nimbus_xdg::IconResolver) {
         self.0.set_apps(apps, icons);
     }
 
@@ -128,6 +131,16 @@ impl ShellModel {
     /// Shows the on-screen display on every view.
     pub fn show_osd(&self, osd: Osd) {
         self.0.show_osd(osd);
+    }
+
+    /// Carries out a volume, mute, or brightness key: changes the shown level and shows the OSD.
+    /// Returns the command that makes the change, or `None` for other commands or without the device.
+    /// Rapid presses build on each other before the services report the new level.
+    pub fn step_level(
+        &self,
+        command: nimbus_ipc::ShellCommand,
+    ) -> Option<nimbus_services::ServiceCommand> {
+        self.0.step_level(command)
     }
 
     /// Enters or leaves the locked state.

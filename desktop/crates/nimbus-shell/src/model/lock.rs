@@ -25,12 +25,7 @@ impl Model {
             state.desktop.lock_error = SharedString::new();
         }
         self.refresh_clock();
-        for lock in self.lock_windows() {
-            lock.set_password(SharedString::new());
-            if locked {
-                lock.invoke_focus_password();
-            }
-        }
+        self.reset_passwords(locked);
     }
 
     pub fn is_locked(&self) -> bool {
@@ -74,6 +69,11 @@ impl Model {
             desktop.locked
         };
         self.publish();
+        self.reset_passwords(locked);
+    }
+
+    /// Clears the password field of every lock screen, and focuses it while locked.
+    fn reset_passwords(&self, locked: bool) {
         for lock in self.lock_windows() {
             lock.set_password(SharedString::new());
             if locked {

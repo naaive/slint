@@ -205,7 +205,7 @@ Modules in `crates/nimbus-shell-host/src`:
   It renders at the buffer scale, through a viewport at `wp_fractional_scale_v1` scales or with `set_buffer_scale` otherwise,
   and only when Slint has changes and the previous frame's callback arrived.
 - `output.rs`: per output, the `ShellView` on a transparent top-layer surface anchored to every edge with exclusive zone -1,
-  and a transparent single-pixel strip per edge whose exclusive zone keeps windows out of the panel and dock.
+  and a transparent single-pixel strip along the top or bottom edge per zone the panel and dock reserve, whose exclusive zone keeps windows out of them.
   The view's surface takes pointer input only inside `ShellView::input_region()`.
   It has no keyboard interactivity until the view wants the keyboard; then it's exclusive and moves to the overlay layer, above fullscreen windows.
 - `lock.rs`: locking through `ext-session-lock-v1`; see [Locking](#locking).
@@ -214,7 +214,10 @@ Modules in `crates/nimbus-shell-host/src`:
 - `idle.rs`: an `ext-idle-notify-v1` notification after `power.lock_after_minutes`, which locks.
 - `input.rs`: pointer and keyboard input; keys go through the compositor's XKB keymap, with its repeat rate.
 - `ipc.rs`: one control socket connection, subscribed to events, which also carries requests; responses reach callbacks in request order.
+  Requests wait in a buffer until the socket takes them, so writing never blocks.
+  The events of one read reach the model together, which updates the views once.
 - `services.rs`: `nimbus-services` and the compositor's `Event::ShellCommand`s, such as volume keys and launcher toggles.
+  Volume and brightness keys go through `ShellModel::step_level`, so rapid presses build on the level the model shows.
 - `actions.rs`: `ShellAction`s, launching applications with an `xdg-activation` token, and the application index.
 
 ### Rendering
@@ -225,12 +228,14 @@ Each Slint window draws onto its `wl_surface` through a `Renderer`, which also r
   with `RepaintBufferType::SwappedBuffers`, so each frame redraws only what changed.
 - `GlRenderer` is Slint's FemtoVG renderer drawing with OpenGL ES through EGL (`glutin`),
   with a context per surface and an EGL window surface created at the first frame's size.
+  After a resize it draws once more if EGL reports the old size, as Mesa's software rasterizer does for one frame.
   FemtoVG redraws the whole window for each frame.
   EGL's own frame pacing is off; swapping buffers commits the surface, so the frame callback is requested first.
 
-At startup the shell opens EGL on its Wayland connection and makes a context current.
+At startup the shell opens EGL on its Wayland connection and makes a context current, which the first surface then takes.
 It uses `GlRenderer` when that works on a GPU, and `SoftwareRenderer` otherwise,
 since a software rasterizer such as llvmpipe redraws more than Slint's software renderer.
+It recognizes one by the EGL device's `EGL_MESA_device_software` extension, or else by the OpenGL renderer's name.
 `NIMBUS_SHELL_RENDERER=software` skips OpenGL, and `NIMBUS_SHELL_RENDERER=gl` takes it even on a software rasterizer.
 When OpenGL fails, at startup or for one surface, the shell logs a warning and renders in software.
 

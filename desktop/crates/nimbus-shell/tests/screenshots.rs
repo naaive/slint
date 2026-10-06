@@ -86,7 +86,7 @@ fn shell_states_render() {
     let sink = actions.clone();
     let model = ShellModel::new(&config, move |action| sink.borrow_mut().push(action));
     model.set_config_path(dir.path().join("config.toml"));
-    model.set_apps(&apps, &icons);
+    model.set_apps(std::rc::Rc::new(apps), icons);
     model.set_compositor_state(&support::compositor_state());
     model.handle_service_event(&ServiceEvent::State(support::system_state()));
     let shell = ShellView::new(&model, support::OUTPUT).expect("the view starts");

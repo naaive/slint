@@ -24,7 +24,7 @@ pub struct OutputShell {
     pub surface: SlintSurface,
     layer: LayerSurface,
     reservations: Vec<Reservation>,
-    exclusive: Exclusive,
+    exclusive: Option<Exclusive>,
     wants_keyboard: bool,
 }
 
@@ -62,7 +62,7 @@ impl OutputShell {
             surface,
             layer,
             reservations: Vec::new(),
-            exclusive: Exclusive::default(),
+            exclusive: None,
             wants_keyboard: false,
         })
     }
@@ -110,7 +110,8 @@ impl OutputShell {
     pub fn update(&mut self, globals: &Globals) {
         // Without keyboard interactivity otherwise, clicks on the panel never take the keyboard from windows.
         let wants_keyboard = self.view.wants_keyboard();
-        if wants_keyboard != self.wants_keyboard {
+        let keyboard_changed = wants_keyboard != self.wants_keyboard;
+        if keyboard_changed {
             self.wants_keyboard = wants_keyboard;
             let (interactivity, layer) = if wants_keyboard {
                 // The overlay layer is above fullscreen windows.
@@ -122,24 +123,24 @@ impl OutputShell {
             self.layer.set_layer(layer);
             self.surface.commit_later();
         }
-        let exclusive = self.view.exclusive_zone();
-        if exclusive != self.exclusive {
-            self.exclusive = exclusive;
-            self.reserve(globals);
+        let rendered = self.surface.render(globals.qh);
+        if rendered || keyboard_changed || self.exclusive.is_none() {
+            let exclusive = self.view.exclusive_zone();
+            if self.exclusive != Some(exclusive) {
+                self.reserve(globals, exclusive);
+            }
+            // See `ShellView::input_region` for why the region follows rendering.
+            self.surface.set_input_region(globals.compositor, self.view.input_region());
         }
-        self.surface.render(globals.qh);
-        // See `ShellView::input_region` for why the region follows rendering.
-        self.surface.set_input_region(globals.compositor, self.view.input_region());
         self.surface.commit();
     }
 
     /// Replaces the reservations with one per edge the view occupies.
-    fn reserve(&mut self, globals: &Globals) {
+    fn reserve(&mut self, globals: &Globals, exclusive: Exclusive) {
+        self.exclusive = Some(exclusive);
         self.reservations.clear();
-        let Exclusive { top, bottom, left, right } = self.exclusive;
-        for (edge, zone) in
-            [(Edge::Top, top), (Edge::Bottom, bottom), (Edge::Left, left), (Edge::Right, right)]
-        {
+        let Exclusive { top, bottom } = exclusive;
+        for (edge, zone) in [(Anchor::TOP, top), (Anchor::BOTTOM, bottom)] {
             let zone = zone.ceil() as i32;
             if zone > 0 {
                 match Reservation::new(globals, &self.output, edge, zone) {
@@ -163,22 +164,14 @@ pub struct Globals<'a> {
     pub transparent: Option<&'a WlBuffer>,
 }
 
-#[derive(Clone, Copy)]
-enum Edge {
-    Top,
-    Bottom,
-    Left,
-    Right,
-}
-
-/// A transparent strip along one edge that reserves an exclusive zone, without taking input.
+/// A transparent strip along the top or bottom edge that reserves an exclusive zone, without taking input.
 struct Reservation {
     viewport: WpViewport,
     layer: LayerSurface,
 }
 
 impl Reservation {
-    fn new(globals: &Globals, output: &WlOutput, edge: Edge, zone: i32) -> Option<Self> {
+    fn new(globals: &Globals, output: &WlOutput, edge: Anchor, zone: i32) -> Option<Self> {
         let (Some(viewporter), Some(_)) = (globals.viewporter, globals.transparent) else {
             return None;
         };
@@ -191,14 +184,8 @@ impl Reservation {
             Some("nimbus-shell-reservation"),
             Some(output),
         );
-        let (anchor, width, height) = match edge {
-            Edge::Top => (Anchor::TOP | Anchor::LEFT | Anchor::RIGHT, 0, zone),
-            Edge::Bottom => (Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT, 0, zone),
-            Edge::Left => (Anchor::LEFT | Anchor::TOP | Anchor::BOTTOM, zone, 0),
-            Edge::Right => (Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM, zone, 0),
-        };
-        layer.set_anchor(anchor);
-        layer.set_size(width.unsigned_abs(), height.unsigned_abs());
+        layer.set_anchor(edge | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_size(0, zone.unsigned_abs());
         layer.set_exclusive_zone(zone);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         if let Ok(region) = Region::new(globals.compositor) {

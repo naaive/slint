@@ -2,10 +2,9 @@
 
 //! The configuration file: loading it, watching it, and applying changes.
 
-use crate::state::State;
+use crate::state::{State, forward};
 use nimbus_config::{Config, ConfigWatcher};
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
-use smithay_client_toolkit::reexports::calloop::channel::{self, Event as ChannelEvent};
 use std::path::{Path, PathBuf};
 
 pub struct Settings {
@@ -29,16 +28,16 @@ impl Settings {
         let Some(path) = &self.path else {
             return;
         };
-        let (sender, receiver) = channel::channel::<Config>();
-        if let Err(err) = handle.insert_source(receiver, |event, _, state| {
-            if let ChannelEvent::Msg(config) = event {
-                tracing::info!("configuration changed");
-                state.apply_config(config);
-            }
+        let sender = match forward(handle, |state, config| {
+            tracing::info!("configuration changed");
+            state.apply_config(config);
         }) {
-            tracing::warn!("cannot watch the configuration: {err}");
-            return;
-        }
+            Ok(sender) => sender,
+            Err(err) => {
+                tracing::warn!("cannot watch the configuration: {err}");
+                return;
+            }
+        };
         match nimbus_config::watch(path, move |config| {
             // The receiver only goes away when the shell exits.
             let _ = sender.send(config);
