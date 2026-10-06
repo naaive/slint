@@ -67,9 +67,6 @@ impl State {
             self.nimbus.suppressed_keys.insert(code);
             return FilterResult::Intercept(KeyAction::SwitchVt(vt));
         }
-        if self.nimbus.lock.client().is_some() {
-            return FilterResult::Forward;
-        }
         let locked = self.nimbus.is_locked();
         if is_emergency_quit(modified, &raw_syms, modifiers, locked) {
             self.nimbus.suppressed_keys.insert(code);

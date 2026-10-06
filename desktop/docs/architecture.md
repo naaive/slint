@@ -234,15 +234,19 @@ Locked is compositor state, apart from whatever draws the lock screen.
 An `ext-session-lock` lock, `Request::Lock`, `--locked`, or the lock marker at startup locks the session.
 `Request::Lock` also emits `ShellCommand::Lock`, which asks the shell for a lock screen.
 While it's locked, the compositor draws the lock client's surfaces over black, breaks client grabs, and ignores Ctrl+Alt+Backspace.
-Without a live lock client, it draws black and gives keyboard and pointer to no one.
-`nimbus-shell` asks for the lock state when it starts, and locks with `ext-session-lock` if the session is locked,
-so a restarted shell shows its lock screen again.
-It creates its lock surfaces once the compositor confirms the lock, because the compositor rejects surfaces of a lock it refused.
-logind's lock signal, `Event::ShellCommand` with `lock`, and inactivity also make it lock.
-It then accepts a new `ext-session-lock` lock, but refuses one while a live client holds the session.
-A lock client that dies leaves the session locked, so a restarted shell or compositor can lock again.
+Volume, mute, and brightness keys still emit their `Event::ShellCommand`; every other key goes to the lock client.
+Without a live lock client, the compositor draws black, gives keyboard and pointer to no one,
+and accepts a new `ext-session-lock` lock.
+It refuses a lock while a live client holds the session, and never displays the refused lock's surfaces.
+A lock client that dies, or destroys its lock before `locked`, leaves the session locked,
+and the compositor emits `ShellCommand::Lock` so the shell takes over.
 Only the holder's `unlock_and_destroy` unlocks.
 `Request::GetLockState` reports the lock state over the control socket.
+
+`nimbus-shell` asks for the lock state when it starts, and locks with `ext-session-lock` if the session is locked,
+so a restarted shell shows its lock screen again.
+logind's lock signal, `Event::ShellCommand` with `lock`, and inactivity also make it lock.
+It creates its lock surfaces once the compositor confirms the lock.
 
 The lock marker, `$XDG_RUNTIME_DIR/nimbus/locked` (`nimbus_ipc::lock_marker_path`), exists while the session is locked.
 The compositor creates it, with mode 0600 in a 0700 directory, as a lock starts and before any locked frame.

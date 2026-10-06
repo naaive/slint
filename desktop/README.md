@@ -233,8 +233,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Screen blanking after inactivity and suspend on lid close aren't implemented yet; locking after inactivity is.
 - Overview cards show app icons, not live window thumbnails.
 - When an `ext-session-lock` client dies, the session stays locked and black until another client locks it.
-  A crashed shell is restarted and locks again; after another locker such as `swaylock` dies,
-  run `nimbusctl lock` from another TTY to bring up the shell's lock screen.
+  The shell locks again right away, or once `nimbus-session` restarts it after a crash.
 - The lock marker is per `XDG_RUNTIME_DIR`, so a nested compositor or session in the same runtime directory can create or remove the real session's marker.
 - If `nimbus-session` is killed with SIGKILL, autostarted apps keep running.
   An app that moves itself to a new process group or session isn't stopped at logout either.

@@ -278,6 +278,11 @@ pub fn post_repaint(
     drop(map);
     let this_output = |_: &_, _: &_| Some(output.clone());
     if let Some(lock) = nimbus.lock.client().and_then(|c| c.surface(&output.name())) {
+        with_states(lock.wl_surface(), |data| {
+            with_fractional_scale(data, |fractional| {
+                fractional.set_preferred_scale(output.current_scale().fractional_scale());
+            });
+        });
         send_frames_surface_tree(
             lock.wl_surface(),
             output,

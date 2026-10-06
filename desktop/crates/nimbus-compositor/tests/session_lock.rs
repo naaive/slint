@@ -9,10 +9,14 @@ use nimbus_ipc::{Event, Request, ShellCommand};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+    ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
     ext_session_lock_v1::{self, ExtSessionLockV1},
 };
 
@@ -26,6 +30,8 @@ enum LockState {
 #[derive(Default)]
 struct App {
     manager: Option<ExtSessionLockManagerV1>,
+    compositor: Option<WlCompositor>,
+    outputs: Vec<WlOutput>,
     state: Option<LockState>,
 }
 
@@ -50,9 +56,22 @@ impl Locker {
     }
 
     fn lock(&mut self) -> LockState {
+        self.lock_with_surfaces(false)
+    }
+
+    /// Locks, creating lock surfaces for every output right away when `surfaces` is set,
+    /// before the compositor confirms or refuses the lock.
+    fn lock_with_surfaces(&mut self, surfaces: bool) -> LockState {
         let qh = self.queue.handle();
         self.app.state = Some(LockState::Waiting);
-        self.lock = Some(self.app.manager.as_ref().unwrap().lock(&qh, ()));
+        let lock = self.app.manager.as_ref().unwrap().lock(&qh, ());
+        if surfaces {
+            let compositor = self.app.compositor.as_ref().expect("no wl_compositor");
+            for output in &self.app.outputs {
+                lock.get_lock_surface(&compositor.create_surface(&qh, ()), output, &qh, ());
+            }
+        }
+        self.lock = Some(lock);
         let deadline = Instant::now() + TIMEOUT;
         loop {
             self.queue.roundtrip(&mut self.app).expect("roundtrip");
@@ -82,10 +101,13 @@ impl Dispatch<WlRegistry, ()> for App {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global { name, interface, .. } = event
-            && interface == "ext_session_lock_manager_v1"
-        {
-            app.manager = Some(registry.bind(name, 1, qh, ()));
+        if let wl_registry::Event::Global { name, interface, .. } = event {
+            match interface.as_str() {
+                "ext_session_lock_manager_v1" => app.manager = Some(registry.bind(name, 1, qh, ())),
+                "wl_compositor" => app.compositor = Some(registry.bind(name, 4, qh, ())),
+                "wl_output" => app.outputs.push(registry.bind(name, 1, qh, ())),
+                _ => {}
+            }
         }
     }
 }
@@ -108,6 +130,10 @@ impl Dispatch<ExtSessionLockV1, ()> for App {
 }
 
 delegate_noop!(App: ignore ExtSessionLockManagerV1);
+delegate_noop!(App: ignore ExtSessionLockSurfaceV1);
+delegate_noop!(App: ignore WlCompositor);
+delegate_noop!(App: ignore WlSurface);
+delegate_noop!(App: ignore WlOutput);
 
 #[test]
 fn only_the_lock_holder_unlocks() {
@@ -123,6 +149,10 @@ fn only_the_lock_holder_unlocks() {
     // Unlocking the refused lock doesn't unlock the session.
     intruder.unlock();
     assert_eq!(connect().lock(), LockState::Finished, "the intruder unlocked the session");
+    // A refused lock's surfaces are ignored instead of disconnecting the client.
+    let mut eager = connect();
+    assert_eq!(eager.lock_with_surfaces(true), LockState::Finished);
+    eager.queue.roundtrip(&mut eager.app).expect("the refused locker was disconnected");
 
     // The holder can unlock, and then anyone can lock again.
     owner.unlock();
@@ -136,9 +166,16 @@ fn a_new_client_locks_after_the_holder_dies() {
     let compositor = Compositor::start("", &[]);
     let connect = || Locker::connect(&compositor.runtime_dir(), &compositor.display);
 
+    let events = compositor.subscribe();
+
     let mut owner = connect();
-    assert_eq!(owner.lock(), LockState::Locked);
+    assert_eq!(owner.lock_with_surfaces(true), LockState::Locked);
     drop(owner);
+    let command = events.wait("shell command", |event| match event {
+        Event::ShellCommand { command, .. } => Some(command),
+        _ => None,
+    });
+    assert_eq!(command, ShellCommand::Lock, "the shell wasn't asked to take over");
     assert!(compositor.locked(), "the dead holder unlocked the session");
 
     let mut next = connect();

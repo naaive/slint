@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::State;
+use nimbus_ipc::ShellCommand;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
@@ -18,7 +19,9 @@ use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::output::OutputHandler;
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::{
+    self, ExtSessionLockSurfaceV1,
+};
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::{
     self, ExtSessionLockV1,
 };
@@ -186,8 +189,8 @@ delegate_global_dispatch!(State: [ExtSessionLockManagerV1: SessionLockManagerGlo
 delegate_dispatch!(State: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
 delegate_dispatch!(State: [ExtSessionLockSurfaceV1: ExtLockSurfaceUserData] => SessionLockManagerState);
 
-/// Smithay lets any lock unlock the session and claim outputs, so requests from locks other than
-/// the confirmed holder are refused here before they reach it.
+/// Smithay lets any lock unlock the session and claim outputs,
+/// so requests from locks other than the holder are handled here before they reach it.
 impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
     fn request(
         state: &mut Self,
@@ -199,7 +202,7 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         let owner = state.nimbus.lock.is_held_by(lock);
-        match &request {
+        match request {
             ext_session_lock_v1::Request::UnlockAndDestroy
                 if !owner || state.nimbus.lock.awaits_confirmation() =>
             {
@@ -210,20 +213,18 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
                     ext_session_lock_v1::Error::InvalidUnlock,
                     "this lock doesn't hold the session",
                 );
-                return;
             }
-            ext_session_lock_v1::Request::GetLockSurface { .. } if !owner => {
-                lock.post_error(
-                    ext_session_lock_v1::Error::DuplicateOutput,
-                    "another client holds the session lock",
+            // The protocol lets clients create lock surfaces before `locked` or `finished`,
+            // and a refused lock never displays them.
+            ext_session_lock_v1::Request::GetLockSurface { id, .. } if !owner => {
+                data_init.init(id, InertLockSurface);
+            }
+            request => {
+                <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::request(
+                    state, client, lock, request, data, dh, data_init,
                 );
-                return;
             }
-            _ => {}
         }
-        <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::request(
-            state, client, lock, request, data, dh, data_init,
-        );
     }
 
     fn destroyed(
@@ -238,7 +239,24 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
         if state.nimbus.lock.release(lock) {
             tracing::warn!("the session lock client went away; the session stays locked");
             state.nimbus.queue_redraw_all();
+            state.shell_command(ShellCommand::Lock);
         }
+    }
+}
+
+/// A lock surface of a lock the compositor refused.
+pub struct InertLockSurface;
+
+impl Dispatch<ExtSessionLockSurfaceV1, InertLockSurface> for State {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _surface: &ExtSessionLockSurfaceV1,
+        _request: ext_session_lock_surface_v1::Request,
+        _data: &InertLockSurface,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
     }
 }
 delegate_foreign_toplevel_list!(State);
