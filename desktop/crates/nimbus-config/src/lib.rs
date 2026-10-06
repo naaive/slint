@@ -180,6 +180,8 @@ pub struct Input {
     pub natural_scroll: bool,
     pub tap_to_click: bool,
     pub pointer_speed: f64,
+    /// Fingers of the horizontal touchpad swipe that switches workspaces; 0 turns it off.
+    pub workspace_swipe_fingers: u32,
 }
 
 impl Default for Input {
@@ -193,6 +195,7 @@ impl Default for Input {
             natural_scroll: true,
             tap_to_click: true,
             pointer_speed: 0.0,
+            workspace_swipe_fingers: 3,
         }
     }
 }

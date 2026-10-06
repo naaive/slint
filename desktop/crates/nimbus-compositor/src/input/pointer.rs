@@ -2,6 +2,7 @@
 
 //! Pointer focus, focus on click or hover, scrolling, and interactive move and resize.
 
+use super::constraints::Constraint;
 use crate::state::{Nimbus, State};
 use crate::wm::grabs::{self, MoveGrab, ResizeGrab};
 use nimbus_ipc::WindowId;
@@ -67,11 +68,24 @@ impl Nimbus {
 impl State {
     pub(super) fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {
         let delta = event.delta();
-        let location = self.nimbus.pointer_location + delta;
+        let from = self.nimbus.pointer_location;
         let relative = RelativeMotionEvent {
             delta,
             delta_unaccel: event.delta_unaccel(),
             utime: event.time(),
+        };
+        let location = match self.active_constraint() {
+            Some(Constraint::Locked) => {
+                let pointer = self.nimbus.pointer.clone();
+                let focus = self.nimbus.pointer_target(from);
+                pointer.relative_motion(self, focus, &relative);
+                pointer.frame(self);
+                return;
+            }
+            Some(Constraint::Confined { surface, origin, region }) => {
+                self.confine(from, from + delta, &surface, origin, region.as_ref())
+            }
+            None => from + delta,
         };
         self.pointer_moved(location, event.time_msec(), Some(relative));
     }
@@ -109,6 +123,7 @@ impl State {
             pointer.relative_motion(self, focus, &relative);
         }
         pointer.frame(self);
+        self.refresh_pointer_constraint();
         self.nimbus.queue_redraw_all();
     }
 
@@ -155,6 +170,12 @@ impl State {
         }
         pointer.button(self, &ButtonEvent { button, state, serial, time });
         pointer.frame(self);
+    }
+
+    /// Focuses what a touch or tablet tool pressed on, as a click would.
+    pub(super) fn focus_on_press(&mut self, surface: &WlSurface) {
+        let window = self.nimbus.window_for_surface(surface);
+        self.click_focus(surface, window);
     }
 
     fn click_focus(&mut self, surface: &WlSurface, window: Option<WindowId>) {

@@ -24,6 +24,10 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - Input methods such as fcitx5 and IBus, through text-input-v3, input-method-v2, and virtual-keyboard-v1,
   with their candidate popups below the text cursor.
 - Keyboard shortcuts from the configuration, with live reload.
+- Touchpad gestures for apps through pointer-gestures, and a three-finger horizontal swipe that switches workspaces,
+  with the finger count in `[input] workspace_swipe_fingers`.
+- Games and remote desktops lock or confine the pointer through relative-pointer and pointer-constraints.
+- Touchscreens through `wl_touch` and drawing tablets through tablet-v2, on the udev backend.
 - A control socket that speaks JSON lines, used by the shell, `nimbusctl`, the Settings app, and scripts.
 - No UI of its own: the shell is a separate client, so a crashed shell doesn't take windows down.
   A locked session stays locked, and black, until a lock client takes over again.
@@ -273,7 +277,11 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Display settings are stored per display, not as profiles for each set of connected displays.
   Custom modes, adaptive sync, and output power management aren't supported.
 - Any client may configure displays through wlr-output-management, as in other wlroots-style compositors.
-- Touch, tablet, and pointer-constraint protocols aren't implemented.
+- Touch, tablets, gestures, and pointer constraints have only run headless; no real touchscreen, tablet, or touchpad has driven them.
+  A touchscreen maps to the built-in panel, or else the first output, and a tablet to the whole desktop; neither can be assigned to an output.
+  Touch has no compositor gestures, and tablet pads aren't supported.
+  The workspace swipe switches when the fingers lift, without following them.
+  A confined pointer slides along its region's edges, but a fast motion can jump a gap between two of the region's rectangles.
 - Input methods have only run against test clients, not fcitx5 or IBus.
   Apps that speak only text-input-v1 or v2, such as Chromium and Electron by default, get no input method.
   Any client may become the input method or create a virtual keyboard, as in other wlroots-style compositors.

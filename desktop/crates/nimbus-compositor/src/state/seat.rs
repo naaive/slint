@@ -23,7 +23,6 @@ use smithay::wayland::selection::primary_selection::{
 use smithay::wayland::selection::wlr_data_control::{
     DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
 };
-use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::{
     delegate_cursor_shape, delegate_data_control as delegate_wlr_data_control,
     delegate_data_device, delegate_ext_data_control, delegate_keyboard_shortcuts_inhibit,
@@ -44,6 +43,7 @@ impl SeatHandler for State {
         let client = focused.and_then(|surface| dh.get_client(surface.id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
+        self.update_pointer_constraint(focused);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -51,8 +51,6 @@ impl SeatHandler for State {
         self.nimbus.queue_redraw_all();
     }
 }
-
-impl TabletSeatHandler for State {}
 
 impl SelectionHandler for State {
     type SelectionUserData = ();

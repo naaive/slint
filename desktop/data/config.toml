@@ -60,6 +60,8 @@ natural_scroll = true
 tap_to_click = true
 # Pointer acceleration from -1.0 (slowest) to 1.0 (fastest).
 pointer_speed = 0.0
+# Fingers of the horizontal touchpad swipe that switches workspaces, usually 3 or 4; 0 turns it off.
+workspace_swipe_fingers = 3
 
 [power]
 # Minutes of inactivity before the screen locks; 0 never locks.

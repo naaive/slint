@@ -4,6 +4,7 @@
 
 mod compositor;
 mod ime;
+mod input;
 mod layer;
 mod protocols;
 mod seat;
@@ -13,6 +14,7 @@ use crate::backend::Backend;
 use crate::capture::CaptureState;
 use crate::config::ConfigManager;
 use crate::cursor::CursorThemeManager;
+use crate::input::WorkspaceSwipe;
 use crate::ipc::IpcServer;
 use crate::keybindings::Bindings;
 use crate::lock::SessionLock;
@@ -50,7 +52,10 @@ use smithay::wayland::idle_notify::IdleNotifierState;
 use smithay::wayland::input_method::{InputMethodKeyboardGrab, InputMethodManagerState};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState;
 use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::presentation::PresentationState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
@@ -60,6 +65,7 @@ use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::tablet_manager::TabletManagerState;
 use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
@@ -115,6 +121,10 @@ pub struct Nimbus {
     _idle_inhibit_state: IdleInhibitManagerState,
     pub shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub foreign_toplevel_state: ForeignToplevelListState,
+    _relative_pointer_state: RelativePointerManagerState,
+    _pointer_gestures_state: PointerGesturesState,
+    _pointer_constraints_state: PointerConstraintsState,
+    _tablet_manager_state: TabletManagerState,
     _text_input_state: TextInputManagerState,
     /// None without a seat keyboard, which smithay's input method and virtual keyboard unwrap.
     _input_method_state: Option<(InputMethodManagerState, VirtualKeyboardManagerState)>,
@@ -135,6 +145,9 @@ pub struct Nimbus {
     pub suppressed_keys: HashSet<Keycode>,
     /// The layer surface that took keyboard focus on click.
     pub layer_focus: Option<WlSurface>,
+    /// Libinput ids of the connected touchscreens; the seat has touch while there's one.
+    pub touch_devices: HashSet<String>,
+    pub workspace_swipe: Option<WorkspaceSwipe>,
 
     pub wm: Wm,
     /// Every connected display; the enabled ones are also in `wm.space`.
@@ -228,6 +241,10 @@ impl Nimbus {
             _idle_inhibit_state: IdleInhibitManagerState::new::<State>(&dh),
             shortcuts_inhibit_state: KeyboardShortcutsInhibitState::new::<State>(&dh),
             foreign_toplevel_state: ForeignToplevelListState::new::<State>(&dh),
+            _relative_pointer_state: RelativePointerManagerState::new::<State>(&dh),
+            _pointer_gestures_state: PointerGesturesState::new::<State>(&dh),
+            _pointer_constraints_state: PointerConstraintsState::new::<State>(&dh),
+            _tablet_manager_state: TabletManagerState::new::<State>(&dh),
             _text_input_state: TextInputManagerState::new::<State>(&dh),
             _input_method_state: input_method_state,
             popups: PopupManager::default(),
@@ -243,6 +260,8 @@ impl Nimbus {
             dnd_icon: None,
             suppressed_keys: HashSet::new(),
             layer_focus: None,
+            touch_devices: HashSet::new(),
+            workspace_swipe: None,
             wm,
             heads: Vec::new(),
             output_globals: HashMap::new(),

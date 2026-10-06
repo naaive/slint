@@ -79,6 +79,7 @@ Modules in `crates/nimbus-compositor/src`:
   ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
   `state/protocols.rs` also serves `ext-session-lock` itself, without Smithay's implementation, on the state in `lock.rs`.
   `state/ime.rs` serves input methods; see [Input Methods](#input-methods).
+  `state/input.rs` serves relative-pointer, pointer-gestures, pointer-constraints, and tablet-v2; see [Pointer, Touch, and Tablets](#pointer-touch-and-tablets).
 - `outputs/`: displays; see [Displays](#displays).
   `layout.rs` turns `[[outputs]]` into a layout and back, `management.rs` serves wlr-output-management,
   and `edid.rs` reads the make, model, and serial number of a DRM connector's display.
@@ -94,6 +95,7 @@ Modules in `crates/nimbus-compositor/src`:
   `pointer.rs` finds the surface under the pointer, focuses on click or hover, and runs interactive move and resize.
   Layer surfaces with `exclusive` keyboard interactivity on the top or overlay layer take the keyboard;
   `on_demand` ones take it when clicked.
+  `gestures.rs`, `constraints.rs`, `touch.rs`, `tablet.rs`, and `devices.rs` handle the rest; see [Pointer, Touch, and Tablets](#pointer-touch-and-tablets).
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
 - `actions.rs`: control requests and keybinding actions.
   Shortcuts aimed at the shell become `Event::ShellCommand`s; see [Shell](#shell).
@@ -186,6 +188,27 @@ the surrounding text, up to 4000 bytes around the cursor, the content type, and 
 Password fields, on the lock screen and in the polkit dialog, send the `password` purpose with the `sensitive_data` and `hidden_text` hints,
 and never their text.
 At each `done`, the preedit string, commit string, and deleted surrounding text reach Slint as one composition event.
+
+### Pointer, Touch, and Tablets
+
+Touchpad gestures reach the client under the pointer through `pointer-gestures`,
+except a horizontal swipe with `[input] workspace_swipe_fingers` fingers, 3 by default, which the compositor keeps.
+When the fingers lift after 100 units mostly sideways, it switches to the next workspace for a swipe to the left and the previous one for a swipe to the right.
+Pointer motion also goes out through `relative-pointer`, unaccelerated as well, for games and remote desktops.
+
+A `pointer-constraints` lock or confinement is active while the pointer is over its surface and inside its region,
+and the surface's window or layer surface has the keyboard, so a window in the background can't trap the pointer.
+Leaving the surface or losing the keyboard ends it.
+A lock stops `wl_pointer` motion but not relative motion,
+and the pointer jumps to the client's cursor hint so it reappears where the client drew it.
+A confinement keeps the pointer on its surface and region, sliding along their edges.
+Absolute motion, such as a synthetic click, ignores constraints.
+
+Libinput reports touchscreens and tablets on the udev backend; `devices.rs` gives the seat `wl_touch` while a touchscreen is connected,
+and adds each tablet to the `tablet-v2` seat.
+A touchscreen covers a built-in panel (`eDP`, `LVDS`, or `DSI`), or else the first output, following its transform.
+A tablet covers the whole desktop, and the pointer follows its tool.
+A touch or a tool tip focuses what it lands on, as a click does.
 
 ## Displays
 

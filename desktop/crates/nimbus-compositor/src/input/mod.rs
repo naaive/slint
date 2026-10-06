@@ -2,22 +2,21 @@
 
 //! Input routing: compositor shortcuts, focus, and delivery to Wayland clients.
 
+mod constraints;
+mod devices;
+mod gestures;
 mod keyboard;
 mod pointer;
+mod tablet;
+mod touch;
+
+pub use gestures::WorkspaceSwipe;
 
 use crate::state::{Nimbus, State};
 use nimbus_ipc::WindowId;
-use smithay::backend::input::{ButtonState, KeyState};
-use smithay::backend::input::{
-    Event, GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _,
-    GestureSwipeUpdateEvent as _, InputBackend, InputEvent,
-};
+use smithay::backend::input::{ButtonState, InputBackend, InputEvent, KeyState};
 use smithay::desktop::{PopupManager, layer_map_for_output};
 use smithay::input::keyboard::Keycode;
-use smithay::input::pointer::{
-    GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
-    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use std::time::Duration;
@@ -75,75 +74,25 @@ impl State {
             }
             InputEvent::PointerButton { event } => self.on_pointer_button::<B>(event),
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
-            InputEvent::GestureSwipeBegin { event } => {
-                let e = GestureSwipeBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_swipe_begin(self, &e);
-            }
-            InputEvent::GestureSwipeUpdate { event } => {
-                let e = GestureSwipeUpdateEvent { time: event.time_msec(), delta: event.delta() };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_swipe_update(self, &e);
-            }
-            InputEvent::GestureSwipeEnd { event } => {
-                let e = GestureSwipeEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_swipe_end(self, &e);
-            }
-            InputEvent::GesturePinchBegin { event } => {
-                let e = GesturePinchBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_pinch_begin(self, &e);
-            }
-            InputEvent::GesturePinchUpdate { event } => {
-                let e = GesturePinchUpdateEvent {
-                    time: event.time_msec(),
-                    delta: event.delta(),
-                    scale: event.scale(),
-                    rotation: event.rotation(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_pinch_update(self, &e);
-            }
-            InputEvent::GesturePinchEnd { event } => {
-                let e = GesturePinchEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_pinch_end(self, &e);
-            }
-            InputEvent::GestureHoldBegin { event } => {
-                let e = GestureHoldBeginEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    fingers: event.fingers(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_hold_begin(self, &e);
-            }
-            InputEvent::GestureHoldEnd { event } => {
-                let e = GestureHoldEndEvent {
-                    serial: SERIAL_COUNTER.next_serial(),
-                    time: event.time_msec(),
-                    cancelled: event.cancelled(),
-                };
-                let pointer = self.nimbus.pointer.clone();
-                pointer.gesture_hold_end(self, &e);
-            }
+            InputEvent::GestureSwipeBegin { event } => self.on_gesture_swipe_begin::<B>(event),
+            InputEvent::GestureSwipeUpdate { event } => self.on_gesture_swipe_update::<B>(event),
+            InputEvent::GestureSwipeEnd { event } => self.on_gesture_swipe_end::<B>(event),
+            InputEvent::GesturePinchBegin { event } => self.on_gesture_pinch_begin::<B>(event),
+            InputEvent::GesturePinchUpdate { event } => self.on_gesture_pinch_update::<B>(event),
+            InputEvent::GesturePinchEnd { event } => self.on_gesture_pinch_end::<B>(event),
+            InputEvent::GestureHoldBegin { event } => self.on_gesture_hold_begin::<B>(event),
+            InputEvent::GestureHoldEnd { event } => self.on_gesture_hold_end::<B>(event),
+            InputEvent::TouchDown { event } => self.on_touch_down::<B>(event),
+            InputEvent::TouchMotion { event } => self.on_touch_motion::<B>(event),
+            InputEvent::TouchUp { event } => self.on_touch_up::<B>(event),
+            InputEvent::TouchFrame { .. } => self.on_touch_frame(),
+            InputEvent::TouchCancel { .. } => self.on_touch_cancel(),
+            InputEvent::TabletToolAxis { event } => self.on_tablet_tool_axis::<B>(event),
+            InputEvent::TabletToolProximity { event } => self.on_tablet_tool_proximity::<B>(event),
+            InputEvent::TabletToolTip { event } => self.on_tablet_tool_tip::<B>(event),
+            InputEvent::TabletToolButton { event } => self.on_tablet_tool_button::<B>(event),
+            InputEvent::DeviceAdded { device } => self.on_device_added(&device),
+            InputEvent::DeviceRemoved { device } => self.on_device_removed(&device),
             _ => {}
         }
     }
