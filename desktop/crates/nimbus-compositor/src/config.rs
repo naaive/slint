@@ -12,25 +12,14 @@ use smithay::reexports::calloop::channel::{self, Event as ChannelEvent};
 use std::path::PathBuf;
 
 pub struct ConfigManager {
-    path: PathBuf,
+    path: Option<PathBuf>,
     current: Config,
     watcher: Option<ConfigWatcher>,
 }
 
 impl ConfigManager {
-    /// Loads `path` or the default location; an invalid file is reported and replaced by the defaults.
     pub fn load(path: Option<PathBuf>) -> Self {
-        let path = match path.map(Ok).unwrap_or_else(nimbus_config::default_path) {
-            Ok(path) => path,
-            Err(err) => {
-                tracing::warn!("{err}; using the default configuration");
-                return Self { path: PathBuf::new(), current: Config::default(), watcher: None };
-            }
-        };
-        let current = Config::load_from(&path).unwrap_or_else(|err| {
-            tracing::error!("{err}; using the default configuration");
-            Config::default()
-        });
+        let (path, current) = Config::load_or_default(path);
         Self { path, current, watcher: None }
     }
 
@@ -39,14 +28,14 @@ impl ConfigManager {
     }
 
     pub fn reload(&self) -> Result<Config, nimbus_config::Error> {
-        Config::load_from(&self.path)
+        self.path.as_deref().map_or_else(|| Ok(Config::default()), Config::load_from)
     }
 
     /// Delivers changes of the file to [`State::apply_config`] on the event loop.
     pub fn watch(&mut self, handle: &LoopHandle<'static, State>) {
-        if self.path.as_os_str().is_empty() {
+        let Some(path) = &self.path else {
             return;
-        }
+        };
         let (sender, receiver) = channel::channel::<Config>();
         if let Err(err) = handle.insert_source(receiver, |event, _, state| {
             if let ChannelEvent::Msg(config) = event {
@@ -57,7 +46,7 @@ impl ConfigManager {
             tracing::warn!("cannot watch the configuration: {err}");
             return;
         }
-        match nimbus_config::watch(&self.path, move |config| {
+        match nimbus_config::watch(path, move |config| {
             // The receiver only goes away when the compositor exits.
             let _ = sender.send(config);
         }) {
@@ -69,10 +58,10 @@ impl ConfigManager {
     /// Applies `edit` to the configuration, and saves it without losing other programs' changes to the file.
     pub fn update(&mut self, edit: impl Fn(&mut Config)) {
         edit(&mut self.current);
-        if self.path.as_os_str().is_empty() {
+        let Some(path) = &self.path else {
             return;
-        }
-        if let Err(err) = nimbus_config::update(&self.path, |config| edit(config)) {
+        };
+        if let Err(err) = nimbus_config::update(path, |config| edit(config)) {
             tracing::warn!("cannot save the configuration: {err}");
         }
     }

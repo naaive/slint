@@ -6,9 +6,9 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, VecModel};
 
-use super::{Inner, Message, With, deliver, index_of, post, with_app};
+use super::{Inner, Message, With, deliver, index_of, post, strings, to_index, with_app};
 use crate::dispatch::Dispatch;
 use crate::displays::{
     self, ApplyError, DisplayControl, DisplayEvent, DisplayEvents, Head, HeadConfig,
@@ -28,17 +28,23 @@ pub(crate) struct Displays {
     /// Why displays can only be listed, when they can't be configured.
     unavailable: Option<String>,
     applying: Option<Applying>,
-    /// The configuration to go back to while the user decides whether to keep an applied one.
-    previous: Option<Vec<HeadConfig>>,
-    seconds_left: i32,
-    countdown: Option<slint::Timer>,
+    confirm: Option<Confirm>,
     loading_outputs: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum Applying {
-    Edits,
+    /// The user's edits, and the configuration to go back to unless the user keeps them.
+    Edits {
+        previous: Vec<HeadConfig>,
+    },
     Revert,
+}
+
+/// Applied settings that revert unless the user keeps them before the countdown ends.
+struct Confirm {
+    previous: Vec<HeadConfig>,
+    seconds_left: i32,
+    _timer: slint::Timer,
 }
 
 impl Displays {
@@ -98,7 +104,7 @@ pub(super) fn wire(ui: &AppWindow, with: &With) {
     model.on_choose_rotation(move |index, choice| {
         h(&|i| {
             i.edit_display(index, |_, config| {
-                config.transform = displays::with_rotation(config.transform, index_of(choice));
+                config.transform = config.transform.with_rotation(choice as u32);
             })
         });
     });
@@ -222,7 +228,7 @@ impl Inner {
                     displays.applying.take()
                 };
                 match (applying, result) {
-                    (Some(Applying::Edits), Ok(())) => self.ask_to_keep(),
+                    (Some(Applying::Edits { previous }), Ok(())) => self.ask_to_keep(previous),
                     (_, Err(error)) => self.show_banner(&apply_message(&error), true),
                     _ => {}
                 }
@@ -280,8 +286,7 @@ impl Inner {
             if displays.applying.is_some() || displays.edits == displays.current() {
                 return;
             }
-            displays.applying = Some(Applying::Edits);
-            displays.previous = Some(displays.current());
+            displays.applying = Some(Applying::Edits { previous: displays.current() });
             (control, displays.edits.clone())
         };
         self.show_displays();
@@ -296,7 +301,7 @@ impl Inner {
         self.show_displays();
     }
 
-    fn ask_to_keep(&self) {
+    fn ask_to_keep(&self, previous: Vec<HeadConfig>) {
         let weak = self.ui.clone();
         let timer = slint::Timer::default();
         timer.start(slint::TimerMode::Repeated, Duration::from_secs(1), move || {
@@ -304,16 +309,16 @@ impl Inner {
                 with_app(|inner| inner.tick_countdown());
             }
         });
-        let mut state = self.state.borrow_mut();
-        state.displays.seconds_left = CONFIRM_SECONDS;
-        state.displays.countdown = Some(timer);
+        self.state.borrow_mut().displays.confirm =
+            Some(Confirm { previous, seconds_left: CONFIRM_SECONDS, _timer: timer });
     }
 
     fn tick_countdown(&self) {
         let left = {
             let mut state = self.state.borrow_mut();
-            state.displays.seconds_left -= 1;
-            state.displays.seconds_left
+            let Some(confirm) = &mut state.displays.confirm else { return };
+            confirm.seconds_left -= 1;
+            confirm.seconds_left
         };
         if left <= 0 {
             self.revert_displays();
@@ -324,11 +329,7 @@ impl Inner {
 
     fn keep_displays(&self) {
         {
-            let mut state = self.state.borrow_mut();
-            let displays = &mut state.displays;
-            displays.previous = None;
-            displays.countdown = None;
-            displays.seconds_left = 0;
+            self.state.borrow_mut().displays.confirm = None;
         }
         self.show_displays();
     }
@@ -337,9 +338,7 @@ impl Inner {
         let revert = {
             let mut state = self.state.borrow_mut();
             let displays = &mut state.displays;
-            displays.countdown = None;
-            displays.seconds_left = 0;
-            let previous = displays.previous.take();
+            let previous = displays.confirm.take().map(|confirm| confirm.previous);
             match (displays.control.clone(), previous) {
                 (Some(control), Some(previous)) => {
                     displays.applying = Some(Applying::Revert);
@@ -370,7 +369,7 @@ impl Inner {
         let editable = displays.control.is_some();
         let changed = displays.edits != displays.current();
         let applying = displays.applying.is_some();
-        let seconds_left = if displays.previous.is_some() { displays.seconds_left } else { 0 };
+        let seconds_left = displays.confirm.as_ref().map_or(0, |confirm| confirm.seconds_left);
         let message = match &displays.unavailable {
             Some(reason) => format!("{reason}, so displays are shown without changing them."),
             None => String::new(),
@@ -394,32 +393,27 @@ impl Inner {
     }
 }
 
-fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(items.into_iter().map(SharedString::from).collect::<Vec<_>>()))
-}
-
 fn item(head: &Head, config: &HeadConfig, [x, y, width, height]: [f32; 4]) -> DisplayItem {
     let resolutions = head.resolutions();
     let size = config.mode.map(|m| (m.width, m.height));
     let rates = size.map(|size| head.refresh_rates(size)).unwrap_or_default();
     let scales = displays::scale_choices(config.scale);
-    let position = |found: Option<usize>| found.map_or(-1, |i| i as i32);
     DisplayItem {
         title: head.title().into(),
         connector: head.name.as_str().into(),
         enabled: config.enabled,
         resolutions: strings(resolutions.iter().map(|(w, h)| format!("{w} × {h}"))),
-        resolution_index: position(resolutions.iter().position(|&r| Some(r) == size)),
+        resolution_index: to_index(resolutions.iter().position(|&r| Some(r) == size)),
         refresh_rates: strings(rates.iter().map(|m| {
             let text = displays::format_refresh(m.refresh_mhz);
             if text.is_empty() { "Unknown".into() } else { text }
         })),
-        refresh_index: position(
+        refresh_index: to_index(
             rates.iter().position(|m| Some(m.refresh_mhz) == config.mode.map(|c| c.refresh_mhz)),
         ),
         scales: strings(scales.iter().map(|&s| displays::format_scale(s))),
-        scale_index: position(scales.iter().position(|&s| (s - config.scale).abs() < 1e-3)),
-        rotation_index: displays::rotation(config.transform) as i32,
+        scale_index: to_index(scales.iter().position(|&s| (s - config.scale).abs() < 1e-3)),
+        rotation_index: config.transform.rotation() as i32,
         frac_x: x,
         frac_y: y,
         frac_width: width,

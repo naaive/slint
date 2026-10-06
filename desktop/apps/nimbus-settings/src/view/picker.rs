@@ -4,7 +4,7 @@
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use super::{Inner, With};
+use super::{Inner, With, to_index};
 use crate::settings::{Key, Value};
 use crate::{AppWindow, Picker, PickerItem, search, xkb};
 
@@ -145,8 +145,7 @@ impl Inner {
         .take(MAX_SHOWN)
         .filter_map(|i| open.entries.get(i))
         .collect();
-        let current_index =
-            shown.iter().position(|e| e.id == open.current).map_or(-1, |i| i as i32);
+        let current_index = to_index(shown.iter().position(|e| e.id == open.current));
         let items: Vec<PickerItem> = shown
             .iter()
             .map(|e| PickerItem {

@@ -8,13 +8,9 @@ use nimbus_config::{Config, PanelPosition};
 use nimbus_theme::ThemeSettings;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use super::{Inner, SystemScheme, index_of};
+use super::{Inner, SystemScheme, index_of, strings};
 use crate::settings::{self, ACCENTS, Key, Value};
 use crate::{AccentSwatch, InputSource, Nav, OptionGroup, Prefs, SearchHit, clock, search, xkb};
-
-fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(items.into_iter().map(SharedString::from).collect::<Vec<_>>()))
-}
 
 fn color(hex: &str) -> slint::Color {
     let (r, g, b) = nimbus_theme::parse_hex_color(hex).unwrap_or(nimbus_theme::DEFAULT_ACCENT);

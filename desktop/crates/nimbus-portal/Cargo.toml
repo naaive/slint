@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 nimbus-config = { workspace = true }
+nimbus-theme = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

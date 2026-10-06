@@ -19,7 +19,6 @@ use smithay::reexports::wayland_protocols_wlr::output_management::v1::server::{
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
 };
 use smithay::reexports::wayland_server::backend::ClientId;
-use smithay::reexports::wayland_server::protocol::wl_output;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
 };
@@ -456,13 +455,15 @@ impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
                 set_once(&mut changes.mode, RequestedMode::Custom { width, height, refresh })
             }
             Request::SetPosition { x, y } => set_once(&mut changes.position, (x, y).into()),
-            Request::SetTransform { transform } => match transform_from_protocol(transform) {
-                Some(transform) => set_once(&mut changes.transform, transform),
-                None => {
-                    resource.post_error(Error::InvalidTransform, "unknown transform");
-                    return;
+            Request::SetTransform { transform } => {
+                match transform.into_result().ok().map(Transform::from) {
+                    Some(transform) => set_once(&mut changes.transform, transform),
+                    None => {
+                        resource.post_error(Error::InvalidTransform, "unknown transform");
+                        return;
+                    }
                 }
-            },
+            }
             Request::SetScale { scale } => {
                 if scale.is_nan() || scale <= 0.0 {
                     resource.post_error(Error::InvalidScale, "the scale must be positive");
@@ -493,21 +494,6 @@ fn set_once<T>(slot: &mut Option<T>, value: T) -> bool {
     let already_set = slot.is_some();
     slot.get_or_insert(value);
     already_set
-}
-
-fn transform_from_protocol(transform: WEnum<wl_output::Transform>) -> Option<Transform> {
-    use wl_output::Transform as T;
-    Some(match transform.into_result().ok()? {
-        T::Normal => Transform::Normal,
-        T::_90 => Transform::_90,
-        T::_180 => Transform::_180,
-        T::_270 => Transform::_270,
-        T::Flipped => Transform::Flipped,
-        T::Flipped90 => Transform::Flipped90,
-        T::Flipped180 => Transform::Flipped180,
-        T::Flipped270 => Transform::Flipped270,
-        _ => return None,
-    })
 }
 
 impl State {

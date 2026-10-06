@@ -132,10 +132,19 @@ impl fmt::Display for OutputMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}x{}", self.width, self.height)?;
         if self.refresh_mhz > 0 {
-            let hz = format!("{}.{:03}", self.refresh_mhz / 1000, self.refresh_mhz % 1000);
-            write!(f, "@{}", hz.trim_end_matches('0').trim_end_matches('.'))?;
+            write!(f, "@{}", format_hz(self.refresh_mhz, 3))?;
         }
         Ok(())
+    }
+}
+
+/// A frequency in millihertz as hertz, rounded to `decimals` and without trailing zeros, such as `59.95`.
+pub fn format_hz(mhz: u32, decimals: usize) -> String {
+    let text = format!("{:.decimals$}", f64::from(mhz) / 1000.0);
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        text
     }
 }
 
@@ -186,26 +195,65 @@ impl From<OutputMode> for String {
     }
 }
 
-/// A display's rotation, clockwise, and whether it's flipped, with the names of `wl_output.transform`.
+/// A display's rotation, clockwise, and whether it's flipped, with the names and values of `wl_output.transform`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u32)]
 pub enum Transform {
     #[default]
     #[serde(rename = "normal")]
-    Normal,
+    Normal = 0,
     #[serde(rename = "90")]
-    Rotate90,
+    Rotate90 = 1,
     #[serde(rename = "180")]
-    Rotate180,
+    Rotate180 = 2,
     #[serde(rename = "270")]
-    Rotate270,
+    Rotate270 = 3,
     #[serde(rename = "flipped")]
-    Flipped,
+    Flipped = 4,
     #[serde(rename = "flipped-90")]
-    Flipped90,
+    Flipped90 = 5,
     #[serde(rename = "flipped-180")]
-    Flipped180,
+    Flipped180 = 6,
     #[serde(rename = "flipped-270")]
-    Flipped270,
+    Flipped270 = 7,
+}
+
+impl Transform {
+    const ALL: [Self; 8] = [
+        Self::Normal,
+        Self::Rotate90,
+        Self::Rotate180,
+        Self::Rotate270,
+        Self::Flipped,
+        Self::Flipped90,
+        Self::Flipped180,
+        Self::Flipped270,
+    ];
+
+    /// The clockwise rotation in quarter turns, `0..4`.
+    pub fn rotation(self) -> u32 {
+        self as u32 % 4
+    }
+
+    /// This transform turned to `quarter_turns` clockwise, flipped if it was.
+    pub fn with_rotation(self, quarter_turns: u32) -> Self {
+        let flip = self as u32 / 4 * 4;
+        Self::ALL[(flip + quarter_turns % 4) as usize]
+    }
+}
+
+impl TryFrom<u32> for Transform {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, u32> {
+        Self::ALL.get(value as usize).copied().ok_or(value)
+    }
+}
+
+impl From<Transform> for u32 {
+    fn from(transform: Transform) -> Self {
+        transform as u32
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +275,34 @@ mod tests {
         for bad in ["", "1920", "0x1080", "1920x1080@", "1920x1080@-5", "axb", "1920x1080@nan"] {
             assert!(bad.parse::<OutputMode>().is_err(), "{bad:?} parsed");
         }
+    }
+
+    #[test]
+    fn hertz_round_and_drop_trailing_zeros() {
+        assert_eq!(format_hz(60_000, 2), "60");
+        assert_eq!(format_hz(59_951, 2), "59.95");
+        assert_eq!(format_hz(59_951, 3), "59.951");
+        assert_eq!(format_hz(143_900, 2), "143.9");
+        assert_eq!(format_hz(59_996, 2), "60");
+        assert_eq!(format_hz(120_000, 0), "120");
+    }
+
+    #[test]
+    fn transforms_have_wire_values() {
+        for (value, transform) in Transform::ALL.into_iter().enumerate() {
+            assert_eq!(u32::from(transform), value as u32);
+            assert_eq!(Transform::try_from(value as u32), Ok(transform));
+        }
+        assert_eq!(Transform::try_from(8), Err(8));
+    }
+
+    #[test]
+    fn rotation_keeps_flip() {
+        assert_eq!(Transform::Normal.with_rotation(1), Transform::Rotate90);
+        assert_eq!(Transform::Flipped90.with_rotation(2), Transform::Flipped180);
+        assert_eq!(Transform::Rotate270.with_rotation(4), Transform::Normal);
+        assert_eq!(Transform::Flipped270.rotation(), 3);
+        assert_eq!(Transform::Rotate180.rotation(), 2);
     }
 
     #[test]

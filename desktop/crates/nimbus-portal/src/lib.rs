@@ -31,21 +31,12 @@ pub enum ColorSchemePreference {
     PreferLight = 2,
 }
 
-/// Values of the `contrast` key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum ContrastPreference {
-    NoPreference = 0,
-    Higher = 1,
-}
-
 /// The `org.freedesktop.appearance` settings derived from the configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AppearanceSettings {
     pub color_scheme: ColorSchemePreference,
     /// sRGB, each channel in `0.0..=1.0`.
     pub accent_color: (f64, f64, f64),
-    pub contrast: ContrastPreference,
 }
 
 impl AppearanceSettings {
@@ -57,15 +48,10 @@ impl AppearanceSettings {
             ColorScheme::Light => ColorSchemePreference::PreferLight,
             ColorScheme::System => ColorSchemePreference::NoPreference,
         };
-        let (red, green, blue) = parse_hex_color(&appearance.accent)
-            .or_else(|| parse_hex_color(&Appearance::default().accent))
-            .unwrap_or_default();
+        let (red, green, blue) = nimbus_theme::parse_hex_color(&appearance.accent)
+            .unwrap_or(nimbus_theme::DEFAULT_ACCENT);
         let channel = |value: u8| f64::from(value) / 255.0;
-        Self {
-            color_scheme,
-            accent_color: (channel(red), channel(green), channel(blue)),
-            contrast: ContrastPreference::NoPreference,
-        }
+        Self { color_scheme, accent_color: (channel(red), channel(green), channel(blue)) }
     }
 
     /// Every key with its value, in a fixed order.
@@ -73,7 +59,7 @@ impl AppearanceSettings {
         [
             ("color-scheme", Value::from(self.color_scheme as u32)),
             ("accent-color", Value::from(self.accent_color)),
-            ("contrast", Value::from(self.contrast as u32)),
+            ("contrast", Value::from(0u32)),
         ]
     }
 
@@ -89,25 +75,6 @@ impl AppearanceSettings {
             .filter(|(new, old)| new != old)
             .map(|(new, _)| new)
             .collect()
-    }
-}
-
-/// Parses `#rrggbb` or `#rgb`, with or without the `#`, into `(red, green, blue)`.
-fn parse_hex_color(text: &str) -> Option<(u8, u8, u8)> {
-    let hex = text.trim();
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    // `from_str_radix` alone would accept a sign, such as `+1`.
-    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(hex.get(range)?, 16).ok();
-    match hex.len() {
-        6 => Some((channel(0..2)?, channel(2..4)?, channel(4..6)?)),
-        3 => {
-            let expand = |i: usize| channel(i..i + 1).map(|v| v * 0x11);
-            Some((expand(0)?, expand(1)?, expand(2)?))
-        }
-        _ => None,
     }
 }
 
@@ -191,10 +158,7 @@ pub async fn serve(connection: &Connection, config_path: &Path) -> anyhow::Resul
     let watcher = nimbus_config::watch(config_path, move |config| {
         let _ = sender.send(config);
     })?;
-    let config = Config::load_from(config_path).unwrap_or_else(|error| {
-        tracing::warn!("{error}; serving the default appearance");
-        Config::default()
-    });
+    let config = Config::load_from_or_default(config_path);
     let portal = SettingsPortal { appearance: AppearanceSettings::from_config(&config.appearance) };
     connection.object_server().at(OBJECT_PATH, portal).await?;
     connection.request_name(BUS_NAME).await?;

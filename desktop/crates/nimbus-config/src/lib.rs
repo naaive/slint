@@ -17,7 +17,7 @@ pub mod chord;
 mod outputs;
 mod update;
 mod watch;
-pub use outputs::{InvalidOutputMode, OutputConfig, OutputId, OutputMode, Transform};
+pub use outputs::{InvalidOutputMode, OutputConfig, OutputId, OutputMode, Transform, format_hz};
 pub use update::{update, update_with};
 pub use watch::{ConfigWatcher, watch};
 
@@ -311,6 +311,31 @@ impl Config {
 
     pub fn load() -> Result<Self, Error> {
         Self::load_from(&default_path()?)
+    }
+
+    /// Loads `path`, or [`default_path`] when it's `None`, and returns the path with the configuration.
+    ///
+    /// Errors are logged and give the defaults.
+    /// The path is `None` only when there's no default location.
+    pub fn load_or_default(path: Option<PathBuf>) -> (Option<PathBuf>, Self) {
+        match path.map_or_else(default_path, Ok) {
+            Ok(path) => {
+                let config = Self::load_from_or_default(&path);
+                (Some(path), config)
+            }
+            Err(error) => {
+                tracing::warn!("{error}; using the default configuration");
+                (None, Self::default())
+            }
+        }
+    }
+
+    /// Loads `path`; an error is logged and gives the defaults.
+    pub fn load_from_or_default(path: &Path) -> Self {
+        Self::load_from(path).unwrap_or_else(|error| {
+            tracing::warn!("{error}; using the default configuration");
+            Self::default()
+        })
     }
 
     /// Writes atomically through a temporary file next to `path`, synced to disk before it replaces `path`.

@@ -199,7 +199,7 @@ fn format_state(state: &CompositorState) -> String {
                 o.name.clone(),
                 format!("{}x{}", o.width, o.height),
                 format!("{}", o.scale),
-                format!("{:.2} Hz", f64::from(o.refresh_mhz) / 1000.0),
+                format!("{} Hz", nimbus_config::format_hz(o.refresh_mhz, 2)),
             ]
         });
         table(&mut out, &["NAME", "SIZE", "SCALE", "REFRESH"], rows);

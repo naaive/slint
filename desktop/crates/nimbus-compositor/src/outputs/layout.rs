@@ -5,6 +5,7 @@
 use super::{Layout, OutputError, OutputState, head_info};
 use nimbus_config::{Config, OutputConfig, OutputId, OutputMode};
 use smithay::output::{Mode, Output};
+use smithay::reexports::wayland_server::protocol::wl_output;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
 use std::ops::RangeInclusive;
 
@@ -216,31 +217,12 @@ pub fn entry(output: &Output, state: &OutputState, default_scale: f64) -> Output
 }
 
 fn transform_from_config(transform: nimbus_config::Transform) -> Transform {
-    use nimbus_config::Transform as T;
-    match transform {
-        T::Normal => Transform::Normal,
-        T::Rotate90 => Transform::_90,
-        T::Rotate180 => Transform::_180,
-        T::Rotate270 => Transform::_270,
-        T::Flipped => Transform::Flipped,
-        T::Flipped90 => Transform::Flipped90,
-        T::Flipped180 => Transform::Flipped180,
-        T::Flipped270 => Transform::Flipped270,
-    }
+    wl_output::Transform::try_from(u32::from(transform)).map_or(Transform::Normal, Transform::from)
 }
 
 fn transform_to_config(transform: Transform) -> nimbus_config::Transform {
-    use nimbus_config::Transform as T;
-    match transform {
-        Transform::Normal => T::Normal,
-        Transform::_90 => T::Rotate90,
-        Transform::_180 => T::Rotate180,
-        Transform::_270 => T::Rotate270,
-        Transform::Flipped => T::Flipped,
-        Transform::Flipped90 => T::Flipped90,
-        Transform::Flipped180 => T::Flipped180,
-        Transform::Flipped270 => T::Flipped270,
-    }
+    nimbus_config::Transform::try_from(u32::from(wl_output::Transform::from(transform)))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

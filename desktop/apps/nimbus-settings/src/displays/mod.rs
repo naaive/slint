@@ -45,13 +45,10 @@ pub fn fetch_from(path: &Path) -> Result<Vec<OutputInfo>, DisplayError> {
 
 /// A refresh rate in millihertz as `60 Hz` or `59.95 Hz`; empty when unknown.
 pub fn format_refresh(mhz: i32) -> String {
-    if mhz <= 0 {
-        return String::new();
+    match u32::try_from(mhz) {
+        Ok(mhz) if mhz > 0 => format!("{} Hz", nimbus_config::format_hz(mhz, 2)),
+        _ => String::new(),
     }
-    let hz = f64::from(mhz) / 1000.0;
-    let text = format!("{hz:.2}");
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    format!("{text} Hz")
 }
 
 pub fn format_scale(scale: f64) -> String {
@@ -222,39 +219,12 @@ pub fn scale_choices(current: f64) -> Vec<f64> {
     scales
 }
 
-/// The clockwise rotation of `transform` in quarter turns.
-pub fn rotation(transform: Transform) -> usize {
-    use Transform::*;
-    match transform {
-        Normal | Flipped => 0,
-        Rotate90 | Flipped90 => 1,
-        Rotate180 | Flipped180 => 2,
-        Rotate270 | Flipped270 => 3,
-    }
-}
-
-/// `transform` turned to `quarter_turns`, flipped if it was.
-pub fn with_rotation(transform: Transform, quarter_turns: usize) -> Transform {
-    use Transform::*;
-    let flipped = matches!(transform, Flipped | Flipped90 | Flipped180 | Flipped270);
-    match (quarter_turns % 4, flipped) {
-        (0, false) => Normal,
-        (1, false) => Rotate90,
-        (2, false) => Rotate180,
-        (3, false) => Rotate270,
-        (0, true) => Flipped,
-        (1, true) => Flipped90,
-        (2, true) => Flipped180,
-        _ => Flipped270,
-    }
-}
-
 /// The size of a head in the global layout, as the compositor computes it.
 pub fn logical_size(config: &HeadConfig) -> (i32, i32) {
     let Some(mode) = config.mode else {
         return (0, 0);
     };
-    let (w, h) = if rotation(config.transform) % 2 == 1 {
+    let (w, h) = if config.transform.rotation() % 2 == 1 {
         (mode.height, mode.width)
     } else {
         (mode.width, mode.height)
@@ -277,28 +247,36 @@ fn rect(config: &HeadConfig) -> Rect {
     Rect { x: config.position.0, y: config.position.1, w, h }
 }
 
+/// Each head's rectangle, or `None` for a head that's disabled or has no size.
+fn enabled_rects(configs: &[HeadConfig]) -> Vec<Option<Rect>> {
+    configs.iter().map(|c| c.enabled.then(|| rect(c)).filter(|r| r.w > 0 && r.h > 0)).collect()
+}
+
+/// The smallest rectangle that holds all of `rects`.
+fn bounds<'a>(rects: impl IntoIterator<Item = &'a Rect>) -> Option<Rect> {
+    rects.into_iter().fold(None, |bounds: Option<Rect>, r| {
+        let Some(b) = bounds else { return Some(*r) };
+        let (x, y) = (b.x.min(r.x), b.y.min(r.y));
+        let (right, bottom) = ((b.x + b.w).max(r.x + r.w), (b.y + b.h).max(r.y + r.h));
+        Some(Rect { x, y, w: right - x, h: bottom - y })
+    })
+}
+
 /// The arrangement preview: each enabled head's rectangle as fractions of the arrangement's bounds,
 /// and the bounds' width divided by their height.
 pub fn arrangement(configs: &[HeadConfig]) -> (Vec<Option<[f32; 4]>>, f32) {
-    let rects: Vec<Option<Rect>> =
-        configs.iter().map(|c| c.enabled.then(|| rect(c)).filter(|r| r.w > 0 && r.h > 0)).collect();
-    let present = || rects.iter().flatten();
-    let (Some(left), Some(top), Some(right), Some(bottom)) = (
-        present().map(|r| r.x).min(),
-        present().map(|r| r.y).min(),
-        present().map(|r| r.x + r.w).max(),
-        present().map(|r| r.y + r.h).max(),
-    ) else {
+    let rects = enabled_rects(configs);
+    let Some(b) = bounds(rects.iter().flatten()) else {
         return (vec![None; configs.len()], 1.0);
     };
-    let (width, height) = ((right - left) as f32, (bottom - top) as f32);
+    let (width, height) = (b.w as f32, b.h as f32);
     let fractions = rects
         .iter()
         .map(|r| {
             r.map(|r| {
                 [
-                    (r.x - left) as f32 / width,
-                    (r.y - top) as f32 / height,
+                    (r.x - b.x) as f32 / width,
+                    (r.y - b.y) as f32 / height,
                     r.w as f32 / width,
                     r.h as f32 / height,
                 ]
@@ -311,19 +289,14 @@ pub fn arrangement(configs: &[HeadConfig]) -> (Vec<Option<[f32; 4]>>, f32) {
 /// Moves head `index` to `proposed`, a top-left corner as fractions of the arrangement's bounds,
 /// attached to the nearest edge of another enabled head, and then moves the arrangement to the origin.
 pub fn move_head(configs: &mut [HeadConfig], index: usize, proposed: (f32, f32)) {
-    let rects: Vec<Option<Rect>> =
-        configs.iter().map(|c| c.enabled.then(|| rect(c)).filter(|r| r.w > 0 && r.h > 0)).collect();
+    let rects = enabled_rects(configs);
     let Some(Some(moving)) = rects.get(index).copied() else {
         return;
     };
-    let present = || rects.iter().flatten();
-    let left = present().map(|r| r.x).min().unwrap_or(0);
-    let top = present().map(|r| r.y).min().unwrap_or(0);
-    let width = present().map(|r| r.x + r.w).max().unwrap_or(0) - left;
-    let height = present().map(|r| r.y + r.h).max().unwrap_or(0) - top;
+    let b = bounds(rects.iter().flatten()).unwrap_or(moving);
     let target = (
-        left + (proposed.0 * width as f32).round() as i32,
-        top + (proposed.1 * height as f32).round() as i32,
+        b.x + (proposed.0 * b.w as f32).round() as i32,
+        b.y + (proposed.1 * b.h as f32).round() as i32,
     );
     let others: Vec<Rect> =
         rects.iter().enumerate().filter(|&(i, _)| i != index).filter_map(|(_, r)| *r).collect();
@@ -367,19 +340,10 @@ pub fn make_room(configs: &mut [HeadConfig], index: usize, before: &HeadConfig) 
     let Some(after) = configs.get(index).cloned() else {
         return;
     };
-    let others = |configs: &[HeadConfig]| {
-        configs
-            .iter()
-            .enumerate()
-            .filter(|&(i, c)| i != index && c.enabled)
-            .map(|(_, c)| rect(c))
-            .collect::<Vec<_>>()
-    };
     if after.enabled && !before.enabled {
-        let others = others(configs);
-        let right = others.iter().map(|r| r.x + r.w).max().unwrap_or(0);
-        let top = others.iter().map(|r| r.y).min().unwrap_or(0);
-        configs[index].position = (right, top);
+        let others = configs.iter().enumerate().filter(|&(i, c)| i != index && c.enabled);
+        let others: Vec<Rect> = others.map(|(_, c)| rect(c)).collect();
+        configs[index].position = bounds(&others).map_or((0, 0), |b| (b.x + b.w, b.y));
     } else {
         let size = |c: &HeadConfig| if c.enabled { logical_size(c) } else { (0, 0) };
         let (old, new) = (size(before), size(&after));
@@ -470,10 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn rotation_keeps_the_flip() {
-        assert_eq!(with_rotation(Transform::Normal, 1), Transform::Rotate90);
-        assert_eq!(with_rotation(Transform::Flipped90, 2), Transform::Flipped180);
-        assert_eq!(rotation(Transform::Flipped270), 3);
+    fn rotation_swaps_the_logical_size() {
         let rotated = HeadConfig {
             transform: Transform::Rotate90,
             scale: 2.0,

@@ -195,7 +195,10 @@ impl Client {
                 }
             }
             configured.set_position(config.position.0, config.position.1);
-            configured.set_transform(transform_to_protocol(config.transform));
+            configured.set_transform(
+                wl_output::Transform::try_from(u32::from(config.transform))
+                    .unwrap_or(wl_output::Transform::Normal),
+            );
             configured.set_scale(config.scale);
         }
         pending.apply();
@@ -287,8 +290,11 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Client {
             }
             zwlr_output_head_v1::Event::Position { x, y } => head.position = (x, y),
             zwlr_output_head_v1::Event::Transform { transform } => {
-                head.transform =
-                    transform.into_result().map_or(Transform::Normal, transform_from_protocol);
+                head.transform = transform
+                    .into_result()
+                    .ok()
+                    .and_then(|transform| Transform::try_from(u32::from(transform)).ok())
+                    .unwrap_or_default();
             }
             zwlr_output_head_v1::Event::Scale { scale } => head.scale = scale,
             _ => {}
@@ -356,31 +362,3 @@ impl Dispatch<ZwlrOutputConfigurationV1, ()> for Client {
 }
 
 wayland_client::delegate_noop!(Client: ignore ZwlrOutputConfigurationHeadV1);
-
-fn transform_to_protocol(transform: Transform) -> wl_output::Transform {
-    use wl_output::Transform as T;
-    match transform {
-        Transform::Normal => T::Normal,
-        Transform::Rotate90 => T::_90,
-        Transform::Rotate180 => T::_180,
-        Transform::Rotate270 => T::_270,
-        Transform::Flipped => T::Flipped,
-        Transform::Flipped90 => T::Flipped90,
-        Transform::Flipped180 => T::Flipped180,
-        Transform::Flipped270 => T::Flipped270,
-    }
-}
-
-fn transform_from_protocol(transform: wl_output::Transform) -> Transform {
-    use wl_output::Transform as T;
-    match transform {
-        T::_90 => Transform::Rotate90,
-        T::_180 => Transform::Rotate180,
-        T::_270 => Transform::Rotate270,
-        T::Flipped => Transform::Flipped,
-        T::Flipped90 => Transform::Flipped90,
-        T::Flipped180 => Transform::Flipped180,
-        T::Flipped270 => Transform::Flipped270,
-        _ => Transform::Normal,
-    }
-}

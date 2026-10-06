@@ -51,7 +51,7 @@ apps ──> nimbus-theme[headless], nimbus-config
 nimbus-files ──> nimbus-xdg
 nimbus-settings ──> nimbus-ipc
 nimbus-session ──> nimbus-ipc, nimbus-config
-nimbus-portal ──> nimbus-config
+nimbus-portal ──> nimbus-theme, nimbus-config
 ```
 
 Processes in a session (arrows point from the starting process):

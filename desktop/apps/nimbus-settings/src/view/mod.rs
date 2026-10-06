@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use nimbus_config::{Appearance, Config};
 use nimbus_theme::ThemeSettings;
-use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
+use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel};
 
 use crate::dispatch::Dispatch;
 use crate::page::Page;
@@ -368,6 +368,15 @@ fn wire(ui: &AppWindow, inner: &Rc<Inner>) {
 /// A UI index as `usize`; negative indices, which name nothing, become `usize::MAX`.
 pub(crate) fn index_of(index: i32) -> usize {
     usize::try_from(index).unwrap_or(usize::MAX)
+}
+
+/// The inverse of [`index_of`]: `None` becomes -1.
+pub(super) fn to_index(found: Option<usize>) -> i32 {
+    found.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
+}
+
+pub(super) fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
+    ModelRc::new(VecModel::from(items.into_iter().map(SharedString::from).collect::<Vec<_>>()))
 }
 
 /// Shared handle type for the callbacks above.

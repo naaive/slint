@@ -3007,6 +3007,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "nimbus-config",
+ "nimbus-theme",
  "tempfile",
  "tokio",
  "tracing",

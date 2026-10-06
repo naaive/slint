@@ -3,9 +3,9 @@
 //! The shortcuts page: listing bindings and the dialog that captures new key chords.
 
 use nimbus_config::{Action, Keybindings};
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, VecModel};
 
-use super::{Inner, With, index_of};
+use super::{Inner, With, index_of, strings};
 use crate::shortcuts::{self, ActionKind, Modifiers, Parameter};
 use crate::{AppWindow, ShortcutCategory, ShortcutItem, ShortcutsModel, search};
 
@@ -18,14 +18,9 @@ pub(crate) struct Capture {
     pub chord: Option<String>,
 }
 
-fn strings(items: Vec<String>) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(items.into_iter().map(SharedString::from).collect::<Vec<_>>()))
-}
-
 pub(super) fn wire(ui: &AppWindow, with: &With) {
     let model = ui.global::<ShortcutsModel>();
-    model
-        .set_action_kinds(strings(ActionKind::ALL.iter().map(|k| k.label().to_string()).collect()));
+    model.set_action_kinds(strings(ActionKind::ALL.iter().map(|k| k.label().to_string())));
     let h = with.clone();
     model.on_filter_edited(move |_| h(&|i| i.sync_shortcuts()));
     let h = with.clone();

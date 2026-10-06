@@ -15,20 +15,9 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Loads `path` or the default location; an invalid file is reported and replaced by the defaults.
     pub fn load(path: Option<PathBuf>) -> Self {
-        let path = match path.map(Ok).unwrap_or_else(nimbus_config::default_path) {
-            Ok(path) => path,
-            Err(err) => {
-                tracing::warn!("{err}; using the default configuration");
-                return Self { path: None, current: Config::default(), watcher: None };
-            }
-        };
-        let current = Config::load_from(&path).unwrap_or_else(|err| {
-            tracing::error!("{err}; using the default configuration");
-            Config::default()
-        });
-        Self { path: Some(path), current, watcher: None }
+        let (path, current) = Config::load_or_default(path);
+        Self { path, current, watcher: None }
     }
 
     pub fn path(&self) -> Option<&Path> {
