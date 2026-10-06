@@ -1,0 +1,42 @@
+[package]
+name = "nimbus-shell-host"
+description = "The Nimbus shell process: a Wayland client showing the Slint shell on layer-shell and session-lock surfaces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nimbus-shell"
+path = "src/main.rs"
+
+[dependencies]
+nimbus-ipc = { workspace = true }
+nimbus-config = { workspace = true }
+nimbus-xdg = { workspace = true }
+nimbus-services = { workspace = true }
+nimbus-shell = { workspace = true }
+slint = { workspace = true, features = ["renderer-software", "software-renderer-systemfonts"] }
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+xkbcommon = "0.8"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+bytemuck = { version = "1.16", features = ["derive"] }
+signal-hook = "0.3"
+libc = "0.2"
+nix = { version = "0.30", features = ["user"] }
+zeroize = "1.8"
+
+[dev-dependencies]
+nix = { version = "0.30", features = ["signal"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }

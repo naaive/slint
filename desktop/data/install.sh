@@ -41,8 +41,8 @@ workspace=$(dirname "$data_dir")
 SESSION_DIR=${SESSION_DIR:-$PREFIX/share/wayland-sessions}
 root=$DESTDIR$PREFIX
 
-packages="crates/nimbus-compositor crates/nimbus-session crates/nimbus-portal apps/nimbus-settings apps/nimbus-files apps/nimbus-terminal apps/nimbus-monitor"
-binaries="nimbus-compositor nimbus-session nimbusctl nimbus-portal nimbus-settings nimbus-files nimbus-terminal nimbus-monitor"
+packages="crates/nimbus-compositor crates/nimbus-shell-host crates/nimbus-session crates/nimbus-portal apps/nimbus-settings apps/nimbus-files apps/nimbus-terminal apps/nimbus-monitor"
+binaries="nimbus-compositor nimbus-shell nimbus-session nimbusctl nimbus-portal nimbus-settings nimbus-files nimbus-terminal nimbus-monitor"
 apps="org.nimbus.Settings org.nimbus.Files org.nimbus.Terminal org.nimbus.Monitor"
 portal_service=org.freedesktop.impl.portal.desktop.nimbus.service
 

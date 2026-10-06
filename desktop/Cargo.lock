@@ -3100,6 +3100,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "nimbus-shell-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "clap",
+ "image",
+ "libc",
+ "nimbus-config",
+ "nimbus-ipc",
+ "nimbus-services",
+ "nimbus-shell",
+ "nimbus-xdg",
+ "nix 0.30.1",
+ "serde",
+ "serde_json",
+ "signal-hook 0.3.18",
+ "slint",
+ "smithay-client-toolkit",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "xkbcommon",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "nimbus-terminal"
 version = "0.1.0"
 dependencies = [

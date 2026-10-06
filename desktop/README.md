@@ -35,6 +35,8 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - Quick settings for volume, brightness, Wi-Fi, Bluetooth, do not disturb, dark style, media playback, and power.
 - A notification server with toasts, actions, and a notification center next to the calendar.
 - On-screen displays for volume and brightness keys, and a lock screen.
+- The `nimbus-shell` binary runs the shell as a Wayland client of a compositor started with `--no-shell`,
+  on layer-shell and session-lock surfaces, so a crashed shell doesn't take windows down.
 
 ### Services (`nimbus-services`)
 
@@ -115,6 +117,16 @@ NIMBUS_HEADLESS_OUTPUTS=1600x900 nimbus-compositor --backend headless
 
 Apps need Slint's software renderer there, since there's no GPU: start them with `SLINT_BACKEND=winit-software`.
 
+### The Shell as Its Own Process
+
+Start the compositor without its in-process shell, then start `nimbus-shell` with the variables the compositor prints:
+
+```sh
+nimbus-compositor --backend winit --no-shell
+# NIMBUS_READY WAYLAND_DISPLAY=wayland-1 NIMBUS_SOCKET=/run/user/1000/nimbus-wayland-1.sock
+WAYLAND_DISPLAY=wayland-1 NIMBUS_SOCKET=/run/user/1000/nimbus-wayland-1.sock nimbus-shell
+```
+
 ## Controlling the Desktop
 
 `nimbusctl` talks to the compositor named by `$NIMBUS_SOCKET`, which the compositor sets for every app it starts.
@@ -192,6 +204,9 @@ The services tests start a private `dbus-daemon` with fake system daemons, and s
 Nimbus is young.
 The headless backend and the shell run end to end in tests, but the udev and winit backends haven't been run on real hardware yet.
 
+- `nimbus-session` doesn't start the `nimbus-shell` process yet, so sessions still use the compositor's in-process shell.
+  Run `nimbus-shell` against `nimbus-compositor --no-shell` to try it; it hasn't run on the winit or udev backends yet.
+  It doesn't take touch input, and it draws the default cursor everywhere.
 - There's no XWayland, so X11-only apps don't run.
 - Nimbus draws no server-side decorations; apps draw their own title bars, which don't follow the Nimbus theme.
 - Outputs are placed left to right at one global scale, and there's no output-management protocol;
