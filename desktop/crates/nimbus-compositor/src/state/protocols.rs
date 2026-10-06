@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: MIT
 
 use super::State;
+use crate::lock::LockSurfaceData;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::input::Seat;
 use smithay::output::Output;
-use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::{
+    ext_session_lock_manager_v1::{self, ExtSessionLockManagerV1},
+    ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
+    ext_session_lock_v1::{self, ExtSessionLockV1},
+};
 use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
+};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::foreign_toplevel_list::{
@@ -16,29 +25,13 @@ use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional
 use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::output::OutputHandler;
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::{
-    self, ExtSessionLockSurfaceV1,
-};
-use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::{
-    self, ExtSessionLockV1,
-};
-use smithay::reexports::wayland_server::backend::ClientId;
-use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, delegate_dispatch, delegate_global_dispatch,
-};
-use smithay::wayland::session_lock::{
-    ExtLockSurfaceUserData, LockSurface, SessionLockHandler, SessionLockManagerGlobalData,
-    SessionLockManagerState, SessionLockState, SessionLocker,
-};
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 use smithay::{
     delegate_dmabuf, delegate_foreign_toplevel_list, delegate_fractional_scale,
     delegate_idle_inhibit, delegate_idle_notify, delegate_output, delegate_presentation,
-    delegate_single_pixel_buffer, delegate_viewporter,
-    delegate_xdg_activation,
+    delegate_single_pixel_buffer, delegate_viewporter, delegate_xdg_activation,
 };
 use std::time::Duration;
 
@@ -129,34 +122,6 @@ impl IdleInhibitHandler for State {
     }
 }
 
-impl SessionLockHandler for State {
-    fn lock_state(&mut self) -> &mut SessionLockManagerState {
-        &mut self.nimbus.session_lock_state
-    }
-
-    fn lock(&mut self, confirmation: SessionLocker) {
-        if !self.nimbus.lock.accept(confirmation) {
-            tracing::warn!("refusing a second session lock");
-            return;
-        }
-        self.lock_changed();
-    }
-
-    /// Only the confirmed lock holder gets here; see the `ExtSessionLockV1` dispatch below.
-    fn unlock(&mut self) {
-        self.unlock_session();
-    }
-
-    fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
-        let Some(output) = Output::from_resource(&output) else {
-            return;
-        };
-        self.nimbus.lock.add_surface(output.name(), surface);
-        self.nimbus.sync_lock_surfaces();
-        self.nimbus.queue_redraw(&output);
-    }
-}
-
 impl ForeignToplevelListHandler for State {
     fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
         &mut self.nimbus.foreign_toplevel_state
@@ -172,57 +137,91 @@ delegate_fractional_scale!(State);
 delegate_single_pixel_buffer!(State);
 delegate_idle_notify!(State);
 delegate_idle_inhibit!(State);
-delegate_global_dispatch!(State: [ExtSessionLockManagerV1: SessionLockManagerGlobalData] => SessionLockManagerState);
-delegate_dispatch!(State: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
-delegate_dispatch!(State: [ExtSessionLockSurfaceV1: ExtLockSurfaceUserData] => SessionLockManagerState);
+delegate_foreign_toplevel_list!(State);
 
-/// Smithay lets any lock unlock the session and claim outputs,
-/// so requests from locks other than the holder are handled here before they reach it.
-impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
-    fn request(
-        state: &mut Self,
-        client: &Client,
-        lock: &ExtSessionLockV1,
-        request: ext_session_lock_v1::Request,
-        data: &SessionLockState,
-        dh: &DisplayHandle,
+impl GlobalDispatch<ExtSessionLockManagerV1, ()> for State {
+    fn bind(
+        _state: &mut Self,
+        _dh: &DisplayHandle,
+        _client: &Client,
+        manager: New<ExtSessionLockManagerV1>,
+        _data: &(),
         data_init: &mut DataInit<'_, Self>,
     ) {
-        let owner = state.nimbus.lock.is_held_by(lock);
-        match request {
-            ext_session_lock_v1::Request::UnlockAndDestroy
-                if !owner || state.nimbus.lock.awaits_confirmation() =>
-            {
-                tracing::warn!(
-                    "refusing an unlock from a client that doesn't hold the session lock"
-                );
-                lock.post_error(
-                    ext_session_lock_v1::Error::InvalidUnlock,
-                    "this lock doesn't hold the session",
-                );
-            }
-            // The protocol lets clients create lock surfaces before `locked` or `finished`,
-            // and a refused lock never displays them.
-            ext_session_lock_v1::Request::GetLockSurface { id, .. } if !owner => {
-                data_init.init(id, InertLockSurface);
-            }
-            request => {
-                <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::request(
-                    state, client, lock, request, data, dh, data_init,
-                );
+        data_init.init(manager, ());
+    }
+}
+
+impl Dispatch<ExtSessionLockManagerV1, ()> for State {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        _manager: &ExtSessionLockManagerV1,
+        request: ext_session_lock_manager_v1::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let ext_session_lock_manager_v1::Request::Lock { id } = request {
+            if state.nimbus.lock.accept(data_init.init(id, ())) {
+                state.lock_changed();
+            } else {
+                tracing::warn!("refusing a second session lock");
             }
         }
     }
+}
 
-    fn destroyed(
+impl Dispatch<ExtSessionLockV1, ()> for State {
+    fn request(
         state: &mut Self,
-        client: ClientId,
+        _client: &Client,
         lock: &ExtSessionLockV1,
-        data: &SessionLockState,
+        request: ext_session_lock_v1::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
     ) {
-        <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Self>>::destroyed(
-            state, client, lock, data,
-        );
+        match request {
+            ext_session_lock_v1::Request::GetLockSurface { id, surface, output } => {
+                let output = Output::from_resource(&output);
+                let (Some(holder), Some(output)) = (state.nimbus.lock.holder(lock), output) else {
+                    data_init.init(id, LockSurfaceData::default());
+                    return;
+                };
+                let resource = data_init.init(id, LockSurfaceData::active());
+                if let Err((error, message)) = holder.add_surface(output.name(), surface, resource)
+                {
+                    lock.post_error(error, message);
+                    return;
+                }
+                state.nimbus.sync_lock_surfaces();
+                state.nimbus.queue_redraw(&output);
+            }
+            ext_session_lock_v1::Request::UnlockAndDestroy => {
+                if state.nimbus.lock.is_confirmed_holder(lock) {
+                    state.unlock_session();
+                } else {
+                    tracing::warn!("refusing an unlock from a lock that doesn't hold the session");
+                    lock.post_error(
+                        ext_session_lock_v1::Error::InvalidUnlock,
+                        "this lock doesn't hold the session",
+                    );
+                }
+            }
+            ext_session_lock_v1::Request::Destroy
+                if state.nimbus.lock.is_confirmed_holder(lock) =>
+            {
+                lock.post_error(
+                    ext_session_lock_v1::Error::InvalidDestroy,
+                    "a lock that was sent 'locked' must use unlock_and_destroy",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn destroyed(state: &mut Self, _client: ClientId, lock: &ExtSessionLockV1, _data: &()) {
         if state.nimbus.lock.release(lock) {
             tracing::warn!("the session lock client went away; the session stays locked");
             state.lock_changed();
@@ -230,19 +229,34 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for State {
     }
 }
 
-/// A lock surface of a lock the compositor refused.
-pub struct InertLockSurface;
-
-impl Dispatch<ExtSessionLockSurfaceV1, InertLockSurface> for State {
+impl Dispatch<ExtSessionLockSurfaceV1, LockSurfaceData> for State {
     fn request(
         _state: &mut Self,
         _client: &Client,
-        _surface: &ExtSessionLockSurfaceV1,
-        _request: ext_session_lock_surface_v1::Request,
-        _data: &InertLockSurface,
+        surface: &ExtSessionLockSurfaceV1,
+        request: ext_session_lock_surface_v1::Request,
+        data: &LockSurfaceData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        if let ext_session_lock_surface_v1::Request::AckConfigure { serial } = request
+            && !data.ack(serial.into())
+        {
+            surface.post_error(
+                ext_session_lock_surface_v1::Error::InvalidSerial,
+                format!("no configure waits for serial {serial}"),
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        surface: &ExtSessionLockSurfaceV1,
+        _data: &LockSurfaceData,
+    ) {
+        if state.nimbus.lock.remove_surface(surface) {
+            state.nimbus.queue_redraw_all();
+        }
     }
 }
-delegate_foreign_toplevel_list!(State);

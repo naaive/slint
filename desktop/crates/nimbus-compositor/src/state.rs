@@ -28,6 +28,7 @@ use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, DisconnectReason, GlobalId,
 };
@@ -51,7 +52,6 @@ use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::selection::wlr_data_control::DataControlState as WlrDataControlState;
-use smithay::wayland::session_lock::SessionLockManagerState;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
@@ -108,7 +108,6 @@ pub struct Nimbus {
     _cursor_shape_state: CursorShapeManagerState,
     pub idle_notifier_state: IdleNotifierState<State>,
     _idle_inhibit_state: IdleInhibitManagerState,
-    pub session_lock_state: SessionLockManagerState,
     pub shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub foreign_toplevel_state: ForeignToplevelListState,
     pub popups: PopupManager,
@@ -184,6 +183,7 @@ impl Nimbus {
             ExtDataControlState::new::<State, _>(&dh, Some(&primary_selection_state), |_| true);
         let wlr_data_control_state =
             WlrDataControlState::new::<State, _>(&dh, Some(&primary_selection_state), |_| true);
+        dh.create_global::<State, ExtSessionLockManagerV1, _>(1, ());
         Self {
             compositor_state: CompositorState::new::<State>(&dh),
             xdg_shell_state: XdgShellState::new::<State>(&dh),
@@ -205,7 +205,6 @@ impl Nimbus {
             _cursor_shape_state: CursorShapeManagerState::new::<State>(&dh),
             idle_notifier_state: IdleNotifierState::new(&dh, loop_handle.clone()),
             _idle_inhibit_state: IdleInhibitManagerState::new::<State>(&dh),
-            session_lock_state: SessionLockManagerState::new::<State, _>(&dh, |_| true),
             shortcuts_inhibit_state: KeyboardShortcutsInhibitState::new::<State>(&dh),
             foreign_toplevel_state: ForeignToplevelListState::new::<State>(&dh),
             popups: PopupManager::default(),
@@ -365,8 +364,7 @@ impl Nimbus {
                 u32::try_from(geometry.size.w).unwrap_or(0),
                 u32::try_from(geometry.size.h).unwrap_or(0),
             ));
-            surface.with_pending_state(|state| state.size = Some(size));
-            surface.send_configure();
+            surface.configure(size);
             let scale = output.current_scale();
             let transform = output.current_transform();
             with_surface_tree_downward(

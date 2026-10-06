@@ -7,9 +7,12 @@ mod common;
 use common::{Compositor, TIMEOUT};
 use nimbus_ipc::{Event, Request};
 use std::time::{Duration, Instant};
+use wayland_client::protocol::wl_buffer::WlBuffer;
 use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
+use wayland_client::protocol::wl_shm::WlShm;
+use wayland_client::protocol::wl_shm_pool::WlShmPool;
 use wayland_client::protocol::wl_surface::{self, WlSurface};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
 use wayland_protocols::ext::session_lock::v1::client::{
@@ -29,6 +32,7 @@ enum LockState {
 struct App {
     manager: Option<ExtSessionLockManagerV1>,
     compositor: Option<WlCompositor>,
+    shm: Option<WlShm>,
     outputs: Vec<WlOutput>,
     state: Option<LockState>,
     /// The size of the last configure of a lock surface.
@@ -63,16 +67,33 @@ impl Locker {
     /// Locks, creating lock surfaces for every output right away when `surfaces` is set,
     /// before the compositor confirms or refuses the lock.
     fn lock_with_surfaces(&mut self, surfaces: bool) -> LockState {
-        let qh = self.queue.handle();
-        self.app.state = Some(LockState::Waiting);
-        let lock = self.app.manager.as_ref().unwrap().lock(&qh, ());
+        let lock = self.request_lock();
         if surfaces {
-            let compositor = self.app.compositor.as_ref().expect("no wl_compositor");
-            for output in &self.app.outputs {
-                lock.get_lock_surface(&compositor.create_surface(&qh, ()), output, &qh, ());
-            }
+            self.create_surfaces(&lock);
         }
         self.lock = Some(lock);
+        self.wait_for_answer()
+    }
+
+    fn request_lock(&mut self) -> ExtSessionLockV1 {
+        self.app.state = Some(LockState::Waiting);
+        self.app.manager.as_ref().unwrap().lock(&self.queue.handle(), ())
+    }
+
+    /// Creates a lock surface on every output.
+    fn create_surfaces(&self, lock: &ExtSessionLockV1) -> Vec<WlSurface> {
+        let qh = self.queue.handle();
+        let compositor = self.app.compositor.as_ref().expect("no wl_compositor");
+        let surfaces = self.app.outputs.iter().map(|_| compositor.create_surface(&qh, ()));
+        let surfaces: Vec<_> = surfaces.collect();
+        for (surface, output) in surfaces.iter().zip(&self.app.outputs) {
+            lock.get_lock_surface(surface, output, &qh, ());
+        }
+        surfaces
+    }
+
+    /// Waits for `locked` or `finished`.
+    fn wait_for_answer(&mut self) -> LockState {
         let deadline = Instant::now() + TIMEOUT;
         loop {
             self.queue.roundtrip(&mut self.app).expect("roundtrip");
@@ -110,6 +131,7 @@ impl Dispatch<WlRegistry, ()> for App {
             match interface.as_str() {
                 "ext_session_lock_manager_v1" => app.manager = Some(registry.bind(name, 1, qh, ())),
                 "wl_compositor" => app.compositor = Some(registry.bind(name, 4, qh, ())),
+                "wl_shm" => app.shm = Some(registry.bind(name, 1, qh, ())),
                 "wl_output" => app.outputs.push(registry.bind(name, 1, qh, ())),
                 _ => {}
             }
@@ -168,6 +190,9 @@ impl Dispatch<WlSurface, ()> for App {
 delegate_noop!(App: ignore ExtSessionLockManagerV1);
 delegate_noop!(App: ignore WlCompositor);
 delegate_noop!(App: ignore WlOutput);
+delegate_noop!(App: ignore WlShm);
+delegate_noop!(App: ignore WlShmPool);
+delegate_noop!(App: ignore WlBuffer);
 
 #[test]
 fn only_the_lock_holder_unlocks() {
@@ -269,4 +294,71 @@ fn a_compositor_started_locked_waits_for_a_lock_client() {
     assert_eq!(locker.lock(), LockState::Locked);
     locker.unlock();
     assert!(!compositor.locked());
+}
+
+#[test]
+fn a_client_locks_again_after_destroying_its_unconfirmed_lock() {
+    let compositor = common::start("");
+    let events = compositor.subscribe();
+    let mut locker = Locker::connect(&compositor);
+
+    // `destroy` reaches the compositor along with the lock request, before it can confirm the lock.
+    let lock = locker.request_lock();
+    locker.create_surfaces(&lock);
+    lock.destroy();
+    locker.conn.flush().unwrap();
+    events.wait("the lock without a holder", |event| {
+        (event == Event::LockState { locked: true, held: false }).then_some(())
+    });
+    assert!(compositor.locked(), "the destroyed lock unlocked the session");
+
+    // Lock surfaces on the same outputs belong to the new lock alone.
+    assert_eq!(locker.lock_with_surfaces(true), LockState::Locked);
+    locker.queue.roundtrip(&mut locker.app).expect("the locker was disconnected");
+    locker.unlock();
+    assert!(!compositor.locked());
+}
+
+#[test]
+fn a_second_lock_surface_on_an_output_is_a_protocol_error() {
+    let compositor = common::start("");
+    let mut locker = Locker::connect(&compositor);
+    assert_eq!(locker.lock_with_surfaces(true), LockState::Locked);
+
+    let lock = locker.lock.clone().unwrap();
+    let qh = locker.queue.handle();
+    let surface = locker.app.compositor.as_ref().unwrap().create_surface(&qh, ());
+    lock.get_lock_surface(&surface, &locker.app.outputs[0], &qh, ());
+    assert!(locker.queue.roundtrip(&mut locker.app).is_err());
+    let error = locker.conn.protocol_error().expect("a protocol error");
+    assert_eq!(error.object_interface, "ext_session_lock_v1");
+    assert_eq!(error.code, ext_session_lock_v1::Error::DuplicateOutput as u32);
+    assert!(compositor.locked(), "the disconnected holder unlocked the session");
+}
+
+#[test]
+fn a_refused_lock_has_inert_surfaces() {
+    let compositor = common::start("");
+    let mut owner = Locker::connect(&compositor);
+    assert_eq!(owner.lock(), LockState::Locked);
+
+    let mut intruder = Locker::connect(&compositor);
+    let lock = intruder.request_lock();
+    let surfaces = intruder.create_surfaces(&lock);
+    intruder.lock = Some(lock);
+    assert_eq!(intruder.wait_for_answer(), LockState::Finished);
+
+    // A lock surface would be a protocol error to commit before its first configure.
+    let shm = intruder.app.shm.clone().expect("no wl_shm");
+    let qh = intruder.queue.handle();
+    for surface in &surfaces {
+        common::attach_buffer(&shm, &qh, surface, (1280, 720));
+    }
+    intruder.queue.roundtrip(&mut intruder.app).expect("the refused locker was disconnected");
+    assert_eq!(intruder.app.configured, None, "a refused lock's surface was configured");
+
+    let screenshot = compositor.screenshot("HEADLESS-1");
+    let center = screenshot.get_pixel(screenshot.width() / 2, screenshot.height() / 2);
+    assert_eq!(center.0[..3], [0, 0, 0], "the refused lock's surface is shown");
+    owner.unlock();
 }

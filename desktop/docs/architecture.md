@@ -71,12 +71,13 @@ D-Bus activation ──> nimbus-portal
 Modules in `crates/nimbus-compositor/src`:
 
 - `main.rs`: argument parsing (`--backend winit|udev|headless`), logging, startup.
-- `lock.rs`: the session lock state and the `ext-session-lock` client holding it; see [Locking](#locking).
+- `lock.rs`: the session lock state, the `ext-session-lock` client holding it, and its lock surfaces; see [Locking](#locking).
 - `lock_marker.rs`: keeps the lock marker in step with the lock state.
 - `state.rs`: the `Nimbus` state struct and Smithay handler implementations
   (compositor, xdg-shell, xdg-decoration, layer-shell, seat, data device, primary selection, ext and wlr data control,
   output, shm, dmabuf, xdg-activation, presentation, viewporter, fractional scale,
-  ext-session-lock, ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
+  ext-foreign-toplevel-list, ext-idle-notify, and idle-inhibit).
+  `state/protocols.rs` also serves `ext-session-lock` itself, without Smithay's implementation, on the state in `lock.rs`.
 - `outputs/`: displays; see [Displays](#displays).
   `layout.rs` turns `[[outputs]]` into a layout and back, `management.rs` serves wlr-output-management,
   and `edid.rs` reads the make, model, and serial number of a DRM connector's display.
@@ -256,8 +257,12 @@ Only the holder's `unlock_and_destroy` unlocks.
 `Request::GetLockState` reports the same state over the control socket.
 Each lock surface is sized to its output, and told its output, scale, and transform, whenever the outputs change.
 
-Smithay records the outputs that each lock surface covers in one list, which only `unlock_and_destroy` clears.
-A dead holder's entries stay there until the session unlocks; they never match a new client's outputs.
+Each lock owns its lock surfaces, at most one per output, so a new lock never inherits a dead one's outputs.
+A refused lock's `get_lock_surface` makes an inert object, which gives its `wl_surface` no role and is never configured.
+The holder's surfaces follow the protocol's role, `duplicate_output`, and `already_constructed` rules,
+and their commits its acknowledged-configure, null buffer, and size rules.
+The size is checked on commits that attach a buffer.
+When the holder destroys a lock surface, its output shows black.
 
 `nimbus-shell` locks with `ext-session-lock` whenever the session is locked but not held,
 from `Request::GetLockState` when it starts and from `Event::LockState` after that.
@@ -357,7 +362,9 @@ The release profile aborts on panic, because every process is supervised or rest
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
   The output management tests list two headless heads, apply and save a scale and position change, restore it after a restart,
   and check refused, outdated, and disabling configurations.
-  The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change.
+  The session lock tests check that lock surfaces follow their output's size and that `Event::LockState` reports each change,
+  that a client locks again after destroying its unconfirmed lock, that a second lock surface on an output is `duplicate_output`,
+  and that a refused lock's surfaces are inert.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   and check the composited output through `Request::Screenshot`:
   the panel renders, the launcher and overview toggle through shell command events, maximized windows stay below the panel,

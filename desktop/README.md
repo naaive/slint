@@ -234,6 +234,7 @@ The headless backend and the shell run end to end in tests, but the udev and win
 - Overview cards show app icons, not live window thumbnails.
 - When an `ext-session-lock` client dies, the session stays locked and black until another client locks it.
   The shell locks again right away, or once `nimbus-session` restarts it after a crash.
+- The compositor checks a lock surface's size only on commits that attach a buffer.
 - The lock marker is per `XDG_RUNTIME_DIR`, so a nested compositor or session in the same runtime directory can create or remove the real session's marker.
 - If `nimbus-session` is killed with SIGKILL, autostarted apps keep running.
   An app that moves itself to a new process group or session isn't stopped at logout either.
