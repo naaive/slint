@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The Nimbus shell: one transparent, full-output window per output.
-// Rust feeds data in through properties and models and handles the callbacks; see `src/lib.rs`.
+// The Nimbus shell's views: `ShellWindow`, a transparent, full-output overlay per output,
+// and `LockWindow`, the lock screen for one output.
+// Rust sets what every view shows alike on the `Desktop` global, and per-view data on each window; see `src/lib.rs`.
 
 import { Theme, Motion, Icons, Icon, Divider } from "@nimbus/theme.slint";
 import {
@@ -9,6 +10,7 @@ import {
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
     NetworkKind, SystemStatus, PanelSettings,
 } from "models.slint";
+import { Desktop } from "desktop.slint";
 import { ShellPopup, MenuItem } from "common.slint";
 import { Panel } from "panel.slint";
 import { Dock, DockMetrics } from "dock.slint";
@@ -21,11 +23,40 @@ import { OsdPill } from "osd.slint";
 import { LockScreen } from "lock-screen.slint";
 import { PowerDialog } from "power-menu.slint";
 
-export { Theme }
+export { Theme, Desktop }
 export {
     RectData, AppVisual, WorkspaceItem, WindowItem, DockItem, DockMenuWindow, AppItem,
     NotificationItem, NotificationAction, CalendarDay, Popup, OsdKind, PowerAction,
     NetworkKind, SystemStatus, PanelSettings,
+}
+
+export component LockWindow inherits Window {
+    in-out property <string> password;
+
+    callback unlock-requested(password: string);
+
+    public function focus-password() {
+        lock.focus-password();
+    }
+
+    background: #101014;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-size;
+    title: "Nimbus Lock Screen";
+
+    lock := LockScreen {
+        time: Desktop.long-time;
+        date: Desktop.weekday + ", " + Desktop.date;
+        user-name: Desktop.user-name;
+        backdrop: Desktop.lock-backdrop;
+        busy: Desktop.lock-busy;
+        error: Desktop.lock-error;
+        status: Desktop.status;
+        password <=> root.password;
+        unlock-requested(password) => {
+            root.unlock-requested(password);
+        }
+    }
 }
 
 export component ShellWindow inherits Window {
@@ -33,35 +64,15 @@ export component ShellWindow inherits Window {
     // `nimbus-shell-preview` shows a wallpaper.
     in property <image> wallpaper;
 
-    // Layout.
-    in property <PanelSettings> panel: { top: true, height: 32px, show-dock: true, dock-autohide: false, show-battery-percentage: true };
     // A fullscreen window is focused on this output, so the panel and dock step aside.
     in property <bool> fullscreen-active;
 
-    // Windows and workspaces.
+    // Windows and workspaces on this output.
     in property <[WorkspaceItem]> workspaces;
     in property <[WindowItem]> windows;
-    in property <int> active-workspace;
     in property <int> active-count;
-    in property <string> focused-title;
-    in property <AppVisual> focused-visual;
 
-    // Clock and calendar.
-    in property <string> clock-text;
-    in property <string> long-time;
-    in property <string> weekday;
-    in property <string> date;
-    in property <string> month-title;
-    in property <[CalendarDay]> days;
-
-    // System state.
-    in property <SystemStatus> status;
-    in-out property <float> volume;
-    in-out property <float> brightness;
-    in-out property <bool> do-not-disturb;
-
-    // Dock.
-    in property <[DockItem]> dock-items;
+    // Dock menu.
     in property <int> dock-menu-index: -1;
     in property <length> dock-menu-x;
     in property <string> dock-menu-title;
@@ -81,33 +92,14 @@ export component ShellWindow inherits Window {
     in-out property <bool> power-menu-open;
     in property <PowerAction> power-action: PowerAction.none;
 
-    // Notifications.
-    in property <[NotificationItem]> notifications;
-    in property <[NotificationItem]> toasts;
-    in property <bool> has-unread;
-
-    // On-screen display.
-    in property <bool> osd-shown;
-    in property <OsdKind> osd-kind;
-    in property <float> osd-level;
-    in property <bool> osd-muted;
-
-    // Lock screen.
-    in property <bool> locked;
-    in property <bool> lock-busy;
-    in property <string> lock-error;
-    in-out property <string> lock-password;
-    in property <image> lock-backdrop;
-    in property <string> user-name;
-
     // Geometry for the input region and exclusive zone, in logical pixels.
     out property <RectData> panel-rect: root.panel-visible
-        ? { x: 0, y: panel-bar.y, width: root.width, height: root.panel.height }
+        ? { x: 0, y: panel-bar.y, width: root.width, height: Desktop.panel.height }
         : { x: 0, y: 0, width: 0, height: 0 };
     out property <RectData> dock-rect: !root.dock-enabled ? { x: 0, y: 0, width: 0, height: 0 }
         : root.dock-revealed ? { x: dock-area.x, y: root.dock-base-y, width: dock-area.width, height: DockMetrics.height }
         : { x: dock-area.x, y: root.dock-edge-y - 2px, width: dock-area.width, height: 2px };
-    out property <RectData> toast-rect: root.toasts-visible && root.toasts.length > 0
+    out property <RectData> toast-rect: root.toasts-visible && Desktop.toasts.length > 0
         ? { x: toast-stack.x, y: toast-stack.y, width: toast-stack.width, height: toast-stack.preferred-height }
         : { x: 0, y: 0, width: 0, height: 0 };
     out property <length> dock-exclusive: DockMetrics.height + 2 * DockMetrics.margin;
@@ -148,7 +140,6 @@ export component ShellWindow inherits Window {
     callback notification-dismissed(id: int);
     callback notification-action(id: int, key: string);
     callback clear-notifications;
-    callback unlock-requested(password: string);
 
     public function focus-launcher() {
         launcher.focus-search();
@@ -167,23 +158,19 @@ export component ShellWindow inherits Window {
         popup-keys.focus();
     }
 
-    public function focus-lock() {
-        lock.focus-password();
-    }
-
     public function focus-power-dialog() {
         power-dialog.focus-keys();
     }
 
     private property <bool> panel-visible: !root.fullscreen-active || root.overview-open || root.launcher-open || root.popup != Popup.none;
-    private property <length> panel-y: root.panel.top ? 0 : root.height - root.panel.height;
-    private property <length> top-inset: root.panel.top ? root.panel.height : 0;
-    private property <length> bottom-inset: root.panel.top ? 0 : root.panel.height;
-    private property <bool> dock-enabled: root.panel.show-dock && !root.launcher-open && !root.locked && (!root.fullscreen-active || root.overview-open);
+    private property <length> panel-y: Desktop.panel.top ? 0 : root.height - Desktop.panel.height;
+    private property <length> top-inset: Desktop.panel.top ? Desktop.panel.height : 0;
+    private property <length> bottom-inset: Desktop.panel.top ? 0 : Desktop.panel.height;
+    private property <bool> dock-enabled: Desktop.panel.show-dock && !root.launcher-open && !Desktop.locked && (!root.fullscreen-active || root.overview-open);
     private property <length> dock-edge-y: root.height - root.bottom-inset;
     private property <length> dock-base-y: root.dock-edge-y - DockMetrics.height - DockMetrics.margin;
-    private property <bool> dock-revealed: root.dock-enabled && (!root.panel.dock-autohide || dock-area.has-hover || hot-zone.has-hover || root.overview-open || root.popup == Popup.dock-menu);
-    private property <bool> toasts-visible: !root.locked && root.popup == Popup.none && root.power-action == PowerAction.none;
+    private property <bool> dock-revealed: root.dock-enabled && (!Desktop.panel.dock-autohide || dock-area.has-hover || hot-zone.has-hover || root.overview-open || root.popup == Popup.dock-menu);
+    private property <bool> toasts-visible: !Desktop.locked && root.popup == Popup.none && root.power-action == PowerAction.none;
     private property <length> popup-gap: 6px;
 
     background: transparent;
@@ -202,10 +189,10 @@ export component ShellWindow inherits Window {
         open: root.overview-open;
         workspaces: root.workspaces;
         windows: root.windows;
-        active-workspace: root.active-workspace;
+        active-workspace: Desktop.active-workspace;
         active-count: root.active-count;
         top-inset: root.top-inset;
-        bottom-inset: root.bottom-inset + (root.panel.show-dock ? root.dock-exclusive : 0);
+        bottom-inset: root.bottom-inset + (Desktop.panel.show-dock ? root.dock-exclusive : 0);
         window-activated(row) => {
             root.window-activated(row);
         }
@@ -253,7 +240,7 @@ export component ShellWindow inherits Window {
         y: root.dock-edge-y - 2px;
         width: dock-area.width;
         height: 2px;
-        enabled: root.dock-enabled && root.panel.dock-autohide;
+        enabled: root.dock-enabled && Desktop.panel.dock-autohide;
     }
 
     dock-area := TouchArea {
@@ -265,12 +252,12 @@ export component ShellWindow inherits Window {
         visible: self.opacity > 0;
         animate y, opacity {
             duration: Theme.duration-slow;
-            delay: root.dock-revealed ? 0ms : (root.panel.dock-autohide && root.dock-enabled ? 400ms : 0ms);
+            delay: root.dock-revealed ? 0ms : (Desktop.panel.dock-autohide && root.dock-enabled ? 400ms : 0ms);
             easing: Motion.standard;
         }
 
         dock := Dock {
-            items: root.dock-items;
+            items: Desktop.dock-items;
             menu-index: root.popup == Popup.dock-menu ? root.dock-menu-index : -1;
             item-clicked(index) => {
                 root.dock-clicked(index);
@@ -295,19 +282,19 @@ export component ShellWindow inherits Window {
     }
 
     panel-bar := Panel {
-        y: root.panel-visible ? root.panel-y : (root.panel.top ? -root.panel.height : root.height);
-        height: root.panel.height;
+        y: root.panel-visible ? root.panel-y : (Desktop.panel.top ? -Desktop.panel.height : root.height);
+        height: Desktop.panel.height;
         width: root.width;
         animate y { duration: Theme.duration-normal; easing: Motion.standard; }
         workspaces: root.workspaces;
-        focused-title: root.overview-open || root.launcher-open ? "" : root.focused-title;
-        focused-visual: root.focused-visual;
-        clock-text: root.clock-text;
-        status: root.status;
-        volume: root.volume;
-        do-not-disturb: root.do-not-disturb;
-        show-battery-percentage: root.panel.show-battery-percentage;
-        has-unread: root.has-unread;
+        focused-title: root.overview-open || root.launcher-open ? "" : Desktop.focused-title;
+        focused-visual: Desktop.focused-visual;
+        clock-text: Desktop.clock-text;
+        status: Desktop.status;
+        volume: Desktop.volume;
+        do-not-disturb: Desktop.do-not-disturb;
+        show-battery-percentage: Desktop.panel.show-battery-percentage;
+        has-unread: Desktop.has-unread;
         overview-open: root.overview-open;
         calendar-open: root.popup == Popup.calendar;
         quick-settings-open: root.popup == Popup.quick-settings;
@@ -337,15 +324,15 @@ export component ShellWindow inherits Window {
 
         calendar := CalendarPopup {
             open: root.popup == Popup.calendar;
-            from-top: root.panel.top;
+            from-top: Desktop.panel.top;
             x: (root.width - self.width) / 2;
-            y: root.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
-            notifications: root.notifications;
-            days: root.days;
-            month-title: root.month-title;
-            weekday: root.weekday;
-            date: root.date;
-            do-not-disturb <=> root.do-not-disturb;
+            y: Desktop.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
+            notifications: Desktop.notifications;
+            days: Desktop.days;
+            month-title: Desktop.month-title;
+            weekday: Desktop.weekday;
+            date: Desktop.date;
+            do-not-disturb <=> Desktop.do-not-disturb;
             previous-month => {
                 root.month-changed(-1);
             }
@@ -374,15 +361,15 @@ export component ShellWindow inherits Window {
 
         quick-settings := QuickSettings {
             open: root.popup == Popup.quick-settings;
-            from-top: root.panel.top;
+            from-top: Desktop.panel.top;
             x: root.width - self.width - Theme.spacing-sm;
-            y: root.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
+            y: Desktop.panel.top ? root.top-inset + root.popup-gap : root.height - root.bottom-inset - root.popup-gap - self.height;
             height: self.preferred-height;
-            status: root.status;
+            status: Desktop.status;
             dark-style: Theme.dark;
-            do-not-disturb: root.do-not-disturb;
-            volume <=> root.volume;
-            brightness <=> root.brightness;
+            do-not-disturb: Desktop.do-not-disturb;
+            volume <=> Desktop.volume;
+            brightness <=> Desktop.brightness;
             power-menu-open <=> root.power-menu-open;
             volume-changed(value) => {
                 root.volume-changed(value);
@@ -400,7 +387,7 @@ export component ShellWindow inherits Window {
                 root.bluetooth-toggled();
             }
             do-not-disturb-toggled => {
-                root.do-not-disturb-toggled(!root.do-not-disturb);
+                root.do-not-disturb-toggled(!Desktop.do-not-disturb);
             }
             dark-style-toggled => {
                 root.dark-style-toggled();
@@ -491,11 +478,11 @@ export component ShellWindow inherits Window {
 
     toast-stack := ToastStack {
         x: root.width - self.width - Theme.spacing-md;
-        y: root.panel.top ? root.top-inset + Theme.spacing-md : Theme.spacing-md;
+        y: Desktop.panel.top ? root.top-inset + Theme.spacing-md : Theme.spacing-md;
         width: 380px;
         height: self.preferred-height;
         visible: root.toasts-visible;
-        toasts: root.toasts;
+        toasts: Desktop.toasts;
         activated(id) => {
             root.notification-activated(id);
         }
@@ -509,35 +496,20 @@ export component ShellWindow inherits Window {
 
     OsdPill {
         x: (root.width - self.width) / 2;
-        y: root.height - root.bottom-inset - (root.panel.show-dock ? root.dock-exclusive : 0) - self.height - 48px;
-        shown: root.osd-shown && !root.locked;
-        kind: root.osd-kind;
-        level: root.osd-level;
-        muted: root.osd-muted;
+        y: root.height - root.bottom-inset - (Desktop.panel.show-dock ? root.dock-exclusive : 0) - self.height - 48px;
+        shown: Desktop.osd-shown && !Desktop.locked;
+        kind: Desktop.osd-kind;
+        level: Desktop.osd-level;
+        muted: Desktop.osd-muted;
     }
 
     power-dialog := PowerDialog {
-        action: root.locked ? PowerAction.none : root.power-action;
+        action: Desktop.locked ? PowerAction.none : root.power-action;
         confirmed(action) => {
             root.power-confirmed(action);
         }
         cancelled => {
             root.power-confirmed(PowerAction.none);
-        }
-    }
-
-    lock := LockScreen {
-        locked: root.locked;
-        time: root.long-time;
-        date: root.weekday + ", " + root.date;
-        user-name: root.user-name;
-        backdrop: root.lock-backdrop;
-        busy: root.lock-busy;
-        error: root.lock-error;
-        status: root.status;
-        password <=> root.lock-password;
-        unlock-requested(password) => {
-            root.unlock-requested(password);
         }
     }
 }

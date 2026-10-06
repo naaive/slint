@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: MIT
+
+import { AppVisual, DockItem, NotificationItem, CalendarDay, OsdKind, SystemStatus, PanelSettings } from "models.slint";
+
+// State that every view of the shell shows alike.
+// Each window holds its own copy of a global, so Rust sets this on every window; see `src/model/mod.rs`.
+export global Desktop {
+    // Layout.
+    in property <PanelSettings> panel: { top: true, height: 32px, show-dock: true, dock-autohide: false, show-battery-percentage: true };
+    in property <bool> locked;
+
+    // Windows and workspaces.
+    in property <int> active-workspace;
+    in property <string> focused-title;
+    in property <AppVisual> focused-visual;
+    in property <[DockItem]> dock-items;
+
+    // Clock and calendar.
+    in property <string> clock-text;
+    in property <string> long-time;
+    in property <string> weekday;
+    in property <string> date;
+    in property <string> month-title;
+    in property <[CalendarDay]> days;
+
+    // System state.
+    in property <SystemStatus> status;
+    in-out property <float> volume;
+    in-out property <float> brightness;
+    in-out property <bool> do-not-disturb;
+
+    // Notifications.
+    in property <[NotificationItem]> notifications;
+    in property <[NotificationItem]> toasts;
+    in property <bool> has-unread;
+
+    // On-screen display.
+    in property <bool> osd-shown;
+    in property <OsdKind> osd-kind;
+    in property <float> osd-level;
+    in property <bool> osd-muted;
+
+    // Lock screen.
+    in property <bool> lock-busy;
+    in property <string> lock-error;
+    in property <image> lock-backdrop;
+    in property <string> user-name;
+}

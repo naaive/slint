@@ -288,7 +288,7 @@ impl Nimbus {
         }
         let wm_state = self.wm_state();
         if let Some(shell) = self.shell.as_mut() {
-            shell.add_output(&output, self.config.current(), &wm_state);
+            shell.add_output(&output, &wm_state);
         }
         tracing::info!(name = %output.name(), "output added");
         self.outputs_changed();

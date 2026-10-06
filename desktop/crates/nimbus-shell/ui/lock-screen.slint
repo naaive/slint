@@ -110,10 +110,7 @@ component PasswordField inherits Rectangle {
     }
 }
 
-// The lock screen. It's opaque as soon as `locked` is set, so nothing behind it shows,
-// and fades out when unlocked.
 export component LockScreen inherits Rectangle {
-    in property <bool> locked;
     in property <string> time;
     in property <string> date;
     in property <string> user-name;
@@ -129,14 +126,8 @@ export component LockScreen inherits Rectangle {
         field.focus-input();
     }
 
-    private property <float> progress: root.locked ? 1 : 0;
-
-    visible: root.locked || self.progress > 0;
-    opacity: root.progress;
     background: #101014;
-    animate progress { duration: root.locked ? 0ms : Theme.duration-slow; easing: Motion.exit; }
 
-    // Takes every click, so nothing reaches the shell or windows below.
     TouchArea {
         clicked => {
             field.focus-input();
@@ -186,7 +177,7 @@ export component LockScreen inherits Rectangle {
     }
 
     VerticalLayout {
-        y: root.height * 0.14 - (1 - root.progress) * 40px;
+        y: root.height * 0.14;
         height: self.preferred-height;
         spacing: Theme.spacing-xs;
 
@@ -209,7 +200,7 @@ export component LockScreen inherits Rectangle {
     }
 
     VerticalLayout {
-        y: root.height * 0.48 - (1 - root.progress) * 40px;
+        y: root.height * 0.48;
         height: self.preferred-height;
         spacing: Theme.spacing-lg;
 

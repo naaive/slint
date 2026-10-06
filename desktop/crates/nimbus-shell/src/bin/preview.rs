@@ -2,7 +2,7 @@
 
 //! Runs the shell in a 1280x800 window with a mock session: windows that react to the dock and overview,
 //! system state that follows quick settings, notifications that arrive over time, and a lock screen
-//! that accepts any password except "wrong".
+//! in a second window that accepts any password except "wrong".
 //! Shell actions are logged to standard error; set `RUST_LOG=debug` for more.
 
 #[path = "../../tests/support/mod.rs"]
@@ -16,7 +16,7 @@ use std::time::Duration;
 use nimbus_config::Config;
 use nimbus_ipc::{CompositorState, Event, Request, WindowInfo};
 use nimbus_services::{CloseReason, Notification, ServiceCommand, ServiceEvent, SystemState};
-use nimbus_shell::{Shell, ShellAction};
+use nimbus_shell::{LockView, ShellAction, ShellModel, ShellView};
 use nimbus_xdg::{AppIndex, IconResolver};
 use slint::{LogicalSize, Rgb8Pixel, SharedPixelBuffer, Timer, TimerMode};
 
@@ -27,7 +27,9 @@ enum Input {
 }
 
 struct Session {
-    shell: Shell,
+    shell: ShellModel,
+    view: ShellView,
+    lock: Option<LockView>,
     compositor: CompositorState,
     system: SystemState,
     apps: AppIndex,
@@ -50,9 +52,33 @@ impl Session {
                 if password == "wrong" {
                     self.shell.unlock_failed();
                 } else {
-                    self.shell.set_locked(false);
+                    self.set_locked(false);
                 }
             }
+        }
+    }
+
+    fn set_locked(&mut self, locked: bool) {
+        self.shell.set_locked(locked);
+        if !locked {
+            if let Some(lock) = self.lock.take()
+                && let Err(err) = lock.window().hide()
+            {
+                tracing::warn!("Can't hide the lock screen: {err}");
+            }
+            return;
+        }
+        if self.lock.is_some() {
+            return;
+        }
+        let lock = LockView::new(&self.shell).and_then(|lock| {
+            lock.window().set_size(LogicalSize::new(1280.0, 800.0));
+            lock.show()?;
+            Ok(lock)
+        });
+        match lock {
+            Ok(lock) => self.lock = Some(lock),
+            Err(err) => tracing::warn!("Can't show the lock screen: {err}"),
         }
     }
 
@@ -118,9 +144,9 @@ impl Session {
                 }
             }
             Request::SwitchWorkspace { workspace } => self.switch_workspace(workspace),
-            Request::Lock => self.shell.set_locked(true),
-            Request::ToggleLauncher => self.shell.toggle_launcher(),
-            Request::ToggleOverview => self.shell.toggle_overview(),
+            Request::Lock => self.set_locked(true),
+            Request::ToggleLauncher => self.view.toggle_launcher(),
+            Request::ToggleOverview => self.view.toggle_overview(),
             other => tracing::info!(?other, "not handled by the preview"),
         }
     }
@@ -176,7 +202,7 @@ impl Session {
                 return;
             }
             ServiceCommand::LockSession => {
-                self.shell.set_locked(true);
+                self.set_locked(true);
                 return;
             }
             other => {
@@ -262,12 +288,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let queue = Rc::new(RefCell::new(VecDeque::new()));
     let sink = queue.clone();
     let shell =
-        Shell::new(&config, move |action| sink.borrow_mut().push_back(Input::Action(action)))?;
+        ShellModel::new(&config, move |action| sink.borrow_mut().push_back(Input::Action(action)));
     shell.set_config_path(scratch.join("config.toml"));
-    shell.component().set_wallpaper(wallpaper());
-    shell.window().set_size(LogicalSize::new(1280.0, 800.0));
-    shell.set_output_name(support::OUTPUT);
     shell.set_apps(&apps, &icons);
+    let view = ShellView::new(&shell, support::OUTPUT)?;
+    view.component().set_wallpaper(wallpaper());
+    view.window().set_size(LogicalSize::new(1280.0, 800.0));
     let unlocks = queue.clone();
     shell
         .on_unlock_attempt(move |password| unlocks.borrow_mut().push_back(Input::Unlock(password)));
@@ -283,7 +309,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = support::system_state();
     shell.handle_service_event(&ServiceEvent::State(system.clone()));
     let next_window = compositor.windows.iter().map(|w| w.id).max().unwrap_or(0) + 1;
-    let session = Rc::new(RefCell::new(Session { shell, compositor, system, apps, next_window }));
+    let session = Rc::new(RefCell::new(Session {
+        shell,
+        view,
+        lock: None,
+        compositor,
+        system,
+        apps,
+        next_window,
+    }));
 
     // Applies queued actions with a short delay, like a compositor answering on its next loop iteration.
     let pump = Timer::default();
@@ -333,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session.shell.handle_service_event(&ServiceEvent::State(state));
     });
 
-    session.borrow().shell.show()?;
+    session.borrow().view.show()?;
     tracing::info!("Nimbus shell preview: click the panel, the dock, or the activities button");
     slint::run_event_loop()?;
     drop((pump, notifiers, battery));

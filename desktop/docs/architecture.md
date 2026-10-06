@@ -27,7 +27,7 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 | `nimbus-xdg` | lib | Desktop entries, icon theme lookup, fuzzy app search, launching. |
 | `nimbus-services` | lib | Tokio + zbus: notifications server, UPower, NetworkManager, audio, backlight, MPRIS, BlueZ, logind. |
 | `nimbus-theme` | lib + Slint library | Design tokens and components imported as `@nimbus/theme.slint`; off-screen software rendering for screenshots behind the `headless` feature. |
-| `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen. |
+| `nimbus-shell` | lib + preview bin | Panel, dock, launcher, overview, quick settings, notification center, toasts, OSD, lock screen: one shared model shown by a view per output. |
 | `nimbus-compositor` | bin | Smithay compositor: backends, window management, input, shell hosting, control socket. |
 | `nimbus-portal` | bin + lib | `xdg-desktop-portal` Settings backend publishing `org.freedesktop.appearance` from `nimbus-config`. |
 | `nimbus-session` | bins | `nimbus-session` starts and supervises the compositor and runs autostart; `nimbusctl` is the command-line client. |
@@ -75,9 +75,11 @@ Modules in `crates/nimbus-compositor/src`:
   Layer surfaces with `exclusive` keyboard interactivity on the top or overlay layer take the keyboard;
   `on_demand` ones take it when clicked.
 - `keybindings.rs`: resolves chords parsed with `nimbus_config::chord` to XKB keysyms.
-- `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform`,
-  creates one `MinimalSoftwareWindow` per output, renders damaged regions into a `MemoryRenderBuffer`,
-  forwards input inside `Shell::input_region()`, and maps `ShellAction`s to compositor requests, services, and launches.
+- `shell_host.rs`: the Slint platform. It implements `slint::platform::Platform` and holds the `ShellModel`.
+  Each output gets a `ShellView`, plus a `LockView` above it while locked, each in a `MinimalSoftwareWindow`
+  that renders damaged regions into a `MemoryRenderBuffer`.
+  It forwards input inside `ShellView::input_region()`, or to the lock screen while locked,
+  and maps `ShellAction`s to compositor requests, services, and launches.
 - `auth.rs`: checks lock screen passwords through PAM on a worker thread and reports back through a `calloop` channel.
   It uses the `nimbus` PAM service from `data/pam.d/nimbus` when installed, otherwise `login`.
 - `ipc.rs`: the control socket server, a `calloop` source per connection.
@@ -101,9 +103,18 @@ and the loop wakes at `slint::platform::duration_until_next_timer_update()`.
 
 ## Shell
 
-The shell is one `ShellWindow` per output: a transparent full-output window.
-Everything outside `Shell::input_region()` passes through to client windows.
-It exposes data setters and emits `ShellAction`s; see `crates/nimbus-shell/src/lib.rs`.
+The shell is one `ShellModel`, the single source of truth, shown by lightweight views.
+Data flows into the model, and every view emits `ShellAction`s through it; see `crates/nimbus-shell/src/lib.rs`.
+
+- `ShellView`: a transparent, full-output overlay per output.
+  It keeps only what's particular to its output, such as its open popup, launcher, and the windows on it.
+  Everything outside `ShellView::input_region()` passes through to client windows.
+- `LockView`: the lock screen for one output, a window of its own,
+  so a host can put it on its own surface, such as an `ext-session-lock` surface.
+
+What every view shows alike, such as the clock, system status, toasts, and OSD, lives in the model.
+Each Slint window holds its own copy of a global, so the model sets the `Desktop` global on every window,
+and attaches the shared models, such as toasts, to each.
 
 Surfaces:
 
@@ -115,8 +126,8 @@ Surfaces:
 - **Notifications**: toasts with actions and timeouts, and a notification center with history in the calendar popup.
 - **OSD**: volume and brightness feedback.
 - **Lock screen**: clock and password field; authentication goes through PAM in the compositor.
-  The shell hands passwords to the handler registered with `Shell::on_unlock_attempt`,
-  and the compositor answers with `Shell::set_locked(false)` or `Shell::unlock_failed()`.
+  The shell hands passwords to the handler registered with `ShellModel::on_unlock_attempt`,
+  and the compositor answers with `ShellModel::set_locked(false)` or `ShellModel::unlock_failed()`.
   logind's lock signal, `nimbusctl lock`, and `power.lock_after_minutes` of inactivity all lock the session.
 
 Shortcuts and requests aimed at the shell also go out on the control socket as `Event::ShellCommand`:

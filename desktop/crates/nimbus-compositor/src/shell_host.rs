@@ -10,7 +10,7 @@ use nimbus_ipc::{CompositorState, Event, Response};
 use nimbus_services::{
     Notification, ServiceCommand, ServiceEvent, Services, ServicesConfig, SystemState, Urgency,
 };
-use nimbus_shell::{Exclusive, Osd, Shell, ShellAction};
+use nimbus_shell::{Exclusive, LockView, Osd, ShellAction, ShellModel, ShellView};
 use nimbus_xdg::{AppIndex, IconResolver};
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
@@ -54,85 +54,189 @@ impl Platform for NimbusPlatform {
     }
 }
 
-struct ShellInstance {
-    output: String,
-    shell: Shell,
-    window: Rc<MinimalSoftwareWindow>,
-    buffer: MemoryRenderBuffer,
+/// The output's size and scale, which every surface on it follows.
+#[derive(Clone, Copy, PartialEq)]
+struct Metrics {
     physical: Size<i32, Physical>,
     logical: Size<i32, Logical>,
     scale: f64,
+}
+
+impl Metrics {
+    fn of(output: &Output) -> Option<Self> {
+        let mode = output.current_mode()?;
+        let physical = output.current_transform().transform_size(mode.size);
+        let scale = output.current_scale().fractional_scale();
+        let logical = physical.to_f64().to_logical(scale).to_i32_round();
+        Some(Self { physical, logical, scale })
+    }
+
+    /// The window size in physical pixels, so a window renders exactly as many pixels as its buffer holds.
+    fn window_size(&self) -> slint::WindowSize {
+        slint::WindowSize::Physical(slint::PhysicalSize::new(
+            u32::try_from(self.physical.w).unwrap_or(0),
+            u32::try_from(self.physical.h).unwrap_or(0),
+        ))
+    }
+}
+
+/// A Slint window covering an output, software-rendered into a buffer the compositor draws.
+struct Surface {
+    window: Rc<MinimalSoftwareWindow>,
+    buffer: MemoryRenderBuffer,
     active: Cell<bool>,
+}
+
+impl Surface {
+    fn new(window: Rc<MinimalSoftwareWindow>, metrics: Metrics) -> Self {
+        let Metrics { physical, .. } = metrics;
+        let surface = Self {
+            window,
+            buffer: MemoryRenderBuffer::new(
+                Fourcc::Abgr8888,
+                (physical.w, physical.h),
+                1,
+                Transform::Normal,
+                None,
+            ),
+            active: Cell::new(false),
+        };
+        surface.resize(metrics);
+        surface
+    }
+
+    fn dispatch(&self, event: WindowEvent) {
+        if let Err(err) = self.window.dispatch_event_with_result(event) {
+            tracing::warn!("the shell rejected an event: {err}");
+        }
+    }
+
+    fn resize(&self, metrics: Metrics) {
+        self.dispatch(WindowEvent::ScaleFactorChanged { scale_factor: metrics.scale as f32 });
+        self.window.set_size(metrics.window_size());
+        self.window.request_redraw();
+    }
+
+    fn set_active(&self, active: bool) {
+        if self.active.replace(active) != active {
+            self.dispatch(WindowEvent::WindowActiveChanged(active));
+        }
+    }
+
+    /// Renders the damaged regions; returns whether anything was drawn.
+    fn draw(&mut self, physical: Size<i32, Physical>) -> bool {
+        let width = usize::try_from(physical.w).unwrap_or(0);
+        let height = usize::try_from(physical.h).unwrap_or(0);
+        let expected = width * height;
+        let window_size = self.window.size();
+        let buffer = &mut self.buffer;
+        self.window.draw_if_needed(|renderer| {
+            let mut context = buffer.render();
+            let result = context.draw(|memory| {
+                let pixels: &mut [PremultipliedRgbaColor] = bytemuck::try_cast_slice_mut(memory)
+                    .map_err(|e| anyhow!("shell buffer: {e}"))?;
+                if pixels.len() < expected
+                    || width == 0
+                    || window_size.width as usize > width
+                    || window_size.height as usize > height
+                {
+                    return Err(anyhow!("shell buffer is smaller than the shell window"));
+                }
+                let region = renderer.render(pixels, width);
+                Ok(region
+                    .iter()
+                    .map(|(origin, size)| {
+                        Rectangle::<i32, Buffer>::new(
+                            (origin.x, origin.y).into(),
+                            (
+                                i32::try_from(size.width).unwrap_or(0),
+                                i32::try_from(size.height).unwrap_or(0),
+                            )
+                                .into(),
+                        )
+                    })
+                    .collect())
+            });
+            if let Err(err) = result {
+                tracing::warn!("rendering the shell failed: {err:#}");
+            }
+        })
+    }
+}
+
+/// The shell on one output: its view, and its lock screen while the session is locked.
+struct ShellInstance {
+    output: String,
+    view: ShellView,
+    surface: Surface,
+    lock: Option<(LockView, Surface)>,
+    metrics: Metrics,
     exclusive: Exclusive,
 }
 
 impl Drop for ShellInstance {
     fn drop(&mut self) {
+        self.unlock();
         // A shown Slint window keeps its component, timers, and models alive until hidden.
-        if let Err(err) = self.shell.window().hide() {
+        if let Err(err) = self.view.window().hide() {
             tracing::warn!(output = %self.output, "cannot hide the shell: {err}");
         }
     }
 }
 
 impl ShellInstance {
-    fn dispatch(&self, event: WindowEvent) {
-        if let Err(err) = self.window.dispatch_event_with_result(event) {
-            tracing::warn!(output = %self.output, "the shell rejected an event: {err}");
-        }
+    /// The surface on top, which takes input: the lock screen while there is one.
+    fn front(&self) -> &Surface {
+        self.lock.as_ref().map_or(&self.surface, |(_, surface)| surface)
     }
 
-    /// Updates the window and buffer to the output's current size and scale.
+    fn dispatch(&self, event: WindowEvent) {
+        self.front().dispatch(event);
+    }
+
+    fn surfaces(&self) -> impl Iterator<Item = &Surface> {
+        std::iter::once(&self.surface).chain(self.lock.as_ref().map(|(_, surface)| surface))
+    }
+
+    /// Updates the surfaces to the output's current size and scale.
     fn resize(&mut self, output: &Output) {
-        let Some((logical, physical, scale)) = output_metrics(output) else {
+        let Some(metrics) = Metrics::of(output) else {
             return;
         };
-        if logical == self.logical && physical == self.physical && scale == self.scale {
+        if metrics == self.metrics {
             return;
         }
-        self.logical = logical;
-        self.physical = physical;
-        self.scale = scale;
-        self.dispatch(WindowEvent::ScaleFactorChanged { scale_factor: scale as f32 });
-        self.window.set_size(physical_window_size(physical));
-        self.buffer.render().resize(Size::<i32, Buffer>::from((physical.w, physical.h)));
-        self.window.request_redraw();
+        self.metrics = metrics;
+        let size = Size::<i32, Buffer>::from((metrics.physical.w, metrics.physical.h));
+        for surface in
+            std::iter::once(&mut self.surface).chain(self.lock.as_mut().map(|(_, surface)| surface))
+        {
+            surface.buffer.render().resize(size);
+            surface.resize(metrics);
+        }
     }
-}
 
-/// Sizes the Slint window in physical pixels, so it renders exactly as many pixels as the buffer holds.
-fn physical_window_size(physical: Size<i32, Physical>) -> slint::WindowSize {
-    slint::WindowSize::Physical(slint::PhysicalSize::new(
-        u32::try_from(physical.w).unwrap_or(0),
-        u32::try_from(physical.h).unwrap_or(0),
-    ))
-}
-
-/// The output's logical size, physical size, and scale.
-fn output_metrics(output: &Output) -> Option<(Size<i32, Logical>, Size<i32, Physical>, f64)> {
-    let mode = output.current_mode()?;
-    let scale = output.current_scale().fractional_scale();
-    let physical = output.current_transform().transform_size(mode.size);
-    let logical = physical.to_f64().to_logical(scale).to_i32_round();
-    Some((logical, physical, scale))
+    fn unlock(&mut self) {
+        if let Some((lock, _)) = self.lock.take()
+            && let Err(err) = lock.window().hide()
+        {
+            tracing::warn!(output = %self.output, "cannot hide the lock screen: {err}");
+        }
+    }
 }
 
 pub struct ShellHost {
     created: Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+    model: ShellModel,
     instances: Vec<ShellInstance>,
     actions: Rc<RefCell<VecDeque<ShellAction>>>,
     apps: Option<(AppIndex, IconResolver)>,
     services: Option<Services>,
     system_state: Option<SystemState>,
     auth: Option<AuthWorker>,
-    config_path: Option<PathBuf>,
-    /// Whether the session is locked, independent of which outputs currently have a shell.
-    locked: bool,
     /// After [`ServiceEvent::LockRequested`], the outputs that haven't presented a locked frame yet;
     /// see [`ServiceCommand::LockPresented`].
     lock_unpresented: Option<HashSet<String>>,
-    /// Toasts the user closed on one output, to close on every output; see [`Shell::on_toast_closed`].
-    closed_toasts: Rc<RefCell<Vec<u32>>>,
     /// The output whose shell the user last interacted with; only that shell takes keys.
     keyboard_output: Option<String>,
     apps_tx: Option<channel::Sender<(AppIndex, IconResolver)>>,
@@ -149,12 +253,7 @@ impl ShellHost {
         config: &nimbus_config::Config,
         config_path: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let created = Rc::new(RefCell::new(Vec::new()));
-        slint::platform::set_platform(Box::new(NimbusPlatform {
-            created: created.clone(),
-            start: Instant::now(),
-        }))
-        .map_err(|e| anyhow!("cannot install the Slint platform: {e}"))?;
+        let mut host = Self::with_platform(config, config_path)?;
 
         let (apps_tx, apps_rx) = channel::channel::<(AppIndex, IconResolver)>();
         handle
@@ -167,6 +266,7 @@ impl ShellHost {
                 }
             })
             .map_err(|e| anyhow!("cannot receive applications: {e}"))?;
+        host.apps_tx = Some(apps_tx);
 
         let (services_tx, services_rx) = channel::channel::<ServiceEvent>();
         handle
@@ -176,9 +276,9 @@ impl ShellHost {
                 }
             })
             .map_err(|e| anyhow!("cannot receive service events: {e}"))?;
-        let services = Services::spawn(ServicesConfig::default(), move |event| {
+        host.services = Some(Services::spawn(ServicesConfig::default(), move |event| {
             let _ = services_tx.send(event);
-        });
+        }));
 
         let (auth_tx, auth_rx) = channel::channel::<bool>();
         handle
@@ -189,7 +289,7 @@ impl ShellHost {
             })
             .map_err(|e| anyhow!("cannot receive authentication results: {e}"))?;
         let service = crate::auth::service_name();
-        let auth = AuthWorker::spawn(
+        host.auth = AuthWorker::spawn(
             Box::new(PamAuthenticator::new(service)),
             crate::auth::current_user(),
             move |ok| {
@@ -198,29 +298,49 @@ impl ShellHost {
         )
         .map_err(|err| tracing::error!("cannot start lock screen authentication: {err}"))
         .ok();
+        if let Some(auth) = &host.auth {
+            host.model.on_unlock_attempt(auth.submitter());
+        }
         tracing::info!(service, "lock screen authentication uses PAM");
 
-        let host = Self {
-            created,
-            instances: Vec::new(),
-            actions: Rc::new(RefCell::new(VecDeque::new())),
-            apps: None,
-            services: Some(services),
-            system_state: None,
-            auth,
-            config_path,
-            locked: false,
-            lock_unpresented: None,
-            closed_toasts: Rc::default(),
-            keyboard_output: None,
-            apps_tx: Some(apps_tx),
-            next_local_notification: Cell::new(u32::MAX),
-        };
         host.reload_apps(config.appearance.icon_theme.clone());
         Ok(host)
     }
 
-    /// Scans applications and loads the icon theme in the background, then hands them to every shell.
+    /// A host without services, authentication, or applications, on a new Slint platform for this thread.
+    fn with_platform(
+        config: &nimbus_config::Config,
+        config_path: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let created = Rc::new(RefCell::new(Vec::new()));
+        slint::platform::set_platform(Box::new(NimbusPlatform {
+            created: created.clone(),
+            start: Instant::now(),
+        }))
+        .map_err(|e| anyhow!("cannot install the Slint platform: {e}"))?;
+        let actions = Rc::new(RefCell::new(VecDeque::new()));
+        let queue = actions.clone();
+        let model = ShellModel::new(config, move |action| queue.borrow_mut().push_back(action));
+        if let Some(path) = config_path {
+            model.set_config_path(path);
+        }
+        Ok(Self {
+            created,
+            model,
+            instances: Vec::new(),
+            actions,
+            apps: None,
+            services: None,
+            system_state: None,
+            auth: None,
+            lock_unpresented: None,
+            keyboard_output: None,
+            apps_tx: None,
+            next_local_notification: Cell::new(u32::MAX),
+        })
+    }
+
+    /// Scans applications and loads the icon theme in the background, then hands them to the shell.
     pub fn reload_apps(&self, icon_theme: String) {
         let Some(apps_tx) = self.apps_tx.clone() else {
             return;
@@ -240,75 +360,65 @@ impl ShellHost {
         self.instances.iter().find(|i| i.output == output)
     }
 
+    /// Creates a Slint component with `create` and returns it with the window it got.
+    fn create<T>(
+        &self,
+        create: impl FnOnce() -> Result<T, PlatformError>,
+    ) -> Result<(T, Rc<MinimalSoftwareWindow>), PlatformError> {
+        let component = create()?;
+        let window = self.created.borrow_mut().pop();
+        self.created.borrow_mut().clear();
+        let window = window.ok_or_else(|| PlatformError::from("no window was created"))?;
+        Ok((component, window))
+    }
+
     /// Creates the shell for a new output.
-    pub fn add_output(
-        &mut self,
-        output: &Output,
-        config: &nimbus_config::Config,
-        state: &CompositorState,
-    ) {
+    pub fn add_output(&mut self, output: &Output, state: &CompositorState) {
         let name = output.name();
-        let Some((logical, physical, scale)) = output_metrics(output) else {
+        let Some(metrics) = Metrics::of(output) else {
             tracing::warn!(output = %name, "output without a mode; no shell for it");
             return;
         };
-        let actions = self.actions.clone();
-        let shell = match Shell::new(config, move |action| actions.borrow_mut().push_back(action)) {
-            Ok(shell) => shell,
+        self.model.set_compositor_state(state);
+        let (view, window) = match self.create(|| ShellView::new(&self.model, &name)) {
+            Ok(created) => created,
             Err(err) => {
                 tracing::error!(output = %name, "cannot create the shell: {err}");
                 return;
             }
         };
-        let Some(window) = self.created.borrow_mut().pop() else {
-            tracing::error!(output = %name, "the shell created no window");
-            return;
-        };
-        self.created.borrow_mut().clear();
-        shell.set_output_name(&name);
-        if let Some(path) = &self.config_path {
-            shell.set_config_path(path.clone());
-        }
-        if let Some(auth) = &self.auth {
-            shell.on_unlock_attempt(auth.submitter());
-        }
-        let closed_toasts = self.closed_toasts.clone();
-        shell.on_toast_closed(move |id| closed_toasts.borrow_mut().push(id));
-        shell.set_compositor_state(state);
-        if let Some((apps, icons)) = &self.apps {
-            shell.set_apps(apps, icons);
-        }
-        if let Some(system) = &self.system_state {
-            shell.handle_service_event(&ServiceEvent::State(system.clone()));
-        }
-        if self.locked {
-            shell.set_locked(true);
-        }
-        let instance = ShellInstance {
+        let mut instance = ShellInstance {
             output: name.clone(),
-            buffer: MemoryRenderBuffer::new(
-                Fourcc::Abgr8888,
-                (physical.w, physical.h),
-                1,
-                Transform::Normal,
-                None,
-            ),
-            shell,
-            window,
-            physical,
-            logical,
-            scale,
-            active: Cell::new(false),
+            surface: Surface::new(window, metrics),
+            view,
+            lock: None,
+            metrics,
             exclusive: Exclusive::default(),
         };
-        instance.dispatch(WindowEvent::ScaleFactorChanged { scale_factor: scale as f32 });
-        instance.window.set_size(physical_window_size(physical));
-        if let Err(err) = instance.shell.show() {
+        if let Err(err) = instance.view.show() {
             tracing::error!(output = %name, "cannot show the shell: {err}");
             return;
         }
+        if self.model.is_locked() {
+            instance.lock = self.lock_screen(&instance);
+        }
         tracing::info!(output = %name, "shell started");
         self.instances.push(instance);
+    }
+
+    /// Creates a lock screen for the output of `instance`.
+    fn lock_screen(&self, instance: &ShellInstance) -> Option<(LockView, Surface)> {
+        let created = self.create(|| LockView::new(&self.model)).and_then(|(lock, window)| {
+            lock.show()?;
+            Ok((lock, window))
+        });
+        match created {
+            Ok((lock, window)) => Some((lock, Surface::new(window, instance.metrics))),
+            Err(err) => {
+                tracing::error!(output = %instance.output, "cannot show the lock screen: {err}");
+                None
+            }
+        }
     }
 
     pub fn remove_output(&mut self, output: &str) {
@@ -327,9 +437,7 @@ impl ShellHost {
     }
 
     fn set_apps(&mut self, apps: AppIndex, icons: IconResolver) {
-        for instance in &self.instances {
-            instance.shell.set_apps(&apps, &icons);
-        }
+        self.model.set_apps(&apps, &icons);
         self.apps = Some((apps, icons));
     }
 
@@ -338,16 +446,12 @@ impl ShellHost {
     }
 
     pub fn set_config(&self, config: &nimbus_config::Config) {
-        for instance in &self.instances {
-            instance.shell.set_config(config);
-        }
+        self.model.set_config(config);
     }
 
     pub fn handle_compositor_events(&self, events: &[Event]) {
-        for instance in &self.instances {
-            for event in events {
-                instance.shell.handle_compositor_event(event);
-            }
+        for event in events {
+            self.model.handle_compositor_event(event);
         }
     }
 
@@ -363,11 +467,11 @@ impl ShellHost {
         }
     }
 
-    /// Shows a toast on every shell, for errors the user would otherwise never see.
+    /// Shows a toast, for errors the user would otherwise never see.
     pub fn show_error(&self, summary: String, body: String) {
         let id = self.next_local_notification.get();
         self.next_local_notification.set(id.wrapping_sub(1));
-        let event = ServiceEvent::Notification(Notification {
+        self.model.handle_service_event(&ServiceEvent::Notification(Notification {
             id,
             app_name: "Nimbus".into(),
             app_icon: "dialog-error".into(),
@@ -379,45 +483,40 @@ impl ShellHost {
             received: SystemTime::now(),
             transient: true,
             resident: false,
-        });
-        for instance in &self.instances {
-            instance.shell.handle_service_event(&event);
-        }
+        }));
     }
 
     pub fn show_osd(&self, osd: Osd) {
-        for instance in &self.instances {
-            instance.shell.show_osd(osd);
-        }
+        self.model.show_osd(osd);
     }
 
     pub fn toggle_launcher(&mut self, output: &str) {
-        self.toggle_on(output, Shell::toggle_launcher);
+        self.toggle_on(output, ShellView::toggle_launcher);
     }
 
     pub fn toggle_overview(&mut self, output: &str) {
-        self.toggle_on(output, Shell::toggle_overview);
+        self.toggle_on(output, ShellView::toggle_overview);
     }
 
     /// Toggles a full-output surface on `output`, closing the launcher and overview on the others,
     /// and gives that shell the keyboard.
-    fn toggle_on(&mut self, output: &str, toggle: fn(&Shell)) {
+    fn toggle_on(&mut self, output: &str, toggle: fn(&ShellView)) {
         let Some(name) =
             self.instance(output).or_else(|| self.instances.first()).map(|i| i.output.clone())
         else {
             return;
         };
         for instance in self.instances.iter().filter(|i| i.output != name) {
-            let ui = instance.shell.component();
+            let ui = instance.view.component();
             if ui.get_launcher_open() {
-                instance.shell.toggle_launcher();
+                instance.view.toggle_launcher();
             }
             if ui.get_overview_open() {
-                instance.shell.toggle_overview();
+                instance.view.toggle_overview();
             }
         }
         if let Some(instance) = self.instance(&name) {
-            toggle(&instance.shell);
+            toggle(&instance.view);
         }
         self.keyboard_output = Some(name);
     }
@@ -427,18 +526,21 @@ impl ShellHost {
         self.keyboard_output = output.map(str::to_owned);
     }
 
+    /// Locks or unlocks the shell: every output gets a lock screen while locked.
     pub fn set_locked(&mut self, locked: bool) {
-        self.locked = locked;
-        for instance in &self.instances {
-            instance.shell.set_locked(locked);
+        self.model.set_locked(locked);
+        for index in 0..self.instances.len() {
+            if !locked {
+                self.instances[index].unlock();
+            } else if self.instances[index].lock.is_none() {
+                self.instances[index].lock = self.lock_screen(&self.instances[index]);
+            }
         }
     }
 
     /// Tells every lock screen that the last password was wrong.
     pub fn unlock_failed(&self) {
-        for instance in &self.instances {
-            instance.shell.unlock_failed();
-        }
+        self.model.unlock_failed();
     }
 
     /// Sends [`ServiceCommand::LockPresented`] once each of `outputs` presented a locked frame.
@@ -453,7 +555,7 @@ impl ShellHost {
     /// Records that the `rendered` outputs presented a frame, out of the `live` ones;
     /// returns whether this sent [`ServiceCommand::LockPresented`].
     pub fn frames_presented(&mut self, rendered: &[&str], live: &HashSet<String>) -> bool {
-        if !self.locked {
+        if !self.model.is_locked() {
             self.lock_unpresented = None;
             return false;
         }
@@ -469,24 +571,14 @@ impl ShellHost {
         true
     }
 
-    /// Closes the toasts closed on one output on every output.
-    fn close_toasts_everywhere(&self) {
-        let closed: Vec<u32> = self.closed_toasts.borrow_mut().drain(..).collect();
-        for id in closed {
-            for instance in &self.instances {
-                instance.shell.close_toast(id);
-            }
-        }
-    }
-
     /// The shell that takes keys: while locked, the one the user last used or the first one;
     /// otherwise the one the user last used, if it wants the keyboard.
     fn keyboard_instance(&self) -> Option<&ShellInstance> {
         let focused = self.keyboard_output.as_deref().and_then(|o| self.instance(o));
-        if self.locked {
+        if self.model.is_locked() {
             focused.or_else(|| self.instances.first())
         } else {
-            focused.filter(|i| i.shell.wants_keyboard())
+            focused.filter(|i| i.view.wants_keyboard())
         }
     }
 
@@ -496,7 +588,7 @@ impl ShellHost {
 
     /// Whether the shell on `output` covers it, for example with the launcher.
     pub fn wants_keyboard_on(&self, output: &str) -> bool {
-        self.instance(output).is_some_and(|i| i.shell.wants_keyboard())
+        self.instance(output).is_some_and(|i| i.view.wants_keyboard())
     }
 
     pub fn exclusive_zone(&self, output: &str) -> Option<Exclusive> {
@@ -506,7 +598,7 @@ impl ShellHost {
     /// Whether the shell on `output` takes the pointer at `local`, in logical output coordinates.
     pub fn accepts_pointer(&self, output: &str, local: Point<f64, Logical>) -> bool {
         self.instance(output).is_some_and(|i| {
-            i.shell.input_region().iter().any(|r| r.contains(local.x as f32, local.y as f32))
+            i.view.input_region().iter().any(|r| r.contains(local.x as f32, local.y as f32))
         })
     }
 
@@ -584,51 +676,21 @@ impl ShellHost {
         let keyboard = self.keyboard_instance().map(|i| i.output.clone());
         for instance in &mut self.instances {
             let wants = keyboard.as_deref() == Some(instance.output.as_str());
-            if instance.active.replace(wants) != wants {
-                instance.dispatch(WindowEvent::WindowActiveChanged(wants));
+            let locked = instance.lock.is_some();
+            instance.surface.set_active(wants && !locked);
+            if let Some((_, lock)) = &instance.lock {
+                lock.set_active(wants);
             }
-            let exclusive = instance.shell.exclusive_zone();
+            let exclusive = instance.view.exclusive_zone();
             if exclusive != instance.exclusive {
                 instance.exclusive = exclusive;
                 exclusive_changed = true;
             }
-            let width = usize::try_from(instance.physical.w).unwrap_or(0);
-            let height = usize::try_from(instance.physical.h).unwrap_or(0);
-            let expected = width * height;
-            let window_size = instance.window.size();
-            let buffer = &mut instance.buffer;
-            let drawn = instance.window.draw_if_needed(|renderer| {
-                let mut context = buffer.render();
-                let result = context.draw(|memory| {
-                    let pixels: &mut [PremultipliedRgbaColor] =
-                        bytemuck::try_cast_slice_mut(memory)
-                            .map_err(|e| anyhow!("shell buffer: {e}"))?;
-                    if pixels.len() < expected
-                        || width == 0
-                        || window_size.width as usize > width
-                        || window_size.height as usize > height
-                    {
-                        return Err(anyhow!("shell buffer is smaller than the shell window"));
-                    }
-                    let region = renderer.render(pixels, width);
-                    Ok(region
-                        .iter()
-                        .map(|(origin, size)| {
-                            Rectangle::<i32, Buffer>::new(
-                                (origin.x, origin.y).into(),
-                                (
-                                    i32::try_from(size.width).unwrap_or(0),
-                                    i32::try_from(size.height).unwrap_or(0),
-                                )
-                                    .into(),
-                            )
-                        })
-                        .collect())
-                });
-                if let Err(err) = result {
-                    tracing::warn!("rendering the shell failed: {err:#}");
-                }
-            });
+            let physical = instance.metrics.physical;
+            let mut drawn = instance.surface.draw(physical);
+            if let Some((_, lock)) = &mut instance.lock {
+                drawn |= lock.draw(physical);
+            }
             if drawn {
                 damaged.push(instance.output.clone());
             }
@@ -638,7 +700,11 @@ impl ShellHost {
 
     /// How soon Slint needs the event loop to wake up, for animations and timers.
     pub fn next_wakeup(&self) -> Option<Duration> {
-        let animating = self.instances.iter().any(|i| i.window.has_active_animations());
+        let animating = self
+            .instances
+            .iter()
+            .flat_map(ShellInstance::surfaces)
+            .any(|s| s.window.has_active_animations());
         let timer = slint::platform::duration_until_next_timer_update();
         match (animating, timer) {
             (true, Some(t)) => Some(t.min(ANIMATION_INTERVAL)),
@@ -647,6 +713,7 @@ impl ShellHost {
         }
     }
 
+    /// The shell's element for `output`: its lock screen while locked, otherwise its view.
     pub fn render_element<R>(
         &self,
         renderer: &mut R,
@@ -658,7 +725,8 @@ impl ShellHost {
         R::TextureId: Texture + Clone + Send + 'static,
     {
         let instance = self.instance(output)?;
-        shell_element(renderer, &instance.buffer, instance.physical, instance.logical)
+        let Metrics { physical, logical, .. } = instance.metrics;
+        shell_element(renderer, &instance.front().buffer, physical, logical)
             .map_err(|err| tracing::debug!("cannot upload the shell: {err:?}"))
             .ok()
     }
@@ -712,7 +780,6 @@ impl State {
         let Some(shell) = self.nimbus.shell.as_mut() else {
             return;
         };
-        shell.close_toasts_everywhere();
         let (damaged, exclusive_changed) = shell.update();
         for name in damaged {
             if let Some(output) = self.nimbus.output_by_name(&name) {
@@ -835,9 +902,7 @@ impl State {
             | ServiceEvent::Notification(_)
             | ServiceEvent::NotificationClosed { .. } => {}
         }
-        for instance in &shell.instances {
-            instance.shell.handle_service_event(&event);
-        }
+        shell.model.handle_service_event(&event);
     }
 }
 
@@ -884,35 +949,13 @@ mod tests {
     use smithay::utils::Scale as UtilScale;
 
     impl ShellHost {
-        /// A host without services, authentication, or application scanning,
-        /// on a Slint platform for the calling thread.
         fn for_tests() -> Self {
-            let created = Rc::new(RefCell::new(Vec::new()));
-            slint::platform::set_platform(Box::new(NimbusPlatform {
-                created: created.clone(),
-                start: Instant::now(),
-            }))
-            .expect("no platform was set on this thread");
-            Self {
-                created,
-                instances: Vec::new(),
-                actions: Rc::new(RefCell::new(VecDeque::new())),
-                apps: None,
-                services: None,
-                system_state: None,
-                auth: None,
-                config_path: None,
-                locked: false,
-                lock_unpresented: None,
-                closed_toasts: Rc::default(),
-                keyboard_output: None,
-                apps_tx: None,
-                next_local_notification: Cell::new(u32::MAX),
-            }
+            Self::with_platform(&nimbus_config::Config::default(), None)
+                .expect("no platform was set on this thread")
         }
 
         fn add_test_output(&mut self, output: &Output) {
-            self.add_output(output, &nimbus_config::Config::default(), &CompositorState::default());
+            self.add_output(output, &CompositorState::default());
         }
     }
 
@@ -932,7 +975,7 @@ mod tests {
     }
 
     fn locked_instances(host: &ShellHost) -> Vec<bool> {
-        host.instances.iter().map(|i| i.shell.is_locked()).collect()
+        host.instances.iter().map(|i| i.lock.is_some()).collect()
     }
 
     #[test]
@@ -950,32 +993,58 @@ mod tests {
         host.add_test_output(&output("A", (800, 600), 1.0));
         host.set_locked(true);
         host.remove_output("A");
-        assert!(host.locked);
+        assert!(host.model.is_locked());
         host.add_test_output(&output("A", (800, 600), 1.0));
-        assert!(host.locked);
+        assert!(host.model.is_locked());
         assert_eq!(locked_instances(&host), [true]);
     }
 
     #[test]
-    fn only_the_host_unlocks_the_session() {
+    fn unlocking_removes_every_lock_screen() {
         let mut host = ShellHost::for_tests();
         host.add_test_output(&output("A", (800, 600), 1.0));
         host.add_test_output(&output("B", (800, 600), 1.0));
         host.set_locked(true);
-        host.instances[0].shell.set_locked(false);
-        assert!(host.locked);
+        let locks: Vec<_> = host
+            .instances
+            .iter()
+            .filter_map(|i| i.lock.as_ref())
+            .map(|(lock, _)| slint::ComponentHandle::as_weak(lock.component()))
+            .collect();
+        assert_eq!(locks.len(), 2);
         host.set_locked(false);
         assert_eq!(locked_instances(&host), [false, false]);
-        assert!(!host.locked);
+        assert!(!host.model.is_locked());
+        assert!(locks.iter().all(|lock| lock.upgrade().is_none()), "lock screens are freed");
     }
 
     #[test]
     fn removed_outputs_free_their_shell() {
         let mut host = ShellHost::for_tests();
         host.add_test_output(&output("A", (800, 600), 1.0));
-        let weak = slint::ComponentHandle::as_weak(host.instances[0].shell.component());
+        host.set_locked(true);
+        let instance = &host.instances[0];
+        let view = slint::ComponentHandle::as_weak(instance.view.component());
+        let lock = instance
+            .lock
+            .as_ref()
+            .map(|(lock, _)| slint::ComponentHandle::as_weak(lock.component()));
         host.remove_output("A");
-        assert!(weak.upgrade().is_none());
+        assert!(view.upgrade().is_none());
+        assert!(lock.is_some_and(|lock| lock.upgrade().is_none()));
+    }
+
+    #[test]
+    fn keys_reach_the_lock_screen_instead_of_the_shell() {
+        let mut host = ShellHost::for_tests();
+        host.add_test_output(&output("A", (800, 600), 1.0));
+        host.set_locked(true);
+        host.update();
+        for pressed in [true, false] {
+            host.dispatch_key("x".into(), pressed, false);
+        }
+        let (lock, _) = host.instances[0].lock.as_ref().expect("a lock screen");
+        assert_eq!(lock.component().get_password(), "x");
     }
 
     #[test]
@@ -984,12 +1053,13 @@ mod tests {
         host.add_test_output(&output("A", (1001, 601), 2.0));
         host.add_test_output(&output("B", (1367, 769), 1.25));
         host.update();
+        host.set_locked(true);
         for instance in &host.instances {
-            let size = instance.window.size();
-            assert_eq!(
-                (size.width as i32, size.height as i32),
-                (instance.physical.w, instance.physical.h)
-            );
+            let physical = instance.metrics.physical;
+            for surface in instance.surfaces() {
+                let size = surface.window.size();
+                assert_eq!((size.width as i32, size.height as i32), (physical.w, physical.h));
+            }
         }
     }
 
@@ -1012,7 +1082,7 @@ mod tests {
         assert!(host.wants_keyboard());
         host.toggle_launcher("B");
         let open: Vec<bool> =
-            host.instances.iter().map(|i| i.shell.component().get_launcher_open()).collect();
+            host.instances.iter().map(|i| i.view.component().get_launcher_open()).collect();
         assert_eq!(open, [false, true]);
         assert_eq!(host.keyboard_instance().map(|i| i.output.as_str()), Some("B"));
         host.focus_output(None);
@@ -1089,26 +1159,16 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_toast_closes_it_on_every_output() {
+    fn errors_show_on_every_output() {
         let mut host = ShellHost::for_tests();
         host.add_test_output(&output("A", (800, 600), 1.0));
         host.add_test_output(&output("B", (800, 600), 1.0));
-        let id = host.next_local_notification.get();
         host.show_error("Summary".into(), "Body".into());
-        let closing = |host: &ShellHost| -> Vec<Vec<bool>> {
-            host.instances
-                .iter()
-                .map(|i| {
-                    slint::Model::iter(&i.shell.component().get_toasts())
-                        .map(|t| t.closing)
-                        .collect()
-                })
-                .collect()
-        };
-        assert_eq!(closing(&host), [[false], [false]]);
-        host.closed_toasts.borrow_mut().push(id);
-        host.close_toasts_everywhere();
-        assert_eq!(closing(&host), [[true], [true]]);
+        for instance in &host.instances {
+            let desktop =
+                slint::ComponentHandle::global::<nimbus_shell::Desktop>(instance.view.component());
+            assert_eq!(slint::Model::row_count(&desktop.get_toasts()), 1);
+        }
     }
 
     #[test]

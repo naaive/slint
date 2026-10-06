@@ -12,7 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use nimbus_services::ServiceEvent;
-use nimbus_shell::{Osd, Popup, Shell, ShellAction};
+use nimbus_shell::{LockView, Osd, Popup, ShellAction, ShellModel, ShellView};
 use nimbus_theme::headless::{Frame, Headless};
 use slint::Rgb8Pixel;
 use slint::platform::software_renderer::PremultipliedRgbaColor;
@@ -84,13 +84,12 @@ fn shell_states_render() {
     config.appearance.animations = false;
     let actions = Rc::new(std::cell::RefCell::new(Vec::<ShellAction>::new()));
     let sink = actions.clone();
-    let shell =
-        Shell::new(&config, move |action| sink.borrow_mut().push(action)).expect("shell starts");
-    shell.set_config_path(dir.path().join("config.toml"));
-    shell.set_output_name(support::OUTPUT);
-    shell.set_apps(&apps, &icons);
-    shell.set_compositor_state(&support::compositor_state());
-    shell.handle_service_event(&ServiceEvent::State(support::system_state()));
+    let model = ShellModel::new(&config, move |action| sink.borrow_mut().push(action));
+    model.set_config_path(dir.path().join("config.toml"));
+    model.set_apps(&apps, &icons);
+    model.set_compositor_state(&support::compositor_state());
+    model.handle_service_event(&ServiceEvent::State(support::system_state()));
+    let shell = ShellView::new(&model, support::OUTPUT).expect("the view starts");
     shell.show().expect("the window shows");
 
     // Idle: the panel along the top and the dock at the bottom, the rest showing the wallpaper.
@@ -119,9 +118,9 @@ fn shell_states_render() {
     shell.toggle_overview();
 
     for notification in support::notifications() {
-        shell.handle_service_event(&ServiceEvent::Notification(notification));
+        model.handle_service_event(&ServiceEvent::Notification(notification));
     }
-    shell.show_osd(Osd::Volume { level: 0.62, muted: false });
+    model.show_osd(Osd::Volume { level: 0.62, muted: false });
     let toasts = render(&headless);
     assert!(differs_from_backdrop(&toasts, WIDTH - 200, 80), "toasts draw");
     save("toast-osd", &toasts);
@@ -134,18 +133,23 @@ fn shell_states_render() {
     save("calendar", &calendar);
     shell.component().invoke_popup_requested(Popup::None);
 
-    shell.set_locked(true);
-    let lock = render(&headless);
+    // The lock screen is a window of its own, which takes the headless window's place.
+    model.set_locked(true);
+    let lock = LockView::new(&model).expect("the lock screen starts");
+    lock.show().expect("the window shows");
+    let frame = render(&headless);
     assert!(
-        (0..WIDTH).step_by(40).all(|x| differs_from_backdrop(&lock, x, HEIGHT / 2)),
+        (0..WIDTH).step_by(40).all(|x| differs_from_backdrop(&frame, x, HEIGHT / 2)),
         "the lock screen is opaque"
     );
-    save("lock", &lock);
-    shell.set_locked(false);
+    save("lock", &frame);
+    lock.window().hide().expect("the lock screen hides");
+    model.set_locked(false);
+    shell.show().expect("the window shows");
 
     let mut light = config.clone();
     light.appearance.color_scheme = nimbus_config::ColorScheme::Light;
-    shell.set_config(&light);
+    model.set_config(&light);
     shell.component().invoke_popup_requested(Popup::QuickSettings);
     let light_settings = render(&headless);
     save("quick-settings-light", &light_settings);

@@ -4,7 +4,7 @@
 
 The Nimbus desktop shell: top panel, dock, launcher, overview, quick settings, calendar and notification center,
 toasts, on-screen display, and lock screen.
-It's one transparent Slint window per output, built on the `@nimbus/theme.slint` design system.
+It's one shared model shown by a transparent Slint window per output, built on the `@nimbus/theme.slint` design system.
 
 ![Idle desktop](../../docs/screenshots/shell-idle.png)
 
@@ -18,37 +18,43 @@ It's one transparent Slint window per output, built on the `@nimbus/theme.slint`
 
 ## Hosting the Shell
 
-The compositor creates a `Shell` per output after setting the Slint platform, then:
+The host creates one `ShellModel` after setting the Slint platform, then:
 
-- Feeds it data: `set_config`, `set_output_name`, `set_compositor_state` and `handle_compositor_event`,
+- Feeds it data: `set_config`, `set_compositor_state` and `handle_compositor_event`,
   `set_apps`, `handle_service_event`, and `show_osd` for hardware keys.
 - Handles each `ShellAction` it emits: compositor requests, service commands, launches, and opening Settings.
-- Calls `toggle_launcher` and `toggle_overview` for the Super key bindings.
-- Routes pointer input inside `input_region()` to the shell, and keyboard input while `wants_keyboard()` is true.
-  Query the region after rendering, since new toasts count from the frame that draws them.
-- Keeps maximized and tiled windows out of `exclusive_zone()`.
 - Calls `set_config_path` when it runs with `--config`, because the dark style toggle and dock pins save there.
 
-## Unlocking
+For each output, it creates a `ShellView` with `ShellView::new(&model, output)`, then:
+
+- Calls `toggle_launcher` and `toggle_overview` for the Super key bindings.
+- Routes pointer input inside `input_region()` to the view, and keyboard input while `wants_keyboard()` is true.
+  Query the region after rendering, since new toasts count from the frame that draws them.
+- Keeps maximized and tiled windows out of `exclusive_zone()`.
+
+Views share everything else, so a toast closed on one output closes on all of them.
+
+## Locking
+
+`ShellModel::set_locked(true)` closes everything open in the views.
+While locked, the host shows a `LockView` on each output, a window apart from the output's `ShellView`,
+and drops it after unlocking.
 
 The lock screen doesn't check passwords itself.
-Register a handler with `on_unlock_attempt`; it receives the typed password while the lock screen shows a spinner.
+Register a handler with `ShellModel::on_unlock_attempt`; it receives the typed password while every lock screen shows a spinner.
 Answer with `set_locked(false)` on success or `unlock_failed()` on failure, for example after a PAM conversation.
 
 ```rust
-let shell = Rc::new(shell);
-let weak = Rc::downgrade(&shell);
-shell.on_unlock_attempt(move |password| {
-    let Some(shell) = weak.upgrade() else { return };
-    if pam_authenticate(&password) { shell.set_locked(false) } else { shell.unlock_failed() }
-});
+model.on_unlock_attempt(move |password| auth.submit(password));
+// Once the check finishes:
+if ok { model.set_locked(false) } else { model.unlock_failed() }
 ```
 
 ## Preview and Tests
 
 `cargo run -p nimbus-shell --features preview --bin nimbus-shell-preview` runs the shell in a 1280x800 window
 with a mock session that reacts to clicks, and logs every action.
-The lock screen accepts any password except `wrong`.
+Locking opens the lock screen in a second window, which accepts any password except `wrong`.
 
 `cargo test -p nimbus-shell` runs unit tests, behavior tests on Slint's testing backend,
 and renders every state with the software renderer.
