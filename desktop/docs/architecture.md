@@ -161,12 +161,19 @@ At startup, unless `[xwayland] enabled = false`, the compositor asks the satelli
 whether it takes `-listenfd`, which needs version 0.6 or later.
 It then takes the X11 display that `--x11-display` names, or the lowest free one, the way X servers do:
 the lock file `/tmp/.X<n>-lock` with its process id, replacing one whose process is gone,
-and listening sockets at `/tmp/.X11-unix/X<n>` and the abstract address of the same name.
+a listening socket at `/tmp/.X11-unix/X<n>`, and the abstract address of the same name.
+It skips a display whose stale files another user owns,
+and refuses a `/tmp/.X11-unix` that isn't a directory of root or the user, sticky when others may write to it.
 `xwayland/display.rs` holds them and removes the files when the compositor exits.
 
-The compositor watches the sockets, and on the first connection starts `xwayland-satellite :<n> -listenfd <fd> -listenfd <fd>`
-with both sockets inherited, then stops watching until the satellite exits.
-Clients wait in the sockets' backlog meanwhile, so none is lost while it starts or restarts;
+The satellite can't give Xwayland an Xauthority cookie, so the socket limits who connects instead.
+The socket file has mode 0600, so only the user's processes connect.
+The abstract address is bound but doesn't listen, so clients that try it first go on to the file,
+and processes in the same network namespace but without the file, such as Flatpak apps without X11 access, can't connect.
+
+The compositor watches the socket, and on the first connection starts `xwayland-satellite :<n> -listenfd <fd>`
+with the socket inherited, then stops watching until the satellite exits.
+Clients wait in the socket's backlog meanwhile, so none is lost while it starts or restarts;
 the next connection after an exit starts it again.
 Without a usable satellite, the compositor logs why once and leaves `DISPLAY` unset.
 `NIMBUS_X11_DIR` replaces `/tmp` in tests.
@@ -199,6 +206,10 @@ upright and with the lock screen, since only the user reaches the control socket
 Input methods such as fcitx5 and IBus work through Smithay's `text-input-v3`, `input-method-v2`, and `virtual-keyboard-v1`.
 Clients type through `text-input-v3`, and one client at a time is the input method.
 Any client may take that role or create a virtual keyboard, as in other wlroots-style compositors.
+While the session is locked, virtual keyboards' keys and input methods' text reach no client, so nothing types on the lock screen.
+While the active text input has the `password` or `pin` purpose, the input method's keyboard grab is set aside,
+so keys go to the client without passing through the input method.
+smithay keeps the content purpose to itself, so `state/ime.rs` notes it from the requests it passes on.
 The text input follows keyboard focus, whether it's on a window, a layer surface, or a grabbing popup,
 and leaving a surface deactivates the input method.
 
@@ -212,7 +223,7 @@ A popup can grab while the input method holds the keyboard, and the input method
 either way the keyboard focus stays on the popup, and whichever grab ends first gives the keyboard back to the other.
 Keyboard shortcuts run before either grab sees a key.
 While the session is locked, no grab holds the keyboard, so the input method sees no key of the lock screen;
-it gets its grab back after unlocking.
+it gets its grab back after unlocking, as it does when a password field loses focus.
 
 The shell is a `text-input-v3` client too.
 Slint reports the focused text field to the window adapter (`render/window.rs`) through its internal input method requests,
@@ -227,7 +238,8 @@ At each `done`, the preedit string, commit string, and deleted surrounding text 
 
 Touchpad gestures reach the client under the pointer through `pointer-gestures`,
 except a horizontal swipe with `[input] workspace_swipe_fingers` fingers, 3 by default, which the compositor keeps.
-When the fingers lift after 100 units mostly sideways, it switches to the next workspace for a swipe to the left and the previous one for a swipe to the right.
+When the fingers lift after 100 units mostly sideways, it switches to the next workspace for a swipe to the left and the previous one for a swipe to the right,
+unless the session locked meanwhile.
 Pointer motion also goes out through `relative-pointer`, unaccelerated as well, for games and remote desktops.
 
 A `pointer-constraints` lock or confinement is active while the pointer is over its surface and inside its region,
@@ -295,6 +307,7 @@ After `power.blank_after_minutes` of inactivity, 5 by default, the compositor bl
 Blanking restarts the timeout, so an output that a client turns on afterwards stays on for a whole timeout.
 Any input but a key release turns blanked outputs on and restarts the timeout.
 A key release doesn't, since the Enter that ran `nimbusctl blank` comes up after.
+Neither does an input device appearing or going, such as a Bluetooth keyboard reconnecting.
 While a visible surface has an idle inhibitor, as for `ext-idle-notify`, the timeout keeps restarting, so a playing video keeps the outputs on.
 The once-a-second housekeeping timer checks the timeout, so blanking comes up to a second late.
 
@@ -335,6 +348,8 @@ so pairing from Settings, or a device that asks to pair, reaches the app as `Eve
 The agent answers only BlueZ's unique name, and waits for `Command::Answer` until BlueZ cancels the request.
 `Pair`, `Connect`, and `Disconnect` calls run in the background with a 90-second timeout, since BlueZ waits for the device and the user;
 a device that paired is trusted and connected.
+A code shown for the user to type on the device closes when that `Pair` call ends, when BlueZ cancels it,
+or, for pairing the device started, when the device becomes paired, since BlueZ signals nothing else then.
 
 The Network page scans when it opens, and the Bluetooth page looks for devices while it shows and the adapter is on.
 Both report failures in the banner.
@@ -423,6 +438,7 @@ The compositor handles the keys and names the output under the pointer; the shel
 The compositor owns the window switcher, so it works the same with or without the shell.
 `FocusStack::order` lists the mapped windows of every workspace, most recently focused first, then those never focused.
 The first press of `switch-windows`, Alt+Tab or Super+Tab by default, opens a session on the window after the focused one,
+or on the most recent one when no window has focus, as on an empty workspace,
 and `switch-windows-backward`, the same chords with Shift, on the last.
 Each further press steps on, wrapping around.
 The session commits when a key release lets go of a modifier of the chord that opened it, other than Shift,
@@ -590,12 +606,15 @@ from `GetManagedObjects` again after each burst of `InterfacesAdded`, `Interface
 `Event::Volumes` carries the list whenever it changes, and `Event::Added` each volume that appears after the first list since udisks appeared.
 Commands run on tasks of their own, since udisks asks polkit first, and the dialog waits for the user:
 `Mount` calls `Filesystem.Mount` and reports the mount point;
+`Automount` does the same with `auth.no_user_interaction`, so it does nothing when udisks would ask polkit;
 `Eject` and `PowerOff` unmount every file system on the drive, then call `Drive.Eject` or `Drive.PowerOff`.
-udisks's refusals come back as `Event::Failed` with its message, except when the user dismissed the polkit dialog.
+udisks's refusals come back as `Event::Failed` with its message,
+and a polkit dialog that the user dismissed as `Event::Dismissed`, so clients stop waiting for the command.
 The shell runs the client among its services, as `ServiceEvent::Disks` and `ServiceCommand::Disks`, and apps run it alone with `udisks::Client`.
 
-The shell mounts a removable volume that appears while the session is unlocked, unless `[media] automount` is off,
+The shell mounts a removable volume that appears while the session is unlocked through `Automount`, unless `[media] automount` is off,
 and shows a toast for it with an "Open" action.
+So plugging in a device never opens a password dialog by itself; the "Open" action may.
 Opening mounts the volume if needed, then starts the default application for `inode/directory`, or Files, on the mount point,
 with the toast's activation token.
 The toast closes when its volume goes.
@@ -717,15 +736,17 @@ The release profile aborts on panic, because every process is supervised or rest
   Protocol tests drive `ext-session-lock`, `ext-foreign-toplevel-list`, `ext-idle-notify`, `wlr-layer-shell`, and `wlr-output-management` with their own clients.
   The input method tests pair a text-input client with an input method client:
   preedit and commit strings reach the client, activation follows focus between windows and a layer surface,
-  and the keyboard grab takes keys, which a virtual keyboard sends back, but none while locked.
+  and the keyboard grab takes keys, which a virtual keyboard sends back, but none while locked and none of a password field.
+  While another client's lock surface has the keyboard, a virtual keyboard's keys and an input method's text don't reach it.
   They also check that popup grabs and the input method's grab take turns with the keyboard,
   and find a candidate popup below the text cursor in a screenshot.
   A headless test checks that synthetic clicks focus the window under them and synthetic keys run shortcuts.
   The window switcher tests hold Alt through `Request::Key`, and check the order of `SwitcherOpen`, steps forward and with Shift,
-  the commit's focus, Escape, and quick Alt+Tab presses that toggle between two windows;
+  the commit's focus, Escape, and quick Alt+Tab presses that toggle between two windows,
+  also from an empty workspace;
   without a subscriber, they check that each step takes focus and Escape restores it.
   The capture tests check that an output captured through `wlr-screencopy` and `ext-image-copy-capture` matches `Request::Screenshot` pixel for pixel,
-  that a toplevel capture shows the window, that a session's second frame waits for damage,
+  that a toplevel capture shows the window, that a session's second frame waits for damage, also while the output is blanked,
   and that every capture while locked is black.
   The output power tests blank two headless outputs after a shortened timeout and check their power objects' `off`,
   `Event::PowerState`, and a black screenshot, then wake them with a synthetic key and a click;
@@ -738,8 +759,9 @@ The release profile aborts on panic, because every process is supervised or rest
   that a client locks again after destroying its unconfirmed lock, that a second lock surface on an output is `duplicate_output`,
   that a surface that showed a buffer is `already_constructed`,
   and that a refused lock's surfaces are inert but still follow the role rule.
-  The XWayland tests check display allocation, stale and live lock files, and cleanup,
-  and, with a Python script standing in for `xwayland-satellite`, that the first X11 client starts it with both sockets,
+  The XWayland tests check display allocation, stale and live lock files, cleanup, the socket's mode,
+  that the abstract address refuses connections and reserves the display, and that unsafe socket directories are refused,
+  and, with a Python script standing in for `xwayland-satellite`, that the first X11 client starts it with the socket,
   the next client after it exits starts it again, and that `DISPLAY` stays unset without it.
 - The `nimbus-shell` tests run it against the headless compositor, which they build first,
   check the composited output through `Request::Screenshot`, click and type through `Request::Click` and `Request::PressKey`,
@@ -773,10 +795,13 @@ The release profile aborts on panic, because every process is supervised or rest
   The NetworkManager client test lists networks and wired details from a fake NetworkManager,
   connects with a wrong and a right password, changes the password, disconnects, and forgets.
   The BlueZ client test powers a fake adapter, discovers, pairs through the agent by confirming and by declining, disconnects and removes devices,
-  and checks that the agent refuses callers other than BlueZ.
+  checks that the agent refuses callers other than BlueZ,
+  and that a passkey shown for pairing the device started closes once the device is paired.
   `nimbus-test-support` has a fake udisks with one removable drive.
-  The udisks tests list, mount, add, and power off volumes on it, and check failures and dismissed dialogs.
-  A `nimbus-shell` test mounts a stick inserted into it and shows its toast, and a Files test mounts a volume from the sidebar and powers its drive off.
+  The udisks tests list, mount, add, and power off volumes on it, check failures and dismissed dialogs,
+  and that automounting a volume that needs authorization asks no one.
+  A `nimbus-shell` test mounts a stick inserted into it without user interaction and shows its toast.
+  Files tests mount a volume from the sidebar and power its drive off, and check that a dismissed mount doesn't open the volume later.
   The timedated test reads, changes, and follows a fake timedated that appears after the client starts.
 - The sound client test runs against a shell script standing in for `pactl`, which keeps its devices in files and follows them with `tail -f` for `subscribe`.
 - `cargo test --manifest-path desktop/Cargo.toml --workspace` runs everything.

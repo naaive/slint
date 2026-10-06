@@ -2,6 +2,9 @@
 
 //! Input methods: text-input-v3 for clients, input-method-v2 for the input method, such as fcitx5 or IBus,
 //! and virtual-keyboard-v1, through which input methods send the keys they don't take.
+//!
+//! smithay serves all three; the `Dispatch` implementations here pass requests on to it,
+//! except for text and keys meant for the lock screen, and note each text input's content purpose.
 
 use super::{Nimbus, State};
 use crate::wm::layout::Rect;
@@ -11,13 +14,34 @@ use smithay::desktop::{
     layer_map_for_output,
 };
 use smithay::input::keyboard::KeyboardHandle;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::{
+    zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+    zwp_text_input_v3::{self, ContentPurpose, ZwpTextInputV3},
+};
+use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::{
+    zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2,
+    zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+    zwp_input_method_v2::{self, ZwpInputMethodV2},
+    zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2,
+};
+use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::{self, ZwpVirtualKeyboardV1},
+};
+use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, delegate_dispatch, delegate_global_dispatch,
+};
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Size};
 use smithay::wayland::input_method::{
-    InputMethodHandler, InputMethodKeyboardGrab, InputMethodSeat, PopupSurface,
+    InputMethodHandler, InputMethodKeyboardGrab, InputMethodKeyboardUserData,
+    InputMethodManagerGlobalData, InputMethodManagerState, InputMethodPopupSurfaceUserData,
+    InputMethodSeat, InputMethodUserData, PopupSurface,
 };
-use smithay::{
-    delegate_input_method_manager, delegate_text_input_manager, delegate_virtual_keyboard_manager,
+use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat, TextInputUserData};
+use smithay::wayland::virtual_keyboard::{
+    VirtualKeyboardManagerGlobalData, VirtualKeyboardManagerState, VirtualKeyboardUserData,
 };
 
 impl InputMethodHandler for State {
@@ -48,9 +72,147 @@ impl InputMethodHandler for State {
     }
 }
 
-delegate_text_input_manager!(State);
-delegate_input_method_manager!(State);
-delegate_virtual_keyboard_manager!(State);
+delegate_global_dispatch!(State: [ZwpTextInputManagerV3: ()] => TextInputManagerState);
+delegate_dispatch!(State: [ZwpTextInputManagerV3: ()] => TextInputManagerState);
+delegate_global_dispatch!(
+    State: [ZwpInputMethodManagerV2: InputMethodManagerGlobalData] => InputMethodManagerState
+);
+delegate_dispatch!(State: [ZwpInputMethodManagerV2: ()] => InputMethodManagerState);
+delegate_dispatch!(
+    State: [ZwpInputMethodKeyboardGrabV2: InputMethodKeyboardUserData<State>] => InputMethodManagerState
+);
+delegate_dispatch!(
+    State: [ZwpInputPopupSurfaceV2: InputMethodPopupSurfaceUserData] => InputMethodManagerState
+);
+delegate_global_dispatch!(
+    State: [ZwpVirtualKeyboardManagerV1: VirtualKeyboardManagerGlobalData] => VirtualKeyboardManagerState
+);
+delegate_dispatch!(State: [ZwpVirtualKeyboardManagerV1: ()] => VirtualKeyboardManagerState);
+
+/// A text input's content purpose, which smithay passes to the input method but doesn't expose.
+#[derive(Debug, Default)]
+pub struct TextInputPurpose {
+    enabling: bool,
+    pending: Option<ContentPurpose>,
+    current: Option<ContentPurpose>,
+}
+
+impl TextInputPurpose {
+    /// Applies the pending state; enabling resets the purpose to `normal`, as text-input-v3 specifies.
+    fn commit(&mut self) {
+        if std::mem::take(&mut self.enabling) {
+            self.current = None;
+        }
+        if let Some(purpose) = self.pending.take() {
+            self.current = Some(purpose);
+        }
+    }
+
+    fn is_secret(&self) -> bool {
+        matches!(self.current, Some(ContentPurpose::Password | ContentPurpose::Pin))
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &ZwpTextInputV3,
+        request: zwp_text_input_v3::Request,
+        data: &TextInputUserData,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let purpose = state.nimbus.text_input_purposes.entry(resource.clone()).or_default();
+        match &request {
+            zwp_text_input_v3::Request::Enable => purpose.enabling = true,
+            zwp_text_input_v3::Request::SetContentType { purpose: new, .. } => {
+                purpose.pending = new.into_result().ok();
+            }
+            zwp_text_input_v3::Request::Commit => purpose.commit(),
+            _ => {}
+        }
+        <TextInputManagerState as Dispatch<_, _, Self>>::request(
+            state, client, resource, request, data, dh, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &ZwpTextInputV3,
+        data: &TextInputUserData,
+    ) {
+        state.nimbus.text_input_purposes.remove(resource);
+        <TextInputManagerState as Dispatch<_, _, Self>>::destroyed(state, client, resource, data);
+    }
+}
+
+impl Dispatch<ZwpInputMethodV2, InputMethodUserData<State>> for State {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &ZwpInputMethodV2,
+        request: zwp_input_method_v2::Request,
+        data: &InputMethodUserData<State>,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let edits_text = matches!(
+            request,
+            zwp_input_method_v2::Request::CommitString { .. }
+                | zwp_input_method_v2::Request::SetPreeditString { .. }
+                | zwp_input_method_v2::Request::DeleteSurroundingText { .. }
+        );
+        if edits_text && state.nimbus.is_locked() {
+            return;
+        }
+        <InputMethodManagerState as Dispatch<_, _, Self>>::request(
+            state, client, resource, request, data, dh, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &ZwpInputMethodV2,
+        data: &InputMethodUserData<State>,
+    ) {
+        <InputMethodManagerState as Dispatch<_, _, Self>>::destroyed(state, client, resource, data);
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardUserData<State>> for State {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &ZwpVirtualKeyboardV1,
+        request: zwp_virtual_keyboard_v1::Request,
+        data: &VirtualKeyboardUserData<State>,
+        dh: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if matches!(request, zwp_virtual_keyboard_v1::Request::Key { .. })
+            && state.nimbus.is_locked()
+        {
+            return;
+        }
+        <VirtualKeyboardManagerState as Dispatch<_, _, Self>>::request(
+            state, client, resource, request, data, dh, data_init,
+        );
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &ZwpVirtualKeyboardV1,
+        data: &VirtualKeyboardUserData<State>,
+    ) {
+        <VirtualKeyboardManagerState as Dispatch<_, _, Self>>::destroyed(
+            state, client, resource, data,
+        );
+    }
+}
 
 /// Whether the input method's grab is the keyboard's current grab.
 pub fn is_input_method_grab(keyboard: &KeyboardHandle<State>) -> bool {
@@ -76,18 +238,33 @@ impl State {
             }
             return;
         }
+        let typing_secret = self.nimbus.typing_secret();
+        if typing_secret && is_input_method_grab(keyboard) {
+            keyboard.unset_grab(self);
+        }
         if keyboard.is_grabbed() {
             return;
         }
         if let Some(grab) = self.nimbus.popup_grab.clone() {
             keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), grab.serial());
-        } else if let Some(grab) = self.nimbus.input_method_grab.clone() {
+        } else if let Some(grab) = self.nimbus.input_method_grab.clone().filter(|_| !typing_secret)
+        {
             keyboard.set_grab(self, grab, SERIAL_COUNTER.next_serial());
         }
     }
 }
 
 impl Nimbus {
+    /// Whether the active text input asks for a password or PIN, whose keys the input method mustn't see.
+    fn typing_secret(&self) -> bool {
+        let mut secret = false;
+        self.seat.text_input().with_active_text_input(|text_input, _| {
+            secret =
+                self.text_input_purposes.get(text_input).is_some_and(TextInputPurpose::is_secret);
+        });
+        secret
+    }
+
     /// Keeps the input method's keyboard grab while it's the current one, so it can come back after another grab.
     pub fn remember_input_method_grab(&mut self, keyboard: &KeyboardHandle<State>) {
         let grab = keyboard

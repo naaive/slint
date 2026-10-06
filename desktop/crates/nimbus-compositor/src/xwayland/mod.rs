@@ -2,7 +2,7 @@
 
 //! X11 apps through `xwayland-satellite`, which starts when the first X11 client connects.
 //!
-//! The compositor holds the X11 display's listening sockets and hands them to the satellite with `-listenfd`,
+//! The compositor holds the X11 display's listening socket and hands it to the satellite with `-listenfd`,
 //! so clients can connect before it runs and while it restarts.
 
 mod display;
@@ -42,8 +42,8 @@ struct Satellite {
     /// `None` once the satellite failed to start, which closes the sockets.
     display: Option<X11Display>,
     handle: LoopHandle<'static, State>,
-    /// The sources watching the listening sockets, enabled while no satellite runs.
-    listening: Vec<RegistrationToken>,
+    /// The source watching the listening socket, enabled while no satellite runs.
+    listening: Option<RegistrationToken>,
     running: Option<(Child, RegistrationToken)>,
 }
 
@@ -90,28 +90,25 @@ impl Xwayland {
             program,
             display: None,
             handle: handle.clone(),
-            listening: Vec::new(),
+            listening: None,
             running: None,
         }));
-        for listener in display.listeners() {
-            let source =
-                listener.try_clone().map(|fd| Generic::new(fd, Interest::READ, Mode::Level));
-            let token = source.map_err(|err| err.to_string()).and_then(|source| {
-                let satellite = satellite.clone();
-                handle
-                    .insert_source(source, move |_, _, _| {
-                        Satellite::spawn(&satellite);
-                        Ok(PostAction::Continue)
-                    })
-                    .map_err(|err| err.to_string())
-            });
-            match token {
-                Ok(token) => satellite.borrow_mut().listening.push(token),
-                Err(err) => {
-                    tracing::warn!("cannot watch the X11 sockets: {err}; X11 apps are unavailable");
-                    satellite.borrow_mut().stop();
-                    return None;
-                }
+        let source =
+            display.listener().try_clone().map(|fd| Generic::new(fd, Interest::READ, Mode::Level));
+        let token = source.map_err(|err| err.to_string()).and_then(|source| {
+            let satellite = satellite.clone();
+            handle
+                .insert_source(source, move |_, _, _| {
+                    Satellite::spawn(&satellite);
+                    Ok(PostAction::Continue)
+                })
+                .map_err(|err| err.to_string())
+        });
+        match token {
+            Ok(token) => satellite.borrow_mut().listening = Some(token),
+            Err(err) => {
+                tracing::warn!("cannot watch the X11 socket: {err}; X11 apps are unavailable");
+                return None;
             }
         }
         tracing::info!("X11 apps connect to DISPLAY={display_name}");
@@ -132,14 +129,14 @@ impl Drop for Xwayland {
 }
 
 impl Satellite {
-    /// Starts the satellite on the listening sockets, and stops watching them until it exits.
+    /// Starts the satellite on the listening socket, and stops watching it until it exits.
     fn spawn(this: &Rc<RefCell<Self>>) {
         let mut satellite = this.borrow_mut();
         let Some(display) = &satellite.display else {
             return;
         };
-        let (name, fds) = (display.name(), display.raw_fds());
-        let child = match spawn_with_fds(&satellite.program, &name, fds) {
+        let (name, fd) = (display.name(), display.raw_fd());
+        let child = match spawn_with_fd(&satellite.program, &name, fd) {
             Ok(child) => child,
             Err(err) => {
                 tracing::warn!(
@@ -151,10 +148,10 @@ impl Satellite {
             }
         };
         tracing::info!(pid = child.id(), "started {} for {name}", satellite.program.display());
-        for token in &satellite.listening {
-            if let Err(err) = satellite.handle.disable(token) {
-                tracing::warn!("cannot pause the X11 sockets: {err}");
-            }
+        if let Some(token) = &satellite.listening
+            && let Err(err) = satellite.handle.disable(token)
+        {
+            tracing::warn!("cannot pause the X11 socket: {err}");
         }
         let reaper = this.clone();
         let timer =
@@ -187,10 +184,10 @@ impl Satellite {
         };
         tracing::info!("{} exited: {status}", self.program.display());
         self.running = None;
-        for token in &self.listening {
-            if let Err(err) = self.handle.enable(token) {
-                tracing::warn!("cannot watch the X11 sockets: {err}");
-            }
+        if let Some(token) = &self.listening
+            && let Err(err) = self.handle.enable(token)
+        {
+            tracing::warn!("cannot watch the X11 socket: {err}");
         }
         true
     }
@@ -201,20 +198,17 @@ impl Satellite {
             self.handle.remove(timer);
             terminate(child);
         }
-        for token in self.listening.drain(..) {
+        if let Some(token) = self.listening.take() {
             self.handle.remove(token);
         }
         self.display = None;
     }
 }
 
-/// Starts `program` for display `name`, with the listening sockets `fds` open in it.
-fn spawn_with_fds(program: &Path, name: &str, fds: [RawFd; 2]) -> io::Result<Child> {
+/// Starts `program` for display `name`, with the listening socket `fd` open in it.
+fn spawn_with_fd(program: &Path, name: &str, fd: RawFd) -> io::Result<Child> {
     let mut command = Command::new(program);
-    command.arg(name);
-    for fd in fds {
-        command.arg("-listenfd").arg(fd.to_string());
-    }
+    command.arg(name).arg("-listenfd").arg(fd.to_string());
     // Standard output carries the compositor's ready line.
     let stdout =
         io::stderr().as_fd().try_clone_to_owned().map_or_else(|_| Stdio::null(), Stdio::from);
@@ -222,10 +216,8 @@ fn spawn_with_fds(program: &Path, name: &str, fds: [RawFd; 2]) -> io::Result<Chi
     // SAFETY: `fcntl` is async-signal-safe, and the closure doesn't allocate.
     unsafe {
         command.pre_exec(move || {
-            for fd in fds {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
             }
             Ok(())
         });

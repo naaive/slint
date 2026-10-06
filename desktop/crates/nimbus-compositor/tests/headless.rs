@@ -266,6 +266,26 @@ fn alt_tab_without_a_shell_focuses_each_selection_at_once() {
 }
 
 #[test]
+fn alt_tab_from_an_empty_workspace_goes_back_to_the_last_window() {
+    let compositor = common::start(CONFIG);
+    let mut client = TestClient::connect(&compositor);
+    client.create_window("org.nimbus.A", "A");
+    client.create_window("org.nimbus.B", "B");
+    let state = compositor.wait_state("two windows", |s| s.windows.len() == 2);
+    let b = state.windows.iter().find(|w| w.app_id == "org.nimbus.B").unwrap().id;
+    let focused = || compositor.state().windows.iter().find(|w| w.focused).map(|w| w.id);
+    assert_eq!(focused(), Some(b));
+
+    compositor.request(Request::SwitchWorkspace { workspace: 1 });
+    compositor.wait_state("the empty workspace", |s| s.active_workspace == 1);
+    assert_eq!(focused(), None);
+    compositor.request(Request::Key { code: ALT, pressed: true });
+    compositor.request(Request::PressKey { code: TAB });
+    compositor.request(Request::Key { code: ALT, pressed: false });
+    assert_eq!(focused(), Some(b));
+}
+
+#[test]
 fn workspaces_close_and_tiling_work() {
     let compositor = common::start(CONFIG);
     let mut client = TestClient::connect(&compositor);

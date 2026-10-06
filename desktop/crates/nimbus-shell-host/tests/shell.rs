@@ -307,7 +307,7 @@ fn inserted_media_are_mounted_and_announced_in_a_toast() {
     runtime.block_on(udisks.insert(device, "/dev/sdb1", "STICK", answer));
     session.wait_opened("Toasts", 1);
     common::wait_for("the stick to be mounted", || {
-        udisks.calls().contains(&"mount STICK".into()).then_some(())
+        udisks.calls().contains(&"mount STICK quietly".into()).then_some(())
     });
 }
 

@@ -97,7 +97,7 @@ async fn lists_mounts_and_powers_off_a_stick() {
 }
 
 #[tokio::test]
-async fn reports_failures_but_not_dismissed_dialogs() {
+async fn reports_failures_and_dismissed_dialogs() {
     let Some(bus) = PrivateBus::start() else { return };
     let fake = FakeUdisks::start(&bus).await;
     fake.insert(SDB1, "/dev/sdb1", "STICK", MountAnswer::Mount).await;
@@ -110,12 +110,15 @@ async fn reports_failures_but_not_dismissed_dialogs() {
     client.send(Command::Mount(SDB2.into()));
     client.send(Command::Mount(sdc1.into()));
     client.send(Command::Unmount("/org/freedesktop/UDisks2/block_devices/gone".into()));
-    let mut failures = Vec::new();
-    while failures.len() < 2 {
-        if let Event::Failed { command, message } = next(&mut events).await {
-            failures.push((command, message));
+    let (mut failures, mut dismissed) = (Vec::new(), Vec::new());
+    while failures.len() < 2 || dismissed.is_empty() {
+        match next(&mut events).await {
+            Event::Failed { command, message } => failures.push((command, message)),
+            Event::Dismissed(command) => dismissed.push(command),
+            _ => {}
         }
     }
+    assert_eq!(dismissed, [Command::Mount(SDB2.into())]);
     failures.sort_by(|a, b| a.0.volume().cmp(b.0.volume()));
     assert_eq!(
         failures,
@@ -139,6 +142,44 @@ async fn reports_failures_but_not_dismissed_dialogs() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn automounting_never_asks_for_authorization() {
+    let Some(bus) = PrivateBus::start() else { return };
+    let fake = FakeUdisks::start(&bus).await;
+    fake.insert(SDB1, "/dev/sdb1", "STICK", MountAnswer::Authorize).await;
+    let (client, mut events) = client(&bus);
+    volumes_where(&mut events, |v| v.len() == 1).await;
+
+    client.send(Command::Automount(SDB1.into()));
+    let quiet = async {
+        while !fake.calls().contains(&"mount STICK quietly".to_string()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    timeout(WAIT, quiet).await.expect("a quiet mount in time");
+    assert!(
+        timeout(Duration::from_millis(300), async {
+            loop {
+                if let Event::Failed { .. } | Event::Mounted { .. } = next(&mut events).await {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "an automount that needs authorization reported back"
+    );
+
+    client.send(Command::Mount(SDB1.into()));
+    let mounted = wait_for(&mut events, |event| match event {
+        Event::Mounted { mount_point, .. } => Some(mount_point.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(mounted, std::path::Path::new("/run/media/ada/STICK"));
+    assert_eq!(fake.calls(), ["mount STICK quietly", "mount STICK"]);
 }
 
 async fn service_event(events: &mut UnboundedReceiver<ServiceEvent>) -> ServiceEvent {

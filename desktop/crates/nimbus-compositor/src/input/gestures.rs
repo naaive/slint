@@ -72,7 +72,8 @@ impl State {
 
     pub(super) fn on_gesture_swipe_end<B: InputBackend>(&mut self, event: B::GestureSwipeEndEvent) {
         if let Some(swipe) = self.nimbus.workspace_swipe.take() {
-            if let Some(action) = swipe.finish(event.cancelled()) {
+            let action = swipe.finish(event.cancelled()).filter(|_| !self.nimbus.is_locked());
+            if let Some(action) = action {
                 self.run_action(action);
             }
             return;

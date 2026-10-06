@@ -2909,6 +2909,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smithay",
+ "socket2",
  "tempfile",
  "thiserror 2.0.21",
  "tiny-skia 0.11.4",

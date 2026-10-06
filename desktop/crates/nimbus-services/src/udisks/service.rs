@@ -21,6 +21,7 @@ const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 /// The polkit dialog stays open until the user answers, and unmounting waits for writes to reach the drive.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
 const DISMISSED: &str = "org.freedesktop.UDisks2.Error.NotAuthorizedDismissed";
+const NEEDS_AUTHORIZATION: &str = "org.freedesktop.UDisks2.Error.NotAuthorizedCanObtain";
 
 pub(crate) type Emit = Arc<dyn Fn(Event) + Send + Sync>;
 
@@ -68,6 +69,14 @@ impl Udisks {
                     Ok(None) => {}
                     Err(zbus::Error::MethodError(name, _, _)) if name.as_str() == DISMISSED => {
                         tracing::debug!("the user dismissed authorizing {command:?}");
+                        emit(Event::Dismissed(command));
+                        return;
+                    }
+                    Err(zbus::Error::MethodError(name, _, _))
+                        if name.as_str() == NEEDS_AUTHORIZATION
+                            && matches!(command, Command::Automount(_)) =>
+                    {
+                        tracing::info!("not mounting {} without authorization", command.volume());
                         return;
                     }
                     Err(err) => {
@@ -89,7 +98,11 @@ enum Step {
         id: String,
         mount_point: std::path::PathBuf,
     },
-    Mount(String),
+    Mount {
+        id: String,
+        /// Whether udisks may ask the user for authorization.
+        interactive: bool,
+    },
     Unmount(String),
     /// Calls `Eject` or `PowerOff` on a drive.
     Drive {
@@ -101,12 +114,11 @@ enum Step {
 /// The calls that carry out `command` on `volume`, given every volume udisks reported.
 fn steps(volumes: &[Volume], volume: &Volume, command: &Command) -> Vec<Step> {
     let method = match command {
-        Command::Mount(_) => {
+        Command::Mount(_) | Command::Automount(_) => {
+            let id = volume.id.clone();
             return vec![match volume.mount_point() {
-                Some(mount_point) => {
-                    Step::Mounted { id: volume.id.clone(), mount_point: mount_point.to_owned() }
-                }
-                None => Step::Mount(volume.id.clone()),
+                Some(mount_point) => Step::Mounted { id, mount_point: mount_point.to_owned() },
+                None => Step::Mount { id, interactive: matches!(command, Command::Mount(_)) },
             }];
         }
         Command::Unmount(_) => "",
@@ -131,10 +143,13 @@ fn steps(volumes: &[Volume], volume: &Volume, command: &Command) -> Vec<Step> {
 
 impl Step {
     async fn run(self, conn: &Connection, owner: &str) -> zbus::Result<Option<Event>> {
-        let options = HashMap::<&str, Value<'_>>::new();
+        let mut options = HashMap::<&str, Value<'_>>::new();
         match self {
             Step::Mounted { id, mount_point } => Ok(Some(Event::Mounted { id, mount_point })),
-            Step::Mount(id) => {
+            Step::Mount { id, interactive } => {
+                if !interactive {
+                    options.insert("auth.no_user_interaction", true.into());
+                }
                 let reply = call(conn, owner, &id, FILESYSTEM, "Mount", &(options,)).await?;
                 let mount_point: String = reply.body().deserialize()?;
                 Ok(Some(Event::Mounted { id, mount_point: mount_point.into() }))
@@ -234,7 +249,11 @@ mod tests {
         );
         assert_eq!(
             steps(&volumes, &volumes[1], &Command::Mount("b".into())),
-            [Step::Mount("b".into())]
+            [Step::Mount { id: "b".into(), interactive: true }]
+        );
+        assert_eq!(
+            steps(&volumes, &volumes[1], &Command::Automount("b".into())),
+            [Step::Mount { id: "b".into(), interactive: false }]
         );
         assert_eq!(steps(&volumes, &volumes[1], &Command::Unmount("b".into())), []);
     }

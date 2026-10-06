@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: MIT
 
-//! An X11 display number with its lock file and listening sockets, laid out as X servers do.
+//! An X11 display number with its lock file and listening socket, laid out as X servers do.
 //!
 //! In `/tmp`, display `n` owns the lock file `.X<n>-lock`, holding the owner's process id,
 //! the socket `.X11-unix/X<n>`, and an abstract socket of the same name.
+//! There's no Xauthority cookie, since `xwayland-satellite` can't pass one to Xwayland.
+//! Instead, only the user may connect to the socket file.
+//! The abstract socket refuses connections, which sends clients on to the file,
+//! and is bound so that no other process can listen there.
 
+use socket2::{Domain, SockAddr, Socket, Type};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::linux::net::SocketAddrExt;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::{SocketAddr, UnixListener};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
 const LAST_DISPLAY: u32 = 32;
@@ -26,8 +31,8 @@ pub fn parse_display(name: &str) -> Result<u32, String> {
 /// A display this process holds until it's dropped, which removes the socket and the lock file.
 pub struct X11Display {
     number: u32,
-    /// The socket in the file system, then the abstract one.
-    listeners: [UnixListener; 2],
+    listener: UnixListener,
+    _abstract_name: Socket,
     _socket: RemoveOnDrop,
     _lock: RemoveOnDrop,
 }
@@ -51,19 +56,29 @@ impl X11Display {
             return Ok(None);
         };
         let path = socket_dir.join(format!("X{number}"));
-        let address = SocketAddr::from_abstract_name(path.as_os_str().as_bytes())?;
-        let abstract_listener = match UnixListener::bind_addr(&address) {
-            Ok(listener) => listener,
+        let abstract_name = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+        let address = [b"\0", path.as_os_str().as_bytes()].concat();
+        match abstract_name.bind(&SockAddr::unix(OsStr::from_bytes(&address))?) {
+            Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => return Ok(None),
             Err(err) => return Err(err),
-        };
-        // Holding the lock makes a socket file left behind stale.
-        remove_if_present(&path)?;
-        let listener = UnixListener::bind(&path)?;
+        }
+        // Holding the lock makes a socket file left behind stale, unless another user owns it.
+        match remove_if_present(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return Ok(None),
+            Err(err) => return Err(err),
+        }
+        let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+        socket.bind(&SockAddr::unix(&path)?)?;
+        let socket_file = RemoveOnDrop(path);
+        fs::set_permissions(&socket_file.0, fs::Permissions::from_mode(0o600))?;
+        socket.listen(libc::SOMAXCONN)?;
         Ok(Some(Self {
             number,
-            listeners: [listener, abstract_listener],
-            _socket: RemoveOnDrop(path),
+            listener: UnixListener::from(std::os::fd::OwnedFd::from(socket)),
+            _abstract_name: abstract_name,
+            _socket: socket_file,
             _lock: lock,
         }))
     }
@@ -73,22 +88,37 @@ impl X11Display {
         format!(":{}", self.number)
     }
 
-    pub fn listeners(&self) -> &[UnixListener; 2] {
-        &self.listeners
+    pub fn listener(&self) -> &UnixListener {
+        &self.listener
     }
 
-    pub fn raw_fds(&self) -> [RawFd; 2] {
-        self.listeners.each_ref().map(AsRawFd::as_raw_fd)
+    pub fn raw_fd(&self) -> RawFd {
+        self.listener.as_raw_fd()
     }
 }
 
-/// Creates the shared socket directory, sticky and writable by everyone, as X servers expect it.
+/// Creates the shared socket directory, sticky and writable by everyone, as X servers expect it,
+/// or checks that an existing one is such a directory, belonging to root or this user.
 fn create_socket_dir(dir: &Path) -> io::Result<()> {
     match fs::create_dir(dir) {
-        Ok(()) => fs::set_permissions(dir, fs::Permissions::from_mode(0o1777)),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-        Err(err) => Err(err),
+        Ok(()) => return fs::set_permissions(dir, fs::Permissions::from_mode(0o1777)),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
     }
+    let metadata = fs::symlink_metadata(dir)?;
+    // SAFETY: `geteuid` has no preconditions.
+    let owned = metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() };
+    let shared_without_sticky_bit = metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0;
+    if !metadata.is_dir() || !owned || shared_without_sticky_bit {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} isn't a directory of root or this user, sticky when others may write to it",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Creates the lock file `path` with this process's id, replacing a stale one.
@@ -106,7 +136,10 @@ fn take_lock(path: &Path) -> io::Result<Option<RemoveOnDrop>> {
                     return Ok(None);
                 }
                 tracing::info!("removing the stale X11 lock file {}", path.display());
-                remove_if_present(path)?;
+                match remove_if_present(path) {
+                    Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return Ok(None),
+                    result => result?,
+                }
             }
             Err(err) => return Err(err),
         }
@@ -151,7 +184,12 @@ impl Drop for RemoveOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixStream;
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+
+    fn abstract_address(socket: &Path) -> SocketAddr {
+        SocketAddr::from_abstract_name(socket.as_os_str().as_bytes()).unwrap()
+    }
 
     #[test]
     fn allocates_the_lowest_free_display_and_cleans_up() {
@@ -165,21 +203,47 @@ mod tests {
         assert_eq!(mode & 0o7777, 0o1777);
 
         UnixStream::connect(&socket).unwrap();
-        let address = SocketAddr::from_abstract_name(socket.as_os_str().as_bytes()).unwrap();
-        UnixStream::connect_addr(&address).unwrap();
+        assert_eq!(fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
+        let address = abstract_address(&socket);
+        let refused = UnixStream::connect_addr(&address).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
 
         let second = X11Display::allocate(dir.path(), None).unwrap();
         assert_eq!(second.name(), ":1");
 
         drop(display);
         assert!(!lock.exists() && !socket.exists());
-        // A child that another test forks holds a copy of the socket until it execs.
+        // A child that another test forks holds a copy of the abstract socket until it execs.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while UnixStream::connect_addr(&address).is_ok() {
-            assert!(std::time::Instant::now() < deadline, "the abstract socket stays open");
+        while UnixListener::bind_addr(&address).is_err() {
+            assert!(std::time::Instant::now() < deadline, "the abstract name stays taken");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(dir.path().join(".X1-lock").exists());
+    }
+
+    #[test]
+    fn a_listener_on_the_abstract_name_takes_the_display() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = UnixListener::bind_addr(&abstract_address(&dir.path().join(".X11-unix/X0")));
+        let _other = other.unwrap();
+        assert_eq!(X11Display::allocate(dir.path(), None).unwrap().name(), ":1");
+    }
+
+    #[test]
+    fn refuses_unsafe_socket_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_dir = dir.path().join(".X11-unix");
+        fs::create_dir(&socket_dir).unwrap();
+        fs::set_permissions(&socket_dir, fs::Permissions::from_mode(0o777)).unwrap();
+        let err = X11Display::allocate(dir.path(), None).err().expect("a shared directory");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+
+        fs::remove_dir(&socket_dir).unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &socket_dir).unwrap();
+        let err = X11Display::allocate(dir.path(), None).err().expect("a symbolic link");
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]

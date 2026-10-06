@@ -47,6 +47,9 @@ smithay::backend::renderer::element::render_elements! {
     Solid = SolidColorRenderElement,
 }
 
+/// The id of an output's black backdrop, kept so that damage tracking sees it unchanged from frame to frame.
+struct Backdrop(Id);
+
 /// Which optional parts of the scene to draw.
 #[derive(Clone, Copy, Debug)]
 pub struct SceneOptions {
@@ -75,8 +78,10 @@ where
     let mut elements: Vec<OutputRenderElement<R>> = Vec::new();
 
     let full_output = || {
+        output.user_data().insert_if_missing_threadsafe(|| Backdrop(Id::new()));
+        let Backdrop(id) = output.user_data().get::<Backdrop>().expect("inserted above");
         SolidColorRenderElement::new(
-            Id::new(),
+            id.clone(),
             Rectangle::from_size(output_geo.size.to_physical_precise_round(output_scale)),
             smithay::backend::renderer::utils::CommitCounter::default(),
             BLACK,

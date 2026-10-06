@@ -27,6 +27,9 @@ pub enum MountAnswer {
     Fail,
     /// Fails as if the user dismissed the polkit dialog.
     Dismiss,
+    /// Fails with `NotAuthorizedCanObtain` given `auth.no_user_interaction`, and otherwise mounts,
+    /// as if the user authorized it.
+    Authorize,
 }
 
 #[derive(Debug, zbus::DBusError)]
@@ -36,6 +39,7 @@ enum UdisksError {
     ZBus(zbus::Error),
     Failed(String),
     NotAuthorizedDismissed(String),
+    NotAuthorizedCanObtain(String),
 }
 
 fn nul_terminated(text: &str) -> Vec<u8> {
@@ -103,12 +107,20 @@ impl Filesystem {
 
     async fn mount(
         &mut self,
-        _options: Options,
+        options: Options,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<String, UdisksError> {
-        self.calls.lock().unwrap().push(format!("mount {}", self.label));
+        let quiet = options
+            .get("auth.no_user_interaction")
+            .is_some_and(|value| bool::try_from(value).unwrap_or(false));
+        let call = format!("mount {}", self.label);
+        self.calls.lock().unwrap().push(if quiet { format!("{call} quietly") } else { call });
         match self.answer {
             MountAnswer::Mount => {}
+            MountAnswer::Authorize if quiet => {
+                return Err(UdisksError::NotAuthorizedCanObtain("Not authorized".into()));
+            }
+            MountAnswer::Authorize => {}
             MountAnswer::Fail => return Err(UdisksError::Failed("Unknown file system".into())),
             MountAnswer::Dismiss => {
                 return Err(UdisksError::NotAuthorizedDismissed("Dismissed".into()));
@@ -190,7 +202,15 @@ impl FakeUdisks {
         server.at(path, filesystem).await.expect("serve the file system");
     }
 
-    /// The calls so far, such as `mount STICK`, `unmount STICK`, and `power off`.
+    /// Changes how the file system at `path` answers `Mount`.
+    pub async fn set_answer(&self, path: &str, answer: MountAnswer) {
+        let server = self.conn.object_server();
+        let filesystem = server.interface::<_, Filesystem>(path).await.expect("a file system");
+        filesystem.get_mut().await.answer = answer;
+    }
+
+    /// The calls so far, such as `mount STICK`, `unmount STICK`, and `power off`;
+    /// a mount with `auth.no_user_interaction` is `mount STICK quietly`.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }

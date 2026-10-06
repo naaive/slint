@@ -57,10 +57,11 @@ It covers the same ground as GNOME and KDE Plasma: a compositor, a desktop shell
 - A window switcher in the middle of the output, with the icon and title of each window, while Alt+Tab is held.
 - A polkit authentication dialog on the focused output, with an identity picker when several admins may answer.
 - Input methods such as fcitx5 and IBus type into the launcher search, the lock screen, and the polkit dialog through text-input-v3;
-  password fields tell the input method they're passwords and never share their text.
+  password fields tell the input method they're passwords and never share their text,
+  and their keys don't pass through the input method.
 - Toasts warn when the battery runs low and again when it's critically low, at UPower's thresholds,
   and go away once it charges.
-- Inserted USB sticks and memory cards mount on their own, unless `[media] automount` is off,
+- Inserted USB sticks and memory cards mount on their own when that needs no password, unless `[media] automount` is off,
   and a toast offers to open them in the file manager.
 - The `nimbus-shell` binary runs the shell as a Wayland client, on layer-shell and session-lock surfaces.
   It hosts the system services and the polkit agent, checks lock screen passwords through PAM on a worker thread,
@@ -298,6 +299,8 @@ A nested session on the winit backend has run in `Xvfb` with llvmpipe, with the 
   A key that completes or cancels a sequence still sends its own key release.
 - X11 apps need xwayland-satellite 0.6 or later; without it, `DISPLAY` stays unset.
   XWayland has only run against a script standing in for xwayland-satellite.
+  The X11 display has no Xauthority cookie: its socket file accepts only the user's processes, and its abstract socket refuses connections.
+  X11 clients that insist on the abstract socket can't connect.
   Changing `[xwayland]` takes effect when the compositor restarts.
 - Apps that draw their own title bars, such as GTK apps, don't follow the Nimbus theme.
   An app that doesn't use xdg-decoration and doesn't set its window geometry gets a titlebar, even if it draws one of its own.
@@ -318,8 +321,9 @@ A nested session on the winit backend has run in `Xvfb` with llvmpipe, with the 
   A confined pointer slides along its region's edges, but a fast motion can jump a gap between two of the region's rectangles.
 - Input methods have only run against test clients, not fcitx5 or IBus.
   Apps that speak only text-input-v1 or v2, such as Chromium and Electron by default, get no input method.
-  Any client may become the input method or create a virtual keyboard, as in other wlroots-style compositors.
-  While the session is locked, the input method gets no keys and its popups don't show.
+  Any client may become the input method or create a virtual keyboard, as in other wlroots-style compositors,
+  so whichever client holds the input method's grab sees the keys typed outside password and PIN fields.
+  While the session is locked, the input method gets no keys, its text and a virtual keyboard's keys reach no one, and its popups don't show.
   The shell applies an input method's changes and reports its text fields without checking the serial of `done`.
   Typing into the polkit dialog through an input method has no end-to-end test.
 - Suspend on lid close isn't implemented yet.

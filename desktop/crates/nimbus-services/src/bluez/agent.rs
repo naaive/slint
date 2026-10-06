@@ -84,6 +84,21 @@ impl Pairings {
         self.lock().open.remove(&id).is_some()
     }
 
+    /// Closes the codes shown for `device`, which need no answer, and returns their ids.
+    pub(crate) fn close_shown(&self, device: &str) -> Vec<u32> {
+        let mut registry = self.lock();
+        let ids: Vec<u32> = registry
+            .open
+            .iter()
+            .filter(|(_, open)| open.answer.is_none() && open.device.as_str() == device)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            registry.open.remove(id);
+        }
+        ids
+    }
+
     /// Closes the requests about `device`, or every request, and returns their ids.
     pub(crate) fn close_all(&self, device: Option<&str>) -> Vec<u32> {
         let mut registry = self.lock();

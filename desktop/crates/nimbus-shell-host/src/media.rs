@@ -69,7 +69,8 @@ impl State {
                 let automount = self.settings.current.media.automount;
                 if mounts_on_insertion(&volume, automount, self.model.is_locked()) {
                     tracing::info!(volume = %volume.device.display(), "mounting inserted media");
-                    self.services.send(ServiceCommand::Disks(Command::Mount(volume.id.clone())));
+                    self.services
+                        .send(ServiceCommand::Disks(Command::Automount(volume.id.clone())));
                 }
                 if volume.removable() {
                     let id = self.services.next_local_id();
@@ -82,6 +83,9 @@ impl State {
                 if let Some(token) = self.services.media.opening.remove(&id) {
                     self.open_folder(&mount_point, token.as_deref());
                 }
+            }
+            Event::Dismissed(command) => {
+                self.services.media.opening.remove(command.volume());
             }
             Event::Failed { command, message } => {
                 let media = &mut self.services.media;

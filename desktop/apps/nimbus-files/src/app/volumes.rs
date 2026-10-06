@@ -24,6 +24,17 @@ pub(super) struct Disks {
     pub removing: Vec<Volume>,
 }
 
+impl Disks {
+    /// Forgets what was waiting for `command`, which ended without doing anything.
+    fn end(&mut self, command: &udisks::Command) {
+        let id = command.volume();
+        if self.opening.as_deref() == Some(id) {
+            self.opening = None;
+        }
+        self.removing.retain(|v| v.id != id);
+    }
+}
+
 impl Controller {
     /// Shows `listed` with the volumes among them.
     pub(super) fn set_listed_places(&self, listed: Vec<Place>) {
@@ -74,16 +85,13 @@ impl Controller {
                     self.navigate(Location::Dir(mount_point));
                 }
             }
+            Event::Dismissed(command) => self.state.borrow_mut().disks.end(&command),
             Event::Failed { command, message } => {
                 let name = {
                     let mut state = self.state.borrow_mut();
                     let disks = &mut state.disks;
-                    let id = command.volume();
-                    if disks.opening.as_deref() == Some(id) {
-                        disks.opening = None;
-                    }
-                    disks.removing.retain(|v| v.id != id);
-                    let volume = disks.volumes.iter().find(|v| v.id == id);
+                    disks.end(&command);
+                    let volume = disks.volumes.iter().find(|v| v.id == command.volume());
                     volume.map_or_else(|| "the volume".to_string(), |v| format!("“{}”", v.name))
                 };
                 let text = format!("Couldn't {} {name}: {message}", command.verb());

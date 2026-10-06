@@ -35,6 +35,7 @@ use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ZwpTextInputV3;
 use smithay::reexports::wayland_server::backend::{
     ClientData, ClientId, DisconnectReason, GlobalId,
 };
@@ -135,6 +136,7 @@ pub struct Nimbus {
     pub popup_grab: Option<PopupGrab<State>>,
     /// The input method's keyboard grab, while it holds one; see [`State::refresh_keyboard_grab`].
     pub input_method_grab: Option<InputMethodKeyboardGrab>,
+    pub text_input_purposes: HashMap<ZwpTextInputV3, ime::TextInputPurpose>,
 
     pub seat: Seat<State>,
     pub keyboard: Option<KeyboardHandle<State>>,
@@ -259,6 +261,7 @@ impl Nimbus {
             popups: PopupManager::default(),
             popup_grab: None,
             input_method_grab: None,
+            text_input_purposes: HashMap::new(),
             seat_state,
             seat,
             keyboard,

@@ -29,13 +29,22 @@ pub struct Session {
 }
 
 impl Switcher {
-    /// Opens over `windows`, most recently focused first, and selects the next one, or the last when `backward`.
-    pub fn open(windows: Vec<WindowId>, held: Mods, backward: bool) -> Option<Self> {
-        if windows.is_empty() {
-            return None;
-        }
+    /// Opens over `windows`, most recently focused first, and selects the one after `focused`, or the last when `backward`.
+    /// Without a focused window, the most recent one comes after it.
+    pub fn open(
+        windows: Vec<WindowId>,
+        focused: Option<WindowId>,
+        held: Mods,
+        backward: bool,
+    ) -> Option<Self> {
+        let first = *windows.first()?;
+        let last = windows.len() - 1;
         let mut switcher = Self { windows, selected: 0, held: Mods { shift: false, ..held } };
-        switcher.step(backward);
+        if focused == Some(first) {
+            switcher.step(backward);
+        } else if backward {
+            switcher.selected = last;
+        }
         Some(switcher)
     }
 
@@ -94,7 +103,7 @@ impl State {
         }
         let held = self.nimbus.keyboard.as_ref().map(|k| Mods::from(&k.modifier_state()));
         let Some(switcher) =
-            Switcher::open(wm.recent_windows(), held.unwrap_or_default(), backward)
+            Switcher::open(wm.recent_windows(), wm.focused(), held.unwrap_or_default(), backward)
         else {
             return;
         };
@@ -170,7 +179,7 @@ mod tests {
 
     #[test]
     fn opens_on_the_previous_window_and_wraps() {
-        let mut switcher = Switcher::open(vec![3, 1, 2], ALT, false).unwrap();
+        let mut switcher = Switcher::open(vec![3, 1, 2], Some(3), ALT, false).unwrap();
         assert_eq!(switcher.selected(), 1);
         switcher.step(false);
         assert_eq!(switcher.selected(), 2);
@@ -183,32 +192,39 @@ mod tests {
 
     #[test]
     fn backward_opens_on_the_least_recent_window() {
-        let switcher = Switcher::open(vec![3, 1, 2], ALT, true).unwrap();
+        let switcher = Switcher::open(vec![3, 1, 2], Some(3), ALT, true).unwrap();
         assert_eq!(switcher.selected(), 2);
-        assert_eq!(Switcher::open(vec![7], ALT, false).unwrap().selected(), 7);
-        assert_eq!(Switcher::open(Vec::new(), ALT, false), None);
+        assert_eq!(Switcher::open(vec![7], Some(7), ALT, false).unwrap().selected(), 7);
+        assert_eq!(Switcher::open(Vec::new(), None, ALT, false), None);
+    }
+
+    #[test]
+    fn without_focus_opens_on_the_most_recent_window() {
+        assert_eq!(Switcher::open(vec![3, 1, 2], None, ALT, false).unwrap().selected(), 3);
+        assert_eq!(Switcher::open(vec![3, 1, 2], None, ALT, true).unwrap().selected(), 2);
+        assert_eq!(Switcher::open(vec![7], None, ALT, false).unwrap().selected(), 7);
     }
 
     #[test]
     fn releasing_a_modifier_that_opened_it_commits() {
         let shift_alt = Mods { shift: true, ..ALT };
-        let switcher = Switcher::open(vec![1, 2], shift_alt, true).unwrap();
+        let switcher = Switcher::open(vec![1, 2], Some(1), shift_alt, true).unwrap();
         assert!(switcher.has_modifiers());
         assert!(switcher.held_by(ALT), "releasing Shift only changes direction");
         assert!(switcher.held_by(Mods { ctrl: true, ..ALT }));
         assert!(!switcher.held_by(Mods { shift: true, ..Mods::default() }));
 
         let ctrl_alt = Mods { ctrl: true, ..ALT };
-        let switcher = Switcher::open(vec![1, 2], ctrl_alt, false).unwrap();
+        let switcher = Switcher::open(vec![1, 2], Some(1), ctrl_alt, false).unwrap();
         assert!(!switcher.held_by(ALT));
 
         let shift = Mods { shift: true, ..Mods::default() };
-        assert!(!Switcher::open(vec![1, 2], shift, false).unwrap().has_modifiers());
+        assert!(!Switcher::open(vec![1, 2], Some(1), shift, false).unwrap().has_modifiers());
     }
 
     #[test]
     fn closed_windows_leave_the_selection_on_a_neighbor() {
-        let mut switcher = Switcher::open(vec![1, 2, 3, 4], ALT, false).unwrap();
+        let mut switcher = Switcher::open(vec![1, 2, 3, 4], Some(1), ALT, false).unwrap();
         switcher.step(false);
         assert_eq!(switcher.selected(), 3);
         assert!(switcher.retain(|id| id != 1));

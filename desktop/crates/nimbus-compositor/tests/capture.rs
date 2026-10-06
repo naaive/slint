@@ -295,6 +295,24 @@ fn image_copy_sessions_wait_for_damage() {
 }
 
 #[test]
+fn image_copy_sessions_of_blanked_outputs_wait_for_damage() {
+    let (compositor, _client) = start_with_window();
+    let mut capturer = Capturer::connect(&compositor);
+    let source = capturer.output_source();
+    let session = capturer.session(&source);
+    let buffer = capturer.shm_buffer(capturer.app.session.size.unwrap());
+
+    compositor.request(Request::Blank);
+    let frame = capturer.start_frame(&session, &buffer);
+    assert!(capturer.finish(frame), "the first frame failed");
+    assert_black("the blanked output", &buffer.rgba());
+    let frame = capturer.start_frame(&session, &buffer);
+    capturer.idle();
+    assert!(!capturer.app.frame.finished(), "a frame of a blanked output finished without changes");
+    frame.destroy();
+}
+
+#[test]
 fn toplevel_captures_show_the_window() {
     let (compositor, client) = start_with_window();
     let mut capturer = Capturer::connect(&compositor);

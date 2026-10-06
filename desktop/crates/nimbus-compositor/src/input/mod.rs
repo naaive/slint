@@ -67,9 +67,15 @@ impl Nimbus {
 
 impl State {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
-        let key_release =
-            matches!(&event, InputEvent::Keyboard { event } if event.state() == KeyState::Released);
-        self.input_arrived(!key_release);
+        match &event {
+            InputEvent::DeviceAdded { device } => return self.on_device_added(device),
+            InputEvent::DeviceRemoved { device } => return self.on_device_removed(device),
+            InputEvent::Special(_) => return,
+            InputEvent::Keyboard { event } => {
+                self.input_arrived(event.state() == KeyState::Pressed)
+            }
+            _ => self.input_arrived(true),
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -95,8 +101,6 @@ impl State {
             InputEvent::TabletToolProximity { event } => self.on_tablet_tool_proximity::<B>(event),
             InputEvent::TabletToolTip { event } => self.on_tablet_tool_tip::<B>(event),
             InputEvent::TabletToolButton { event } => self.on_tablet_tool_button::<B>(event),
-            InputEvent::DeviceAdded { device } => self.on_device_added(&device),
-            InputEvent::DeviceRemoved { device } => self.on_device_removed(&device),
             _ => {}
         }
     }

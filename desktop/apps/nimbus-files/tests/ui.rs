@@ -497,3 +497,41 @@ fn volumes_mount_when_opened_and_power_off_from_the_sidebar() {
     f.wait_until("the stick to power off", |_| udisks.calls().len() == 3);
     assert_eq!(udisks.calls(), ["mount STICK", "unmount STICK", "power off"]);
 }
+
+#[test]
+fn a_dismissed_mount_doesnt_open_the_volume_later() {
+    use nimbus_test_support::{FakeUdisks, MountAnswer, PrivateBus};
+    let Some(bus) = PrivateBus::start() else { return };
+    let runtime =
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+    let device = "/org/freedesktop/UDisks2/block_devices/sdb1";
+    let udisks = runtime.block_on(async {
+        let udisks = FakeUdisks::start(&bus).await;
+        udisks.insert(device, "/dev/sdb1", "STICK", MountAnswer::Dismiss).await;
+        udisks
+    });
+    let f = Fixture::with_options(false, BusAddress::Address(bus.address.clone()));
+    let stick = |f: &Fixture| {
+        let places = f.ui.get_places();
+        (0..places.row_count()).find(|&i| places.row_data(i).is_some_and(|p| p.label == "STICK"))
+    };
+    f.wait_until("the stick in the sidebar", |f| stick(f).is_some());
+    let location = f.ui.get_location_text();
+
+    // Opening the stick asks for authorization, which the user dismisses.
+    f.ui.invoke_place_clicked(stick(&f).unwrap() as i32);
+    f.wait_until("the dismissed mount", |_| udisks.calls() == ["mount STICK"]);
+    runtime.block_on(udisks.set_answer(device, MountAnswer::Mount));
+
+    // Mounting it from its menu later leaves the folder alone.
+    f.ui.invoke_place_context(stick(&f).unwrap() as i32, 10.0, 10.0);
+    let rows = f.ui.get_menu_rows();
+    let mount = (0..rows.row_count())
+        .position(|i| rows.row_data(i).is_some_and(|r| r.label == "Mount"))
+        .expect("a Mount entry");
+    f.ui.invoke_menu_activated(mount as i32);
+    f.wait_until("the stick to mount", |_| udisks.calls() == ["mount STICK", "mount STICK"]);
+    let settled = Instant::now() + Duration::from_millis(300);
+    f.wait_until("the events to settle", |_| Instant::now() > settled);
+    assert_eq!(f.ui.get_location_text(), location);
+}

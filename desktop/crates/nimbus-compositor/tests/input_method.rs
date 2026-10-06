@@ -12,6 +12,7 @@ use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
     wl_keyboard::{self, WlKeyboard},
+    wl_output::WlOutput,
     wl_registry::{self, WlRegistry},
     wl_seat::WlSeat,
     wl_shm::{self, WlShm},
@@ -21,6 +22,7 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+    ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
     ext_session_lock_v1::{self, ExtSessionLockV1},
 };
 use wayland_protocols::wp::text_input::zv3::client::{
@@ -67,6 +69,11 @@ struct TypistState {
     layer_shell: Option<ZwlrLayerShellV1>,
     wm_base: Option<XdgWmBase>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
+    output: Option<WlOutput>,
+    lock_manager: Option<ExtSessionLockManagerV1>,
+    /// The serial, width, and height of the lock surface's last configure.
+    lock_configure: Option<(u32, u32, u32)>,
+    locked: bool,
     /// The surface the text input entered.
     focus: Option<WlSurface>,
     pending: PendingText,
@@ -137,6 +144,32 @@ impl Typist {
         self.text_input.set_cursor_rectangle(10, 20, 2, 16);
         self.text_input.commit();
         self.client.conn.flush().expect("flush");
+    }
+
+    /// Sets the content purpose, and waits until the compositor has it.
+    fn set_purpose(&mut self, purpose: ContentPurpose) {
+        self.text_input.set_content_type(ContentHint::None, purpose);
+        self.text_input.commit();
+        self.queue.roundtrip(&mut self.state).expect("roundtrip");
+    }
+
+    /// Locks the session with a lock surface, and waits until it has the keyboard and the text input.
+    fn lock(&mut self) -> WlSurface {
+        let lock = self.state.lock_manager.as_ref().unwrap().lock(&self.qh, ());
+        let surface = self.state.compositor.as_ref().unwrap().create_surface(&self.qh, ());
+        let output = self.state.output.as_ref().expect("an output");
+        let lock_surface = lock.get_lock_surface(&surface, output, &self.qh, ());
+        self.dispatch_until("the lock surface configure", |s| s.lock_configure.is_some());
+        let (serial, width, height) = self.state.lock_configure.unwrap();
+        lock_surface.ack_configure(serial);
+        let size = (width as i32, height as i32);
+        common::attach_buffer(self.state.shm.as_ref().unwrap(), &self.qh, &surface, size);
+        self.dispatch_until("the lock surface with keyboard and text input", |s| {
+            s.locked
+                && s.keyboard_focus.as_ref() == Some(&surface)
+                && s.focus.as_ref() == Some(&surface)
+        });
+        surface
     }
 
     fn disable(&mut self) {
@@ -371,6 +404,61 @@ fn the_input_method_grabs_the_keyboard_and_sends_keys_back() {
 }
 
 #[test]
+fn password_fields_keep_their_keys_from_the_input_method() {
+    let compositor = common::start("");
+    let mut ime = Ime::connect(&compositor);
+    let mut typist = Typist::connect(&compositor);
+    typist.open_window();
+    typist.enable();
+    ime.dispatch_until("activation", |s| s.active);
+    ime.input_method.grab_keyboard(&ime.qh, ());
+    ime.dispatch_until("the grab's keymap", |s| s.keymap.is_some());
+
+    typist.set_purpose(ContentPurpose::Password);
+    compositor.request(Request::PressKey { code: KEY_A });
+    typist.dispatch_until("the password key", |s| s.keys == [(KEY_A, true), (KEY_A, false)]);
+    ime.roundtrip();
+    assert!(ime.state.keys.is_empty(), "a password key reached the input method");
+
+    typist.set_purpose(ContentPurpose::Normal);
+    compositor.request(Request::PressKey { code: KEY_B });
+    ime.dispatch_until("the grabbed key", |s| s.keys == [(KEY_B, true), (KEY_B, false)]);
+}
+
+#[test]
+fn other_clients_type_nothing_on_the_lock_screen() {
+    let compositor = common::start("");
+    let mut ime = Ime::connect(&compositor);
+    let mut typist = Typist::connect(&compositor);
+    typist.open_window();
+    typist.enable();
+    ime.dispatch_until("activation", |s| s.active);
+    ime.input_method.grab_keyboard(&ime.qh, ());
+    ime.dispatch_until("the grab's keymap", |s| s.keymap.is_some());
+    let seat = ime.state.seat.clone().unwrap();
+    let keyboard =
+        ime.state.virtual_keyboards.as_ref().unwrap().create_virtual_keyboard(&seat, &ime.qh, ());
+    let (fd, size) = ime.state.keymap.as_ref().unwrap();
+    keyboard.keymap(wl_keyboard::KeymapFormat::XkbV1.into(), fd.as_fd(), *size);
+
+    typist.lock();
+    typist.enable();
+    ime.dispatch_until("activation on the lock screen", |s| s.active);
+    typist.take_keys();
+    keyboard.key(0, KEY_A, wl_keyboard::KeyState::Pressed.into());
+    keyboard.key(0, KEY_A, wl_keyboard::KeyState::Released.into());
+    ime.input_method.commit_string("secret".into());
+    ime.commit();
+    ime.roundtrip();
+    typist.queue.roundtrip(&mut typist.state).expect("roundtrip");
+    assert!(typist.state.keys.is_empty(), "a virtual keyboard typed on the lock screen");
+    assert!(typist.state.committed.is_empty(), "an input method typed on the lock screen");
+
+    compositor.request(Request::PressKey { code: KEY_B });
+    typist.dispatch_until("a real key", |s| s.keys == [(KEY_B, true), (KEY_B, false)]);
+}
+
+#[test]
 fn popup_grabs_and_the_input_method_take_turns_with_the_keyboard() {
     let compositor = common::start("");
     let mut ime = Ime::connect(&compositor);
@@ -506,6 +594,12 @@ impl Dispatch<WlRegistry, ()> for TypistState {
             "zwp_text_input_manager_v3" => {
                 state.text_input_manager = Some(registry.bind(name, 1, qh, ()))
             }
+            "wl_output" if state.output.is_none() => {
+                state.output = Some(registry.bind(name, 1, qh, ()))
+            }
+            "ext_session_lock_manager_v1" => {
+                state.lock_manager = Some(registry.bind(name, 1, qh, ()))
+            }
             _ => {}
         }
     }
@@ -618,7 +712,41 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for TypistState {
     }
 }
 
+impl Dispatch<ExtSessionLockV1, ()> for TypistState {
+    fn event(
+        state: &mut Self,
+        _: &ExtSessionLockV1,
+        event: ext_session_lock_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_session_lock_v1::Event::Locked => state.locked = true,
+            ext_session_lock_v1::Event::Finished => panic!("the session lock was refused"),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ExtSessionLockSurfaceV1, ()> for TypistState {
+    fn event(
+        state: &mut Self,
+        _: &ExtSessionLockSurfaceV1,
+        event: ext_session_lock_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_session_lock_surface_v1::Event::Configure { serial, width, height } = event {
+            state.lock_configure = Some((serial, width, height));
+        }
+    }
+}
+
 delegate_noop!(TypistState: ignore WlCompositor);
+delegate_noop!(TypistState: ignore WlOutput);
+delegate_noop!(TypistState: ignore ExtSessionLockManagerV1);
 delegate_noop!(TypistState: ignore WlSurface);
 delegate_noop!(TypistState: ignore WlShm);
 delegate_noop!(TypistState: ignore WlShmPool);

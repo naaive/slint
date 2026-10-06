@@ -6,14 +6,12 @@ mod common;
 
 use nimbus_ipc::Request;
 use std::io::Read;
-use std::os::linux::net::SocketAddrExt;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{SocketAddr, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Accepts one connection on the sockets from `-listenfd`, answers it with `X`, and exits,
+/// Accepts one connection on the socket from `-listenfd`, answers it with `X`, and exits,
 /// after appending its arguments and the socket of each descriptor to `log`.
 const FAKE_SATELLITE: &str = r#"
 import os, select, socket, sys
@@ -63,7 +61,7 @@ fn answer(mut stream: UnixStream) -> String {
 }
 
 #[test]
-fn the_first_x11_client_starts_the_satellite_with_the_listening_sockets() {
+fn the_first_x11_client_starts_the_satellite_with_the_listening_socket() {
     let Some(python) = python() else {
         eprintln!("skipping: python3, which stands in for xwayland-satellite, isn't installed");
         return;
@@ -90,14 +88,10 @@ fn the_first_x11_client_starts_the_satellite_with_the_listening_sockets() {
     let spawns = spawn_log(&satellite);
     assert_eq!(spawns.len(), 1);
     let args: Vec<_> = spawns[0].split(' ').collect();
-    assert!(
-        matches!(args[..], [":0", "-listenfd", _, "-listenfd", _, "socket", "socket"]),
-        "{args:?}"
-    );
+    assert!(matches!(args[..], [":0", "-listenfd", _, "socket"]), "{args:?}");
 
-    // The satellite exited, so the next client, here on the abstract socket, starts another.
-    let address = SocketAddr::from_abstract_name(socket.as_os_str().as_bytes()).unwrap();
-    assert_eq!(answer(UnixStream::connect_addr(&address).unwrap()), "X");
+    // The satellite exited, so the next client starts another.
+    assert_eq!(answer(UnixStream::connect(&socket).unwrap()), "X");
     assert_eq!(spawn_log(&satellite).len(), 2);
 
     compositor.request(Request::Quit);

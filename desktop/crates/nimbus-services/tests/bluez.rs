@@ -222,7 +222,7 @@ impl FakeDevice {
 }
 
 struct Fake {
-    _daemon: Connection,
+    daemon: Connection,
     agent: Registration,
     default: Arc<Mutex<bool>>,
 }
@@ -244,7 +244,7 @@ async fn fake_bluez(bus: &PrivateBus) -> Fake {
     server.at(ADAPTER, adapter).await.unwrap();
     server.at(KEYBOARD, FakeDevice::new(Some("Keyboard"), true, agent.clone())).await.unwrap();
     daemon.request_name("org.bluez").await.unwrap();
-    Fake { _daemon: daemon, agent, default }
+    Fake { daemon, agent, default }
 }
 
 fn spawn(address: BusAddress) -> (Client, UnboundedReceiver<Event>) {
@@ -365,6 +365,49 @@ async fn powers_discovers_pairs_and_removes() {
             && state.adapter.as_ref().is_some_and(|a| !a.discovering)
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_code_shown_for_pairing_a_device_started_closes_once_it_pairs() {
+    let Some(bus) = PrivateBus::start() else { return };
+    let fake = fake_bluez(&bus).await;
+    let (client, mut events) = spawn(BusAddress::Address(bus.address.clone()));
+    client.send(Command::SetPowered(true));
+    client.send(Command::SetDiscovering(true));
+    state_where(&mut events, |state| state.devices.len() == 3).await;
+    let (owner, agent, _) = timeout(WAIT, async {
+        loop {
+            if let Some(registration) = fake.agent.lock().unwrap().clone() {
+                return registration;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the agent registers");
+
+    let device = ObjectPath::try_from(HEADPHONES).unwrap();
+    fake.daemon
+        .call_method(
+            Some(owner.as_str()),
+            agent.as_str(),
+            Some("org.bluez.Agent1"),
+            "DisplayPasskey",
+            &(device, 123_456u32, 0u16),
+        )
+        .await
+        .expect("the agent shows the passkey");
+    let Event::Pairing(PairingRequest { id, kind, .. }) = next_non_state(&mut events).await else {
+        panic!("expected a pairing request");
+    };
+    assert_eq!(kind, PairingKind::DisplayPasskey { passkey: 123_456, entered: 0 });
+
+    // The device finishes pairing, which BlueZ reports only through its Paired property.
+    let headphones =
+        fake.daemon.object_server().interface::<_, FakeDevice>(HEADPHONES).await.unwrap();
+    headphones.get().await.paired.store(true, Ordering::Relaxed);
+    headphones.get().await.paired_changed(headphones.signal_emitter()).await.unwrap();
+    assert_eq!(next_non_state(&mut events).await, Event::PairingEnded { id });
 }
 
 #[tokio::test]

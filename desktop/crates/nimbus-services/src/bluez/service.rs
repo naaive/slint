@@ -78,6 +78,15 @@ impl BluetoothSettings {
 
     fn publish(&mut self, state: BluetoothState) {
         self.names.set(state.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect());
+        // BlueZ neither cancels nor releases a code it showed for pairing that a device started and finished.
+        let was_paired = |id: &str| {
+            self.last.iter().flat_map(|last| &last.devices).any(|d| d.id == id && d.paired)
+        };
+        for device in state.devices.iter().filter(|d| d.paired && !was_paired(&d.id)) {
+            for id in self.pairings.close_shown(&device.id) {
+                (self.emit)(Event::PairingEnded { id });
+            }
+        }
         if self.last.as_ref() != Some(&state) {
             self.last = Some(state.clone());
             (self.emit)(Event::State(state));

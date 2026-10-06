@@ -22,6 +22,9 @@ pub(crate) use service::Udisks;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Mount(String),
+    /// Mounts the volume only if udisks needn't ask the user for authorization, as on insertion.
+    /// When it would, the command does nothing, and reports no failure.
+    Automount(String),
     Unmount(String),
     /// Unmounts every volume on the volume's drive, then ejects its medium, as for an optical disc or SD card.
     Eject(String),
@@ -34,6 +37,7 @@ impl Command {
     pub fn volume(&self) -> &str {
         match self {
             Command::Mount(id)
+            | Command::Automount(id)
             | Command::Unmount(id)
             | Command::Eject(id)
             | Command::PowerOff(id) => id,
@@ -43,7 +47,7 @@ impl Command {
     /// What the command does, for messages such as "Couldn't eject".
     pub fn verb(&self) -> &'static str {
         match self {
-            Command::Mount(_) => "mount",
+            Command::Mount(_) | Command::Automount(_) => "mount",
             Command::Unmount(_) => "unmount",
             Command::Eject(_) => "eject",
             Command::PowerOff(_) => "power off",
@@ -58,10 +62,12 @@ pub enum Event {
     /// A volume that appeared after the first [`Event::Volumes`], such as on an inserted USB stick.
     /// It follows the [`Event::Volumes`] that lists it.
     Added(Volume),
-    /// A [`Command::Mount`] succeeded, or found the volume mounted already.
+    /// A [`Command::Mount`] or [`Command::Automount`] succeeded, or found the volume mounted already.
     Mounted { id: String, mount_point: PathBuf },
     /// udisks refused a command, with its reason; a user dismissing the polkit dialog isn't a failure.
     Failed { command: Command, message: String },
+    /// The user dismissed the polkit dialog of a command, which ends it.
+    Dismissed(Command),
 }
 
 /// A file system that udisks can mount, on a drive or a loop device.
